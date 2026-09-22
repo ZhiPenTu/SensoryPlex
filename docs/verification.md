@@ -188,3 +188,48 @@ make media-replay MEDIA=/Users/tuzhipeng/Documents/SensoryPlex/video/1.mp4
 **未验证范围（不得当作完成）：** 样本矩阵只覆盖回放与交接，不含抽帧、背压指标、SRT 与任何模型；
 6 个样本都是 CFR，容器级 VFR 与断流重连仍无样本；`officehours-panel` 的 1380 个丢弃全部是毫秒粒度
 `collapsed_interval`，与解码路径的 `overlapping_samples` 描述同一现象。剩余样本与模块见 `docs/TODO.md`。
+
+### 媒体格式准入：静默降级实测（2026-09-23）
+
+为 ADR-009（媒体格式支持矩阵与拒绝语义）提供依据，在 `macos-aarch64`（GStreamer 1.28.7、FFmpeg 9.0.1）
+上做了三条探针。三条都在**现有解码链路原样复现**（`decodebin` + 与 `decode.rs` 相同的 capsfilter），
+目的不是跑通格式，而是证明"当前没有准入判据"。
+
+**1. 10-bit HEVC 被静默降成 8-bit，链路成功退出。**
+
+```console
+$ ffmpeg -f lavfi -i testsrc2=size=320x240:rate=10:duration=2 -c:v libx265 \
+    -pix_fmt yuv420p10le /tmp/p10.mp4
+$ ffprobe -show_entries stream=codec_name,profile,pix_fmt -of csv=p=0 /tmp/p10.mp4
+hevc,Main 10,yuv420p10le
+$ GST_DEBUG=GST_ELEMENT_FACTORY:4 gst-launch-1.0 -v filesrc location=/tmp/p10.mp4 \
+    ! decodebin ! videoconvert ! 'video/x-raw,format=RGBA' ! fakesink sync=false
+creating element "h265parse"
+creating element "vtdec_hw"
+audio/x-raw(memory:GLMemory), format=(string)NV12
+video/x-raw, format=(string)RGBA
+```
+
+源是 Main10，产物是 8-bit `NV12` → `RGBA`，没有任何拒绝码，`DecodedTrackStat.pixel_format` 只会记录
+`RGBA`。**这是静默降级，属于 AGENTS.md 禁止的行为**（合成素材仅用于证明拒绝路径缺失，不作正样本）。
+
+**2. 无法识别的 pad 只写日志。** `crates/media/src/decode.rs` 对非 `video/`、`audio/` 前缀的 pad 走
+`tracing::warn!("decoded pad ignored: unsupported media type")`，`ReplayReport.blockers` 与
+`DecodedTrackStat.drop_reasons` 都不会出现该事件，报告读起来像"源里本来就没有这条轨道"。
+
+**3. 多声道原样透传。** 合成 5.1 AAC 源：
+
+```console
+$ gst-launch-1.0 -v filesrc location=/tmp/s51.mp4 ! decodebin ! audioconvert \
+    ! 'audio/x-raw,format=F32LE' ! fakesink sync=false
+audio/x-raw, format=(string)F32LE, rate=(int)48000, channels=(int)6
+```
+
+音频 capsfilter 不约束声道数，6 声道进入数据平面。v1 按 mono/stereo 承诺，多声道属于未声明地带。
+
+**同时实测到解码器选择随平台变化**（`h265parse` → `vtdec_hw`，`avdec_aac`），且本机
+`gst-inspect-1.0 avdec_hevc` 不存在：macOS 的 HEVC 覆盖来自 VideoToolbox。Linux 侧解码器可用性
+未验证，不得外推。本机 FFmpeg 为 `--enable-gpl` 构建（含 libx264/libx265），发布产物需核对。
+
+**这轮没有产生任何格式支持结论。** ADR-009 的矩阵尚未实现：`capability.rs`、几何/位深契约字段、
+解码器元素上报都还是待办，`golden_path_verified` 继续为 false。

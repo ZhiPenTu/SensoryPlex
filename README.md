@@ -54,6 +54,7 @@ tools/                  配置、代码生成、迁移、测试与真实媒体�
 
 - [技术选型 ADR 与 V1 实施蓝图](技术选型ADR与V1实施蓝图.md)
 - [开放式插件开发文档](开放式插件开发文档.md)
+- [ADR-009：媒体格式支持矩阵与拒绝语义](docs/adr/ADR-009-媒体格式支持矩阵与拒绝语义.md)
 - [实现状态与后续阶段](docs/implementation-status.md)
 - [契约与查询语义](docs/contracts/README.md)
 - [初始化验证记录](docs/verification.md)

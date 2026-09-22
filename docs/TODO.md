@@ -7,6 +7,9 @@
 - 完成一项时同时更新 `docs/implementation-status.md`，避免"文档说完成、代码没实现"。
 - 未实现的能力必须继续出现在 `ReplayReport.blockers` 与 `DescribeCapabilities.unavailable_reason` 中。
 
+媒体格式的"支持 / 不支持"以 **[ADR-009：媒体格式支持矩阵与拒绝语义](adr/ADR-009-媒体格式支持矩阵与拒绝语义.md)**
+为准：矩阵之外的格式一律显式拒绝，新增一个格式 = 矩阵一行 + 1 正样本 + 1 拒绝样本 + 一条验证记录。
+
 状态：`未开始` / `进行中` / `已完成（证据见 …）`
 
 ## 0. 当前基座（已完成，作为其他模块的起点）
@@ -67,6 +70,21 @@
 - 现状：完全未接入，CoreML/Metal 报 `execution_backend_not_implemented`。
 - 前置：M1（抽帧）与 M3（lease 消费方）。
 - 验收：至少一个模型在真实样本上产出带时间锚点、来源、版本与置信度语义的 observation。
+
+### M9 格式准入与显式拒绝（ADR-009，新增格式之前必须先做）
+
+- 现状：没有准入判据，实测存在三类静默降级——10-bit HEVC 被降成 8-bit 仍算成功、
+  非音视频 pad 只写日志不进报告、5.1 音频原样透传（证据见 `docs/verification.md`
+  "媒体格式准入"一节）。这三条都违反 AGENTS.md。
+- 目标：`crates/media/src/capability.rs`（矩阵 + `classify_caps`）在 caps 协商阶段判定；
+  `media.proto` 补几何（`display_rotation_deg`、SAR）与位深/色彩（`bit_depth`、primaries、
+  transfer、matrix）字段，以及时间基与帧率模式（`CONSTANT|VARIABLE|UNKNOWN`）；
+  实际解码器元素（`vtdec_hw`、`avdec_h264`）进入报告证据。
+- 验收：10-bit、多声道、未知 pad 三条拒绝路径各跑出稳定拒绝码（负样本可用 FFmpeg 合成，
+  但只能标注为拒绝路径验证样本）；已通过的正样本回放结论不得回退。
+- 注意：本项与 M1–M8 相互独立，但**必须先于**任何"新增支持格式"的动作。
+- 许可检查项：发布产物的 `ffmpeg -version` 不得含 `--enable-gpl` / libx264 / libx265 等 GPL 组件；
+  `gst-libav` 受其底层 `libav*` 构建约束（本机为 GPL 构建，见 ADR-009 §5）。
 
 ## 2. 待补样本（用户后续提供，先按现有样本推进）
 

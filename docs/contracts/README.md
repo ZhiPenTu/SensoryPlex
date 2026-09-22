@@ -65,6 +65,22 @@ reserved，破坏语义的修改进入新的协议 major。当前为开发预览
 - `AudioSegment` 区间覆盖其携带的样本，`Σlisted.bytes == audio_segments.bytes ==` 音频轨字节
   （当 `listed == segments` 时）；跨段 ms 取整允许 1 ms 偏差，尾部不足一段时 `partial=true`。
 
+媒体格式准入契约（ADR-009，**[媒体格式支持矩阵与拒绝语义](../adr/ADR-009-媒体格式支持矩阵与拒绝语义.md)**）：
+
+- v1 只承诺 ADR-009 §2 的矩阵：容器 MP4/MOV、MKV/WebM、MPEG-TS；视频 H.264/HEVC/VP8/VP9 的
+  8-bit SDR；音频 AAC-LC/Opus/Vorbis/PCM；声道只承诺 mono/stereo。矩阵之外的组合一律显式拒绝。
+- 拒绝码是稳定字符串，必须进入 `blockers`（构建级）或 `drop_reasons` / `failure_reasons`（流级）
+  之一，禁止只写日志；被拒轨道不得产生 `BufferDescriptor`，也不得让计数看起来像源里没有这条轨道。
+- 禁止降级成功：`pixel_format=RGBA` 只说明归一化目标，不说明源位深；源侧位深与色彩由
+  `bit_depth`、`color_primaries`、`transfer_characteristics`、`matrix_coefficients` 显式表达，
+  取不到就按未知表达，不得填默认值。
+- 几何必须显式：`display_rotation_deg` 只承诺 0/90/180/270，SAR 必须可表达；旋转要在归一化阶段
+  真正应用，下游拿到的必须是呈现后的画面。
+- 帧率模式必须显式（`CONSTANT | VARIABLE | UNKNOWN`）：未知帧率不得按 CFR 处理；v1 不承诺 VFR
+  抽帧语义，只承诺能声明它。
+- 实际选中的解码器元素（如 `vtdec_hw`、`avdec_h264`）属于证据：跨平台结论必须同时给出平台标识与
+  解码器元素。`avdec_hevc` 在 macOS 上实测不存在，本机 HEVC 走 VideoToolbox，不得外推到 Linux。
+
 `append_material` 是受信 timeline/storage 进程的内部入口；当前无公共写入 API。
 事实写入和 outbox 在同一事务完成。outbox 分发、NATS 消费去重和重试器尚待实现，
 因此不能把“已写 outbox”解释为“已发布 NATS”或“可语义检索”。

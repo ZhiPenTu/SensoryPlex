@@ -28,3 +28,7 @@ runtime/media-worker（容器无法访问 Metal/CoreML），NVIDIA 侧沿用容�
 partial 段。仍未实现：抽帧策略、背压指标、lease 消费方（模型 worker）、断流重连；SRT 走 `UnavailableSource`，
 调用即报 `gstreamer_srt_ingest_not_implemented`。因此 `golden_path_verified` 恒为 false，不得把本节读作
 Golden Path 已完成。
+
+媒体格式准入同样未实现（[ADR-009](adr/ADR-009-媒体格式支持矩阵与拒绝语义.md)）：现在没有矩阵判据，
+10-bit HEVC 会被静默降成 8-bit 仍算成功，非音视频 pad 只写日志，5.1 音频原样透传。实测记录见
+`docs/verification.md` 的"媒体格式准入"一节；补齐拒绝语义排在新增任何格式之前（`docs/TODO.md` M9）。
