@@ -10,6 +10,7 @@ pub mod decode;
 pub mod descriptor;
 pub mod lease;
 pub mod probe;
+pub mod sampler;
 pub mod segment;
 pub mod source;
 
@@ -31,6 +32,8 @@ pub enum MediaError {
     DecodeFailed(String),
     #[error("descriptor_rejected: {0}")]
     DescriptorRejected(String),
+    #[error("sampling_rejected: {0}")]
+    SamplingRejected(String),
 }
 
 pub fn validate_descriptor(

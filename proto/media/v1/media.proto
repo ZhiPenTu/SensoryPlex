@@ -107,7 +107,11 @@ message AudioSegmentReport {
 message DecodedDataPlane {
   string arena_id = 1;
   uint64 arena_capacity_bytes = 2;
+  // High-water mark of committed arena space, not concurrent live bytes: the arena is a bump
+  // allocator with a free list, so a request too large for any freed region commits new space.
+  // A value near `arena_capacity_bytes` means the stream is fragmenting the arena.
   uint64 arena_peak_bytes = 3;
+  // Cumulative bytes that flowed through the arena. Not resident, and not a memory bound.
   uint64 decoded_bytes = 4;
   repeated DecodedTrackStat tracks = 5;
   uint64 descriptors_built = 6;

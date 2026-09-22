@@ -5,3 +5,6 @@
 
 运行 `uv run python tools/probe_media.py /absolute/path/to/video.mp4` 可生成真实文件的
 SHA-256、音视频流信息与时长报告。报告不包含原始路径，不代表模型或 Golden Path 验收。
+
+当前可用的公开许可样本、来源、许可、摘要与实测特性见 `OPEN-SAMPLES.md`；
+尚未具备的样本（断流重连、容器级 VFR、720p 屏幕文字、设备直出）见 `docs/TODO.md`。

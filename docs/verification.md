@@ -150,3 +150,41 @@ make media-replay MEDIA=/Users/tuzhipeng/Documents/SensoryPlex/video/1.mp4
   三类样本尚未回放，抽帧覆盖率结论不成立。
 - 检查在 `macos-aarch64` 本地完成；macOS CI job 与 `linux-x86_64` 侧解码验收未执行。
 - `make media-replay` 不在 CI 中：它需要真实授权媒体，合成片段不能作为验收证据。
+
+### 公开许可样本矩阵：VP9/Opus 与容器差异（2026-09-23）
+
+用户没有现成的三类样本，因此改用 6 个**明确开放许可**的真实素材（Wikimedia Commons，CC BY-SA 4.0 或
+公有领域）覆盖静止/翻页/运动/多人对话四类路径。素材本体不入库，出处、许可、摘要与实测特性见
+`tests/fixtures/media/OPEN-SAMPLES.md`。这一轮的目标是**用真实素材暴露容器与编码差异**，不是性能结论。
+
+| 样本 | 时长 | 锚点 | 丢弃 | descriptors | leases | 音频段 | 结论 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `slides-vrt-nodiscussion` | 685.0s | 75351 | 0 | 75488 | 75488/75488 | 137 | PASS |
+| `slides-vrt-discussion` | 1125.0s | 123751 | 0 | 123976 | 123976/123976 | 225 | PASS |
+| `screencast-video2commons` | 552.0s | 41402 | 0 | 41513 | 41513/41513 | 111 | PASS |
+| `screencast-watchlist` | 156.4s | 12510 | 0 | 12542 | 12542/12542 | 32 | PASS |
+| `sasebo-basketball` | 60.0s | 4800 | 0 | 4812 | 4812/4812 | 12 | PASS |
+| `officehours-panel` | 2232.0s | 165999 | 1380 | 167825 | 167825/167825 | 446 | PASS（修校验口径后） |
+
+计数自洽性在每个样本上成立：`descriptors == Σsamples + segments`、`leases_released == leases_issued`、
+`descriptor_failures == 0`、`Σlisted.bytes == 音频轨字节`。Matroska/VP9/Opus 与 HEVC/AAC MP4 走的是同一条
+解码 → descriptor → lease → 切段路径。
+
+**这轮暴露的三个真实问题（都不是靠合成片段能发现的）：**
+
+1. **Opus pre-skip 造成起点差异。** `initial_padding=312`（6.5 ms）：ffprobe 把首个音频点放在 12 ms，
+   GStreamer 放在 6 ms，相差恰好一个 pre-skip；视频轨完全一致（偏移 0）。原先校验脚本用 1 ms 容差，
+   因此 `officehours-panel` 直接失败。处理方式是**按轨道区分容差并把实测偏移打印出来**
+   （`start_offsets=[video:+0ms,audio:-6ms]`），而不是把容差整体放宽到看不见问题：166 ms 级别的真实
+   错位（edit list 缺陷）仍然会被判失败。
+2. **毫秒时间戳下的段边界重叠。** Opus 帧 20 ms，Matroska 用毫秒存储时间戳，段起点会出现最多 14 ms 的
+   回退（如 `30060→35060` 之后接 `35046→40046`）。段本身按采样游标切分，因此不是切错；校验脚本改为
+   允许一个编解码帧（25 ms）的边界重叠，并保留段不连续阈值（250 ms）拦截真实空洞。
+3. **`arena_peak_bytes` 语义需要说清。** `officehours-panel`（**mono** 音频）峰值 1489376 恰等于单帧，
+   `sasebo-basketball`（stereo）峰值为 3564864 = 单帧 1639680 + 5 s 段 1925184。原因是 arena 为 bump
+   分配 + 空闲链：mono 段（960000 B）能复用单帧释放的区域，stereo 段（1920000 B）不能，于是新增提交。
+   该字段是"已提交容量高水位"，不是并发存活字节；语义已写入 proto 与契约文档。
+
+**未验证范围（不得当作完成）：** 样本矩阵只覆盖回放与交接，不含抽帧、背压指标、SRT 与任何模型；
+6 个样本都是 CFR，容器级 VFR 与断流重连仍无样本；`officehours-panel` 的 1380 个丢弃全部是毫秒粒度
+`collapsed_interval`，与解码路径的 `overlapping_samples` 描述同一现象。剩余样本与模块见 `docs/TODO.md`。

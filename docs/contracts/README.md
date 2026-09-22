@@ -58,6 +58,10 @@ reserved，破坏语义的修改进入新的协议 major。当前为开发预览
 - 交接证据只含受控引用：`memory_kind` 必须在该平台 `admitted_memory_kinds` 内，
   `locator.handle` 等于 arena id 且绝不是宿主路径，`content_hash` 为 `sha256:` 前缀的十六进制摘要，
   lease 为只读且带过期时间。证据里不出现帧或 PCM 字节。
+- `arena_peak_bytes` 是**已提交容量**的高水位，不是并发存活字节：arena 为 bump 分配 + 空闲链，
+  当一个请求放不进任何空闲区时才会新增提交。交替出现"单帧"与"整段音频"这类尺寸时，提交量会接近
+  两者之和；接近 `arena_capacity_bytes` 表示该流在使 arena 碎片化。`decoded_bytes` 是累计流量，
+  既不驻留也不是内存上界。
 - `AudioSegment` 区间覆盖其携带的样本，`Σlisted.bytes == audio_segments.bytes ==` 音频轨字节
   （当 `listed == segments` 时）；跨段 ms 取整允许 1 ms 偏差，尾部不足一段时 `partial=true`。
 

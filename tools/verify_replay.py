@@ -23,6 +23,17 @@ ADMITTED_MEMORY_KINDS = {"cpu_shared_memory"}
 # Two independent implementations describe the same presentation timeline: ffprobe anchors and
 # the GStreamer decode path. Ms rounding may differ, so intervals are compared with slack.
 TIMELINE_TOLERANCE_MS = 1
+# Codec pre-skip (Opus `initial_padding=312` = 6.5 ms) is placed differently by each side at the
+# very start of a stream, so the first audio sample may legitimately differ by up to one codec
+# frame (20 ms for Opus). The offset is reported below instead of being asserted away; a real
+# misalignment such as the 166 ms edit-list defect is far larger and still fails this check.
+VIDEO_START_TOLERANCE_MS = 1
+AUDIO_START_TOLERANCE_MS = 25
+# Segments are cut on the sample cursor, but their reported start is the pts of the frame that
+# carries the first sample. Matroska stores millisecond timestamps for 20 ms Opus frames, so that
+# pts can sit up to one codec frame before or after the previous segment's end. Real holes are
+# already separated by the segmenter's discontinuity rule (250 ms), so this slack cannot hide one.
+SEGMENT_BOUNDARY_TOLERANCE_MS = 25
 
 
 def runtime_binary() -> Path:
@@ -96,7 +107,7 @@ def check_decoded_plane(report) -> None:
         assert not decoded.tracks, "an anchors-only build must not report decoded tracks"
         assert not decoded.evidence_descriptors, "an anchors-only build must not report buffers"
         assert decoded.descriptors_built == 0 and decoded.leases_issued == 0
-        return
+        return {}
 
     assert decoded.arena_id and "/" not in decoded.arena_id, "arena id must be an opaque handle"
     assert decoded.arena_capacity_bytes > 0, "the arena must have a bounded capacity"
@@ -125,14 +136,18 @@ def check_decoded_plane(report) -> None:
     anchors_by_track: dict[str, list] = {}
     for anchor in report.anchors:
         anchors_by_track.setdefault(anchor.track_kind, []).append(anchor)
+    offsets = {}
     for track in decoded.tracks:
-        check_track(track, report.source.duration_ms, anchors_by_track.get(track.track_kind, []))
+        offsets[track.track_kind] = check_track(
+            track, report.source.duration_ms, anchors_by_track.get(track.track_kind, [])
+        )
 
     check_segments(decoded, anchors_by_track)
     check_evidence(decoded)
+    return offsets
 
 
-def check_track(track, duration_ms: int, anchors: list) -> None:
+def check_track(track, duration_ms: int, anchors: list) -> int:
     label = track.track_kind
     assert label in {"video", "audio"}, label
     assert track.samples > 0 and track.bytes > 0, f"{label} decoded nothing"
@@ -154,13 +169,15 @@ def check_track(track, duration_ms: int, anchors: list) -> None:
     # both must agree on where the first sample sits and where the last one ends.
     assert anchors, f"{label} has decoded samples but no timeline anchors"
     first = anchors[0].time_range.start_ms
-    assert abs(track.first_pts_ms - first) <= TIMELINE_TOLERANCE_MS, (
+    start_tolerance = VIDEO_START_TOLERANCE_MS if label == "video" else AUDIO_START_TOLERANCE_MS
+    assert abs(track.first_pts_ms - first) <= start_tolerance, (
         f"{label} decode starts at {track.first_pts_ms}ms but the anchors start at {first}ms"
     )
     last = anchors[-1].time_range
     assert last.start_ms <= track.last_end_ms <= last.end_ms, (
         f"{label} decode ends at {track.last_end_ms}ms, outside the final anchor interval"
     )
+    return track.first_pts_ms - first
 
 
 def check_segments(decoded, anchors_by_track: dict) -> None:
@@ -189,7 +206,7 @@ def check_segments(decoded, anchors_by_track: dict) -> None:
                 f"segment {index} is longer than the configured length"
             )
             if previous is not None:
-                assert abs(start - previous) <= TIMELINE_TOLERANCE_MS, (
+                assert abs(start - previous) <= SEGMENT_BOUNDARY_TOLERANCE_MS, (
                     f"segment {index} does not continue the previous segment"
                 )
             previous = end
@@ -238,10 +255,21 @@ def main() -> None:
     parser.add_argument("--media", type=Path, required=True)
     parser.add_argument("--pipeline", type=Path, default=PIPELINE)
     parser.add_argument("--report", type=Path, default=None)
+    parser.add_argument(
+        "--verify-only",
+        action="store_true",
+        help="check an existing --report instead of replaying the media again",
+    )
     args = parser.parse_args()
     media = args.media.resolve()
     if not media.is_file():
         raise SystemExit(f"not a media file: {media}")
+    if args.verify_only:
+        if not args.report:
+            raise SystemExit("--verify-only needs --report pointing at an existing report")
+        report = parse_report(args.report)
+        finish(report, media)
+        return
     with tempfile.TemporaryDirectory() as workspace:
         report_path = args.report or Path(workspace) / "replay-report.pb"
         subprocess.run(
@@ -256,10 +284,14 @@ def main() -> None:
             check=True,
         )
         report = parse_report(report_path)
+    finish(report, media)
+
+
+def finish(report, media: Path) -> None:
     check_source(report, media)
     check_anchors(report)
     check_honesty(report, media)
-    check_decoded_plane(report)
+    offsets = check_decoded_plane(report)
     decoded = report.decoded
     tracks = ", ".join(describe_track(track) for track in report.source.tracks)
     print(
@@ -269,6 +301,7 @@ def main() -> None:
         f"descriptors={decoded.descriptors_built} leases={decoded.leases_issued}"
         f"/{decoded.leases_released} segments={decoded.audio_segments.segments} "
         f"arena_peak_bytes={decoded.arena_peak_bytes} "
+        f"start_offsets=[{','.join(f'{kind}:{value:+d}ms' for kind, value in offsets.items())}] "
         f"drop_reasons={','.join(report.drop_reasons) or 'none'} "
         f"blockers={','.join(report.blockers)}"
     )
