@@ -55,11 +55,14 @@ message TimelineAnchor {
 // that produced nothing stays at zero instead of being given an optimistic default.
 message DecodedTrackStat {
   string track_kind = 1; // video | audio
+  // Descriptors this track handed off. For video that is the number of *kept* frames once
+  // adaptive sampling runs; the observed frame count lives in `SamplingReport.observed`.
   uint64 samples = 2;
   uint64 bytes = 3;
   // -1 means the track never reported a presentation timestamp; never a fabricated zero.
   int64 first_pts_ms = 4;
-  // Exclusive end of the last emitted interval; -1 when it could not be observed.
+  // Exclusive end of the last decoded interval on this track; -1 when it could not be
+  // observed. Adaptive sampling shortens the handoff, never this value.
   int64 last_end_ms = 5;
   uint32 width = 6;
   uint32 height = 7;
@@ -67,6 +70,9 @@ message DecodedTrackStat {
   uint32 sample_rate = 9;
   uint32 channels = 10;
   string audio_format = 11;
+  // Frames this track refused. Sampler skips are included here (with their reason in
+  // `drop_reasons`), so `samples + dropped_samples` stays the number of decoded samples.
+  // The sampling breakdown is a different view of the same skips: never add the two.
   uint64 dropped_samples = 12;
   repeated string drop_reasons = 13;
   // Presentation origin applied to the raw media timestamps, in milliseconds. Non-zero means
@@ -103,6 +109,33 @@ message AudioSegmentReport {
   repeated string drop_reasons = 9;
 }
 
+// Adaptive sampling accounting for a video track. Every observed frame is counted exactly
+// once, either as a keep (with a reason) or as a skip (with a reason). Keep count is bounded
+// by the rate limit, never by luck.
+message SamplingReport {
+  string track_kind = 1; // video; only video is sampled
+  int64 min_interval_ms = 2;
+  int64 static_hold_ms = 3;
+  uint32 change_threshold = 4;
+  // Frames offered to the sampler (usable pts and complete layout). Frames rejected earlier
+  // are counted on the track only, never here.
+  uint64 observed = 5;
+  uint64 kept = 6;
+  uint64 kept_first_frame = 7;
+  uint64 kept_content_change = 8;
+  uint64 kept_static_heartbeat = 9;
+  uint64 skipped_rate_limited = 10;
+  uint64 skipped_no_change = 11;
+  uint64 skipped_non_monotonic = 12;
+  uint64 skipped_missing_signature = 13;
+  // Longest gap between two keeps; a static stream is bounded by static_hold_ms.
+  int64 max_gap_ms = 14;
+  // Hard upper bound on keeps given the observed span, derived from the rate limit alone.
+  uint64 max_keeps_bound = 15;
+  // Largest observed gap between consecutive pts, used to recompute the max_gap_ms bound.
+  int64 max_frame_interval_ms = 16;
+}
+
 // Real data-plane accounting for one replay. All zeros means this build never decoded.
 message DecodedDataPlane {
   string arena_id = 1;
@@ -123,6 +156,9 @@ message DecodedDataPlane {
   // First descriptor verified for each track: handoff-contract evidence, still without bytes.
   repeated edge.material.common.v1.BufferDescriptor evidence_descriptors = 12;
   AudioSegmentReport audio_segments = 13;
+  // Sampling accounting when this build really decoded. Empty means no sampling ran here;
+  // it must never be read as "every frame was kept".
+  repeated SamplingReport sampling = 14;
 }
 
 // One replay attempt. Counters and reasons stay explicit instead of optimistic defaults.

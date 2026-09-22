@@ -71,6 +71,34 @@ def test_audio_segment_report_defaults_are_empty():
     assert list(segments.drop_reasons) == []
 
 
+def test_sampling_report_defaults_claim_nothing_was_sampled():
+    """空 sampling 只表示"这次没有抽帧执行"，不能读作"所有帧都被保留"。"""
+    decoded = media_pb2.ReplayReport().decoded
+    assert list(decoded.sampling) == []
+    sampling = media_pb2.SamplingReport()
+    assert sampling.track_kind == ""
+    assert sampling.observed == 0
+    assert sampling.kept == 0
+    assert sampling.max_keeps_bound == 0
+    assert sampling.max_gap_ms == 0
+    assert sampling.min_interval_ms == 0 and sampling.static_hold_ms == 0
+    assert sampling.change_threshold == 0
+
+
+def test_sampling_report_accounts_for_every_observed_frame():
+    """每个观测到的帧要么 keep、要么带原因 skip，没有第三种归宿。"""
+    sampling = media_pb2.SamplingReport(
+        observed=10, kept=4, skipped_rate_limited=3, skipped_no_change=3
+    )
+    skipped = (
+        sampling.skipped_rate_limited
+        + sampling.skipped_no_change
+        + sampling.skipped_non_monotonic
+        + sampling.skipped_missing_signature
+    )
+    assert sampling.observed == sampling.kept + skipped
+
+
 def test_decoded_plane_round_trips_descriptor_evidence():
     report = media_pb2.ReplayReport()
     decoded = report.decoded

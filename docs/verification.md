@@ -144,6 +144,8 @@ make media-replay MEDIA=/Users/tuzhipeng/Documents/SensoryPlex/video/1.mp4
 
 - `blockers` 仍为 `adaptive_sampling_not_implemented` 与 `lease_consumer_not_implemented`：抽帧与背压、
   真实 lease 消费方（模型 worker）未实现，`golden_path_verified` 恒为 false。
+  （本条记录的是当时状态；抽帧已于 2026-09-23 接入并从 `blockers` 移除，见下文"M1 自适应抽帧"一节，
+  其余判断仍然有效。）
 - SRT 仍为 `UnavailableSource`；没有 SRT 端点，也没有断流重连验证。
 - 模型链路全部未接入：ASR/OCR/VLM/BGE 无实现，CoreML/Metal 后端仍报 `execution_backend_not_implemented`。
 - 该样本由 FFmpeg 生成/转码（`encoder=Lavf58.20.100`），不是设备直出；静态投屏、翻页切换、运动/多人对话
@@ -233,3 +235,54 @@ audio/x-raw, format=(string)F32LE, rate=(int)48000, channels=(int)6
 
 **这轮没有产生任何格式支持结论。** ADR-009 的矩阵尚未实现：`capability.rs`、几何/位深契约字段、
 解码器元素上报都还是待办，`golden_path_verified` 继续为 false。
+
+### M1 自适应抽帧：接线与真实样本覆盖率（2026-09-23）
+
+抽帧从"只有内核"接到了真实解码路径：视频帧在**进入 arena 之前**做判定，判定结果只有两种——
+keep（首帧 / 内容变化 / 静止心跳）或带原因的 skip（速率上限 / 尚未变化 / PTS 非单调 / 签名缺失）。
+被跳过的帧不交接，但一定计数；轨道上的 `dropped_samples` 也包含这些跳过，两处是同一批帧的两个视角。
+`adaptive_sampling_not_implemented` 已从 `blockers` 移除。
+
+策略为默认值：`min_interval_ms=1000`、`static_hold_ms=5000`、`change_threshold=8`（8x8 亮度签名，
+平均绝对差 ≥ 8 视为内容变化）。真实样本回放（`--report` 报告可复核，`--verify-only` 可重放校验）：
+
+| 样本 | 时长 | 观测视频帧 | 保留 | 保留率 | 首帧 | 内容变化 | 静止心跳 | rate_limited | no_change_yet | max_gap_ms | 速率上界 | descriptors |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `video/1.mp4` | 30.6s | 918 | 26 | 2.83% | 1 | 25 | 0 | 727 | 165 | 2867 | 31 | 1354 |
+| `screencast-watchlist` | 156.4s | 4691 | 41 | 0.87% | 1 | 15 | 25 | 1171 | 3479 | 5000 | 157 | 7892 |
+| `sasebo-basketball` | 60.0s | 1799 | 32 | 1.78% | 1 | 30 | 1 | 909 | 858 | 5005 | 60 | 3045 |
+| `screencast-video2commons` | 552.0s | 13800 | 132 | 0.96% | 1 | 39 | 92 | 3168 | 10500 | 5000 | 552 | 27845 |
+| `slides-vrt-nodiscussion` | 685.0s | 41100 | 145 | 0.35% | 1 | 17 | 127 | 8555 | 32400 | 5000 | 685 | 34533 |
+| `slides-vrt-discussion` | 1125.0s | 67500 | 233 | 0.35% | 1 | 17 | 215 | 13747 | 53520 | 5000 | 1125 | 56709 |
+| `officehours-panel` | 2232.0s | 55794 | 470 | 0.84% | 1 | 36 | 433 | 11270 | 44054 | 5000 | 2232 | 112501 |
+
+**结论都是可复核的，不是"看起来合理"：**
+
+1. **覆盖率的分子分母都有出处。** 分母是 `SamplingReport.observed`（解码器实际交给采样器的帧数），
+   而且与 ffprobe 路径的视频锚点数**逐样本相等**（7 个样本 diff=0，校验脚本已把它写成断言）。
+   保留率随内容类型单调：静止投屏 0.35% < 翻页 0.87–0.96% < 高速运动 1.78% < 手机竖屏短视频 2.83%。
+2. **静止心跳是按 hold 触发的，不是碰巧。** 4 个静止样本的 `max_gap_ms` 精确等于 `static_hold_ms=5000`；
+   运动样本 `sasebo-basketball` 为 5005（hold + 一个观测到的帧间隔），`video/1.mp4` 为 2867（变化更频繁）。
+   校验脚本按 `hold + max_frame_interval_ms` 判定上界，而不是放宽一个凭感觉的容差。
+3. **保留数由内容决定，不由速率上限决定。** 每个样本的 `kept` 都远低于 `max_keeps_bound`
+   （如 `officehours-panel` 470 vs 2232）；速率上限只是护栏，不是抽样目标。
+4. **跳过原因全部显式。** 真实样本上只出现 `rate_limited` 与 `no_change_yet`；
+   `missing_signature`、`non_monotonic_pts` 由单元测试覆盖，没有在真实样本上凭空消失。
+5. **计数自洽。** `observed == kept + Σskipped`、`kept == 视频轨 samples`、
+   `Σ track.samples + Σskipped == decoded_items`（与锚点路径对齐）、视频轨 `dropped_samples == skipped`
+   （说明没有采样前的丢弃）。`descriptors == Σsamples + segments` 与 lease 收支保持成立。
+6. **交接量确实下降。** `slides-vrt-discussion` 视频交接从 67500 降到 233（-99.7%），总 descriptor
+   从 123976 降到 56709；同时 `arena_peak_bytes` 不变（3564864 / 1489376）——峰值由单帧加整段音频决定，
+   抽帧改变的是流量，不是峰值。这一点也说明"抽帧省内存"目前没有证据，不能这样说。
+
+**顺带修掉一个内核缺陷：** `last_pts_ms` 原先只在 keep 分支推进，导致（a）一次 skip 之后的乱序帧会被
+判为"顺序正常"，（b）帧间隔统计退化成 keep 间隔，使 gap 上界无法复核。现在每个被观测的帧都会推进游标，
+并新增 `max_frame_interval_ms` 与 `observed_span_ms` 供报告复核。
+
+**契约新增：** `SamplingReport`（策略参数 + 观测/保留/跳过计数 + gap 与上界）随 `DecodedDataPlane.sampling`
+上报；`DecodedTrackStat.samples` 明确为"已交接的样本数"（视频即保留数），`last_end_ms` 明确为
+"该轨解码到哪里"（抽帧不会缩短它）。
+
+**未验证范围（不得当作完成）：** 覆盖率是**帧数**口径，不是语义口径。被跳过的帧是否真的没有携带
+OCR/ASR/VLM 需要的信息，只有接入模型（M8）之后才能验证；当前策略是启发式，不能据此声称"抽帧不丢语义"。
+6 个样本仍是 CFR，VFR 与断流重连样本仍缺（见 `docs/TODO.md`）。

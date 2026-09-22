@@ -65,6 +65,20 @@ reserved，破坏语义的修改进入新的协议 major。当前为开发预览
 - `AudioSegment` 区间覆盖其携带的样本，`Σlisted.bytes == audio_segments.bytes ==` 音频轨字节
   （当 `listed == segments` 时）；跨段 ms 取整允许 1 ms 偏差，尾部不足一段时 `partial=true`。
 
+抽帧契约（`DecodedDataPlane.sampling`）：
+
+- 空 `sampling` 表示"本次没有抽帧执行"，不得读作"所有帧都被保留"。
+- 每个被观测的帧恰好记一次：`observed == kept + Σ skipped_*`，且
+  `kept == kept_first_frame + kept_content_change + kept_static_heartbeat`。
+- `kept` 等于该视频轨的 `samples`；轨道上 `samples + dropped_samples` 仍是该轨解码到的样本数。
+  抽帧跳过既进 `sampling` 明细，也进轨道 `dropped_samples` 与原因集，两处视角不可相加。
+- `kept <= max_keeps_bound`（仅由速率上限决定的硬上界），
+  `max_gap_ms <= static_hold_ms + max_frame_interval_ms`（静止段不会无限期不采样）。
+- `observed` 必须等于 ffprobe 路径的视频锚点数：两条独立路径看到的帧数一致，覆盖率才有意义。
+- 跳过必须在 `drop_reasons` 里有对应原因（`rate_limited`、`no_change_yet`、`non_monotonic_pts`、
+  `missing_signature`）；禁止静默丢帧。
+- `DecodedTrackStat.last_end_ms` 描述该轨解码到哪里，抽帧只缩短交接，不缩短它。
+
 媒体格式准入契约（ADR-009，**[媒体格式支持矩阵与拒绝语义](../adr/ADR-009-媒体格式支持矩阵与拒绝语义.md)**，
 以下为待实现要求，当前状态见 [实现状态](../implementation-status.md)）：
 

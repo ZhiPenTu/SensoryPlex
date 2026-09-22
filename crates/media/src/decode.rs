@@ -17,6 +17,7 @@ use sensoryplex_sdk::media;
 use crate::arena::{Arena, DEFAULT_ARENA_CAPACITY_BYTES};
 use crate::descriptor::{hand_off, BufferSpec, HandoffCounters};
 use crate::lease::LeaseRegistry;
+use crate::sampler::{AdaptiveSampler, Decision, FrameSignature, SamplingPolicy};
 use crate::segment::{AudioSegmenter, PendingSegment};
 use crate::MediaError;
 
@@ -31,6 +32,8 @@ pub const MAX_LISTED_SEGMENTS: usize = 64;
 pub const VIDEO_FRAME_KIND: &str = "video_frame";
 pub const AUDIO_PCM_KIND: &str = "audio_pcm";
 pub const AUDIO_SEGMENT_KIND: &str = "audio_segment";
+/// 视频链由 capsfilter 固定为 RGBA；抽帧签名只对该布局成立，其他布局按未知处理。
+pub const VIDEO_PIXEL_FORMAT: &str = "RGBA";
 
 /// 单次 decode 运行的上限。本模块中的所有循环都受其中一项约束。
 #[derive(Debug, Clone)]
@@ -38,6 +41,9 @@ pub struct DecodeRun {
     pub decode: DecodeConfig,
     pub max_samples: usize,
     pub audio_segment_ms: u32,
+    /// 视频抽帧策略。抽帧始终启用：未抽帧的运行只能在报告里显式说明，
+    /// 不能用"全保留"冒充。
+    pub sampling: SamplingPolicy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,7 +152,7 @@ impl GstFileDecoder {
                 TrackKind::Video,
                 "videoconvert",
                 gst::Caps::builder("video/x-raw")
-                    .field("format", "RGBA")
+                    .field("format", VIDEO_PIXEL_FORMAT)
                     .build(),
                 &config,
             )?,
@@ -478,6 +484,7 @@ struct TrackState {
     samples: u64,
     bytes: u64,
     first_pts_ms: Option<i64>,
+    /// 该轨最后一个被解码的样本的右端点。抽帧不会让它缩短。
     last_end_ms: i64,
     dropped_samples: u64,
     overlapping_samples: u64,
@@ -540,6 +547,7 @@ struct DecodeSession<'a> {
     counters: HandoffCounters,
     tracks: Vec<TrackState>,
     evidence: Vec<BufferDescriptor>,
+    sampler: AdaptiveSampler,
     segmenter: Option<AudioSegmenter>,
     segment_report: media::AudioSegmentReport,
 }
@@ -564,6 +572,7 @@ impl<'a> DecodeSession<'a> {
                 TrackState::new(TrackKind::Audio),
             ],
             evidence: Vec::new(),
+            sampler: AdaptiveSampler::new(run.sampling),
             segmenter: None,
             segment_report: media::AudioSegmentReport {
                 segment_ms: run.audio_segment_ms,
@@ -598,8 +607,24 @@ impl<'a> DecodeSession<'a> {
             self.drop_sample(index, reason);
             return Ok(());
         }
-
         let end_ms = pts_ms + duration_ms;
+        // 视频抽帧发生在这里，也就是在字节进入 arena 之前：被跳过的帧根本不交接，
+        // 但一定会带原因计数，绝不静默消失。
+        if sample.track == TrackKind::Video {
+            let signature = if sample.pixel_format == VIDEO_PIXEL_FORMAT {
+                FrameSignature::from_rgba(&sample.bytes, sample.width, sample.height)
+            } else {
+                None
+            };
+            if let Decision::Skip { reason, .. } = self.sampler.observe(pts_ms, signature) {
+                self.drop_sample(index, reason.name());
+                // last_end_ms 描述"这条轨道解码到哪里"，而不是"交接到哪里"：
+                // 抽帧只影响交接，不影响这条轨道是否已经到达流的末尾。
+                self.tracks[index].last_end_ms = end_ms;
+                return Ok(());
+            }
+        }
+
         {
             let track = &mut self.tracks[index];
             // origin 是轨道的属性，而不是 buffer 的属性。流中途变化意味着
@@ -762,6 +787,7 @@ impl<'a> DecodeSession<'a> {
                 self.emit_segment(sample_rate, channels, &segment)?;
             }
         }
+        let sampling = self.sampling_report();
         Ok(media::DecodedDataPlane {
             arena_id: self.arena.id().to_string(),
             arena_capacity_bytes: self.arena.capacity() as u64,
@@ -776,7 +802,33 @@ impl<'a> DecodeSession<'a> {
             leases_released: self.counters.leases_released,
             evidence_descriptors: self.evidence,
             audio_segments: Some(self.segment_report),
+            sampling: vec![sampling],
         })
+    }
+
+    /// 抽帧口径。被跳过的帧在这里有完整明细，同时也计入轨道的 `dropped_samples`：
+    /// 两者描述同一批帧，不可相加。
+    fn sampling_report(&self) -> media::SamplingReport {
+        let counters = self.sampler.counters();
+        let policy = self.sampler.policy();
+        media::SamplingReport {
+            track_kind: TrackKind::Video.name().to_string(),
+            min_interval_ms: policy.min_interval_ms,
+            static_hold_ms: policy.static_hold_ms,
+            change_threshold: policy.change_threshold,
+            observed: counters.observed,
+            kept: counters.kept,
+            kept_first_frame: counters.kept_first_frame,
+            kept_content_change: counters.kept_content_change,
+            kept_static_heartbeat: counters.kept_static_heartbeat,
+            skipped_rate_limited: counters.skipped_rate_limited,
+            skipped_no_change: counters.skipped_no_change,
+            skipped_non_monotonic: counters.skipped_non_monotonic,
+            skipped_missing_signature: counters.skipped_missing_signature,
+            max_gap_ms: counters.max_gap_ms,
+            max_keeps_bound: policy.max_keeps(self.sampler.observed_span_ms()),
+            max_frame_interval_ms: counters.max_frame_interval_ms,
+        }
     }
 }
 

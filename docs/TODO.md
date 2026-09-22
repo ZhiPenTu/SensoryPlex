@@ -19,16 +19,20 @@
 - [x] 媒体锚点路径：ffprobe 半开区间、重排计数、显式丢弃原因
 - [x] 媒体解码路径：GStreamer 解码 → 有界 arena → `BufferDescriptor` → lease 签发/校验/释放 → 音频 5 秒切段
       （证据：`video/1.mp4` 与 `video/samples/` 6 个公开许可样本，见 `tests/fixtures/media/OPEN-SAMPLES.md`）
+- [x] 视频自适应抽帧（M1）：进入 arena 前判定，keep/skip 全部带原因，保留率随内容自适应
+      （证据：`docs/verification.md` "M1 自适应抽帧：接线与真实样本覆盖率"）
 
 ## 1. 其他模块（先做这些，再做优化）
 
 ### M1 抽帧（adaptive sampler）
 
-- 现状：Pipeline 里只有 `adaptive_sampler` 声明，无实现，blocker `adaptive_sampling_not_implemented`。
-- 目标：在 descriptor 之上做**有界**抽帧（静止段降采样、跳变处补采），输出受控引用与显式丢弃原因。
-- 验收：用 `tests/fixtures/media/OPEN-SAMPLES.md` 的静止/翻页/运动三类样本产出**抽帧覆盖率报告**
-      （抽到的帧数、相对锚点的覆盖比例、漏采原因）；移除对应 blocker。
-- 注意：不得把"静止段跳过"实现成静默丢帧——跳过必须可计数、可解释。
+- 状态：**已完成**（证据见 `docs/verification.md` "M1 自适应抽帧：接线与真实样本覆盖率"）。
+- 结果：视频帧在进入 arena 前判定，声明 keep（首帧/内容变化/静止心跳）或带原因的 skip；
+  `adaptive_sampling_not_implemented` 已从 `blockers` 移除；7 个真实样本（含 `video/1.mp4`）全部通过，
+  静止类保留率 0.35%、翻页类 0.87–0.96%、运动类 1.78%。
+- 仍未验证（不要当成已完成）：覆盖率是帧数口径，**语义**覆盖要等 M8 接入模型才能验证；
+  样本仍全是 CFR，VFR 下的抽帧语义没有样本。
+- 注意（保持有效）：不得把"静止段跳过"实现成静默丢帧——跳过必须可计数、可解释。
 
 ### M2 背压与队列可观察
 

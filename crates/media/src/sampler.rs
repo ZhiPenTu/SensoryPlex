@@ -212,6 +212,9 @@ pub struct SamplingCounters {
     pub skipped_no_change: u64,
     pub skipped_non_monotonic: u64,
     pub skipped_missing_signature: u64,
+    /// 观测到的最大相邻 pts 间隔。抽帧的 gap 上界由 `static_hold_ms + 本值` 决定，
+    /// 因此它必须可复核，而不是靠"应该不会太大"。
+    pub max_frame_interval_ms: i64,
     pub max_gap_ms: i64,
 }
 
@@ -243,6 +246,7 @@ impl SamplingCounters {
 #[derive(Debug, Clone)]
 pub struct AdaptiveSampler {
     policy: SamplingPolicy,
+    first_pts_ms: Option<i64>,
     last_keep_ms: Option<i64>,
     last_pts_ms: Option<i64>,
     last_signature: Option<FrameSignature>,
@@ -253,6 +257,7 @@ impl AdaptiveSampler {
     pub fn new(policy: SamplingPolicy) -> Self {
         Self {
             policy,
+            first_pts_ms: None,
             last_keep_ms: None,
             last_pts_ms: None,
             last_signature: None,
@@ -268,10 +273,37 @@ impl AdaptiveSampler {
         &self.counters
     }
 
+    /// 已观测跨度（毫秒）。`max_keeps` 用它算 keep 的硬上限，
+    /// 因此报告里能给出一个可复核的界，而不是"看起来没超"。
+    pub fn observed_span_ms(&self) -> i64 {
+        match (self.first_pts_ms, self.last_pts_ms) {
+            (Some(first), Some(last)) => (last - first).max(0),
+            _ => 0,
+        }
+    }
+
     /// 观测一帧视频。当帧布局不可用时 `signature` 为 `None`，
     /// 此时会被作为显式 skip 计入，而不是当作"无变化"。
     pub fn observe(&mut self, pts_ms: i64, signature: Option<FrameSignature>) -> Decision {
         self.counters.observed += 1;
+        if self.first_pts_ms.is_none() {
+            self.first_pts_ms = Some(pts_ms);
+        }
+        // 顺序与相邻间隔是"流"的属性，而不是"keep"的属性：每个被观测的帧都要推进游标，
+        // 否则一次 skip 之后的乱序帧会被当成顺序正常，max_frame_interval_ms 也会退化成
+        // keep 之间的间隔，使 gap 上界无法复核。
+        if let Some(previous) = self.last_pts_ms {
+            if pts_ms <= previous {
+                self.counters.skipped_non_monotonic += 1;
+                return Decision::Skip {
+                    reason: SkipReason::NonMonotonic,
+                    delta: 0,
+                };
+            }
+            self.counters.max_frame_interval_ms =
+                self.counters.max_frame_interval_ms.max(pts_ms - previous);
+        }
+        self.last_pts_ms = Some(pts_ms);
         let delta = match signature {
             Some(current) => self
                 .last_signature
@@ -284,15 +316,6 @@ impl AdaptiveSampler {
                 };
             }
         };
-        if let Some(previous) = self.last_pts_ms {
-            if pts_ms <= previous {
-                self.counters.skipped_non_monotonic += 1;
-                return Decision::Skip {
-                    reason: SkipReason::NonMonotonic,
-                    delta,
-                };
-            }
-        }
         let decision = match self.last_keep_ms {
             None => Decision::Keep {
                 reason: KeepReason::FirstFrame,
@@ -341,7 +364,6 @@ impl AdaptiveSampler {
         if let Some(current) = signature {
             self.last_signature = Some(current);
         }
-        self.last_pts_ms = Some(pts_ms);
         decision
     }
 }
@@ -403,10 +425,41 @@ mod tests {
             "a static stream must not go longer than the hold without a keep: {}",
             counters.max_gap_ms
         );
+        assert_eq!(counters.max_frame_interval_ms, frame_ms);
         assert!(
             counters.skipped_no_change + counters.skipped_rate_limited
                 == counters.observed - counters.kept,
             "every skip has a reason"
+        );
+    }
+
+    #[test]
+    fn the_keep_gap_is_bounded_by_the_hold_plus_an_observed_frame_interval() {
+        let policy = SamplingPolicy::new(1_000, 5_000, 8).unwrap();
+        let mut sampler = AdaptiveSampler::new(policy);
+        let mut pts = 0;
+        for _ in 0..11 {
+            sampler.observe(pts, Some(signature(70)));
+            pts += 1_000;
+        }
+        let counters = sampler.counters();
+        assert_eq!(counters.observed, 11);
+        assert_eq!(counters.max_frame_interval_ms, 1_000);
+        assert_eq!(
+            counters.kept_static_heartbeat, 2,
+            "a static stream keeps a heartbeat per hold"
+        );
+        assert_eq!(counters.max_gap_ms, 5_000);
+        assert!(
+            counters.max_gap_ms <= policy.static_hold_ms + counters.max_frame_interval_ms,
+            "gap {} is not recomputable from hold + frame interval",
+            counters.max_gap_ms
+        );
+        assert_eq!(sampler.observed_span_ms(), 10_000);
+        assert!(
+            counters.kept <= policy.max_keeps(sampler.observed_span_ms()),
+            "kept {} exceeds the rate bound over the observed span",
+            counters.kept
         );
     }
 

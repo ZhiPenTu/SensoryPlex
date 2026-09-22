@@ -15,7 +15,6 @@ from edge_material_sdk.generated.media.v1 import media_pb2
 ROOT = Path(__file__).resolve().parents[1]
 PIPELINE = ROOT / "config/pipelines/file-material.yaml"
 EXPECTED_BLOCKERS = {
-    "adaptive_sampling_not_implemented",
     "lease_consumer_not_implemented",
 }
 DECODE_BLOCKER = "gstreamer_decode_not_implemented"
@@ -34,6 +33,18 @@ AUDIO_START_TOLERANCE_MS = 25
 # 或结束后一个 codec 帧的距离内。真正的空洞已经由 segmenter 的 250 ms discontinuity
 # 规则隔开，因此这段 slack 不会掩盖真实空洞。
 SEGMENT_BOUNDARY_TOLERANCE_MS = 25
+# these mirror crates/media/src/sampler.rs；报告必须落在实现真正接受的范围内，
+# 因此这里做的是"策略自洽"检查，而不是给实现留余量。
+MIN_INTERVAL_LOWER_MS = 100
+MAX_INTERVAL_MS = 60_000
+MAX_CHANGE_THRESHOLD = 128
+# 抽帧跳过原因的权威名称来自 sampler.rs 的 SkipReason::name()。
+SAMPLER_SKIP_COUNTERS = {
+    "rate_limited": "skipped_rate_limited",
+    "no_change_yet": "skipped_no_change",
+    "non_monotonic_pts": "skipped_non_monotonic",
+    "missing_signature": "skipped_missing_signature",
+}
 
 
 def runtime_binary() -> Path:
@@ -115,9 +126,20 @@ def check_decoded_plane(report) -> None:
     assert decoded.tracks, "a decoding build must report per-track statistics"
 
     samples = sum(track.samples for track in decoded.tracks)
-    assert samples == report.decoded_items, "decoded samples must match the item count"
     assert decoded.decoded_bytes == sum(track.bytes for track in decoded.tracks), (
         "decoded byte totals disagree"
+    )
+
+    anchors_by_track: dict[str, list] = {}
+    for anchor in report.anchors:
+        anchors_by_track.setdefault(anchor.track_kind, []).append(anchor)
+
+    sampling = check_sampling(decoded, anchors_by_track)
+    # 被抽帧跳过的帧仍然是"解码到的一帧"：samples 只数交接，跳过数必须补回来，
+    # 才能与 ffprobe 口径的锚点计数对齐。若两者不等，说明有一条路径漏计了帧。
+    assert samples + sampling["skipped"] == report.decoded_items, (
+        f"handed off {samples} + sampled out {sampling['skipped']} != "
+        f"decoded items {report.decoded_items}"
     )
 
     # 每个被接受的样本恰好生成一个 buffer，每段音频额外生成一个 segment。
@@ -133,9 +155,6 @@ def check_decoded_plane(report) -> None:
     assert decoded.leases_released == decoded.leases_issued, "leases leaked"
     assert decoded.leases_issued == decoded.descriptors_built, "every buffer needs one lease"
 
-    anchors_by_track: dict[str, list] = {}
-    for anchor in report.anchors:
-        anchors_by_track.setdefault(anchor.track_kind, []).append(anchor)
     offsets = {}
     for track in decoded.tracks:
         offsets[track.track_kind] = check_track(
@@ -145,6 +164,93 @@ def check_decoded_plane(report) -> None:
     check_segments(decoded, anchors_by_track)
     check_evidence(decoded)
     return offsets
+
+
+def check_sampling(decoded, anchors_by_track: dict) -> dict:
+    """抽帧必须真的运行，且观测数、保留数与跳过原因必须自洽。
+
+    抽帧不是"尽力而为"的优化：报告里没有它，或它的计数自相矛盾，
+    都等于拿一个无法复核的样本集当结果。
+    """
+    video = next((track for track in decoded.tracks if track.track_kind == "video"), None)
+    if video is None:
+        assert not decoded.sampling, "a track that was never decoded cannot report sampling"
+        return {"skipped": 0}
+    assert decoded.sampling, "a decoded video track must report its sampling accounting"
+    assert len(decoded.sampling) == 1, "only the video track is sampled"
+    sampling = decoded.sampling[0]
+    assert sampling.track_kind == "video", sampling.track_kind
+
+    assert MIN_INTERVAL_LOWER_MS <= sampling.min_interval_ms <= MAX_INTERVAL_MS, (
+        f"min_interval_ms {sampling.min_interval_ms} is outside the accepted range"
+    )
+    assert sampling.static_hold_ms >= sampling.min_interval_ms, (
+        "a static hold shorter than the rate limit could never fire"
+    )
+    assert 1 <= sampling.change_threshold <= MAX_CHANGE_THRESHOLD, (
+        f"change_threshold {sampling.change_threshold} is out of range"
+    )
+
+    skipped = sum(getattr(sampling, field) for field in SAMPLER_SKIP_COUNTERS.values())
+    assert sampling.observed == sampling.kept + skipped, (
+        f"observed {sampling.observed} != kept {sampling.kept} + skipped {skipped}"
+    )
+    assert sampling.observed > 0, "the sampler saw no frame although the video track decoded"
+    assert sampling.kept == (
+        sampling.kept_first_frame + sampling.kept_content_change + sampling.kept_static_heartbeat
+    ), "every keep needs exactly one reason"
+    assert sampling.kept == video.samples, (
+        f"sampling kept {sampling.kept} but the video track handed off {video.samples}"
+    )
+    # 两条独立路径必须看到同样多的视频帧：ffprobe 的锚点数与解码器交给采样器的帧数。
+    # 对不上就说明有一侧漏了帧，"覆盖率"也就无从谈起。
+    video_anchors = anchors_by_track.get("video", [])
+    assert len(video_anchors) == sampling.observed, (
+        f"the probe reported {len(video_anchors)} video anchors but the decoder sampled "
+        f"{sampling.observed} frames"
+    )
+    # 抽帧跳过也计入轨道的丢弃总数：跳过不是"没解码到这一帧"，而是"没交接这一帧"。
+    assert video.dropped_samples >= skipped, (
+        f"track dropped {video.dropped_samples} < sampler skipped {skipped}"
+    )
+    for reason, field in SAMPLER_SKIP_COUNTERS.items():
+        count = getattr(sampling, field)
+        if count:
+            assert reason in video.drop_reasons, (
+                f"{count} frames skipped as {reason} without a reason on the track"
+            )
+    assert sampling.kept <= sampling.max_keeps_bound, (
+        f"kept {sampling.kept} exceeds the rate bound {sampling.max_keeps_bound}"
+    )
+    # 静止段不会无限期不采样：一次 keep 之后最多再等 hold + 一个观测到的帧间隔。
+    assert sampling.max_gap_ms <= (
+        sampling.static_hold_ms + sampling.max_frame_interval_ms + TIMELINE_TOLERANCE_MS
+    ), (
+        f"max gap {sampling.max_gap_ms}ms is not bounded by hold "
+        f"{sampling.static_hold_ms}ms + frame interval {sampling.max_frame_interval_ms}ms"
+    )
+    return {"skipped": skipped}
+
+
+def describe_sampling(decoded) -> str:
+    if not decoded.sampling:
+        return "sampling=none"
+    sampling = decoded.sampling[0]
+    skipped = ", ".join(
+        f"{reason}={getattr(sampling, field)}"
+        for reason, field in SAMPLER_SKIP_COUNTERS.items()
+        if getattr(sampling, field)
+    )
+    kept = (
+        f"first_frame={sampling.kept_first_frame},"
+        f"content_change={sampling.kept_content_change},"
+        f"static_heartbeat={sampling.kept_static_heartbeat}"
+    )
+    return (
+        f"sampling=kept {sampling.kept}/{sampling.observed} ({kept}) "
+        f"skipped[{skipped or 'none'}] max_gap_ms={sampling.max_gap_ms} "
+        f"bound={sampling.max_keeps_bound}"
+    )
 
 
 def check_track(track, duration_ms: int, anchors: list) -> int:
@@ -302,6 +408,7 @@ def finish(report, media: Path) -> None:
         f"/{decoded.leases_released} segments={decoded.audio_segments.segments} "
         f"arena_peak_bytes={decoded.arena_peak_bytes} "
         f"start_offsets=[{','.join(f'{kind}:{value:+d}ms' for kind, value in offsets.items())}] "
+        f"{describe_sampling(decoded)} "
         f"drop_reasons={','.join(report.drop_reasons) or 'none'} "
         f"blockers={','.join(report.blockers)}"
     )

@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use prost::Message;
+use sensoryplex_media::sampler::SamplingPolicy;
 use sensoryplex_media::segment::{MAX_AUDIO_SEGMENT_MS, MIN_AUDIO_SEGMENT_MS};
 use sensoryplex_media::source::{drain_source, FileSource, MediaSource, UnavailableSource};
 use sensoryplex_media::MediaError;
@@ -20,7 +21,7 @@ const DEFAULT_AUDIO_SEGMENT_MS: u32 = sensoryplex_media::segment::DEFAULT_AUDIO_
 
 /// 列出本次构建仍无法完成的能力，按构建显式声明。报告中绝不声明二进制不具备的能力。
 fn replay_blockers() -> Vec<String> {
-    let mut blockers = vec!["adaptive_sampling_not_implemented".to_string()];
+    let mut blockers = Vec::new();
     if !cfg!(feature = "gstreamer") {
         blockers.push("gstreamer_decode_not_implemented".to_string());
     }
@@ -38,11 +39,13 @@ fn decode_pass(
     arena_id: &str,
     max_samples: usize,
     audio_segment_ms: u32,
+    sampling: SamplingPolicy,
 ) -> Result<(Option<DecodedDataPlane>, bool), String> {
     let run = sensoryplex_media::decode::DecodeRun {
         decode: sensoryplex_media::decode::DecodeConfig::default(),
         max_samples,
         audio_segment_ms,
+        sampling,
     };
     sensoryplex_media::decode::decode_file(Path::new(media), stream_id, arena_id, &run)
         .map(|(plane, truncated)| (Some(plane), truncated))
@@ -56,11 +59,12 @@ fn decode_pass(
     _arena_id: &str,
     _max_samples: usize,
     _audio_segment_ms: u32,
+    _sampling: SamplingPolicy,
 ) -> Result<(Option<DecodedDataPlane>, bool), String> {
     Ok((None, false))
 }
 
-const REPLAY_USAGE: &str = "usage: sensoryplex-runtime replay <pipeline.yaml> <media-path> --report <report.pb> [--max-points N] [--audio-segment-ms N]";
+const REPLAY_USAGE: &str = "usage: sensoryplex-runtime replay <pipeline.yaml> <media-path> --report <report.pb> [--max-points N] [--audio-segment-ms N] [--sampling-min-interval-ms N] [--sampling-static-hold-ms N] [--sampling-change-threshold N]";
 
 struct ReplayArgs {
     pipeline: String,
@@ -69,6 +73,7 @@ struct ReplayArgs {
     /// 时间轴锚点与解码样本数量的上限；不存在无界模式。
     max_points: usize,
     audio_segment_ms: u32,
+    sampling: SamplingPolicy,
 }
 
 impl ReplayArgs {
@@ -77,6 +82,9 @@ impl ReplayArgs {
         let mut report = None;
         let mut max_points = DEFAULT_MAX_POINTS;
         let mut audio_segment_ms = DEFAULT_AUDIO_SEGMENT_MS;
+        let mut sampling_min_interval_ms = sensoryplex_media::sampler::DEFAULT_MIN_INTERVAL_MS;
+        let mut sampling_static_hold_ms = sensoryplex_media::sampler::DEFAULT_STATIC_HOLD_MS;
+        let mut sampling_change_threshold = sensoryplex_media::sampler::DEFAULT_CHANGE_THRESHOLD;
         let mut index = 0;
         while index < args.len() {
             match args[index].as_str() {
@@ -98,6 +106,33 @@ impl ReplayArgs {
                     audio_segment_ms = value.parse().map_err(|_| "invalid --audio-segment-ms")?;
                     index += 2;
                 }
+                "--sampling-min-interval-ms" => {
+                    let value = args
+                        .get(index + 1)
+                        .ok_or("missing value for --sampling-min-interval-ms")?;
+                    sampling_min_interval_ms = value
+                        .parse()
+                        .map_err(|_| "invalid --sampling-min-interval-ms")?;
+                    index += 2;
+                }
+                "--sampling-static-hold-ms" => {
+                    let value = args
+                        .get(index + 1)
+                        .ok_or("missing value for --sampling-static-hold-ms")?;
+                    sampling_static_hold_ms = value
+                        .parse()
+                        .map_err(|_| "invalid --sampling-static-hold-ms")?;
+                    index += 2;
+                }
+                "--sampling-change-threshold" => {
+                    let value = args
+                        .get(index + 1)
+                        .ok_or("missing value for --sampling-change-threshold")?;
+                    sampling_change_threshold = value
+                        .parse()
+                        .map_err(|_| "invalid --sampling-change-threshold")?;
+                    index += 2;
+                }
                 value => {
                     positional.push(value.to_string());
                     index += 1;
@@ -112,12 +147,20 @@ impl ReplayArgs {
                 "audio-segment-ms must be between {MIN_AUDIO_SEGMENT_MS} and {MAX_AUDIO_SEGMENT_MS}"
             ));
         }
+        // 越界策略是被拒绝，而不是被夹取到合法范围：夹取会悄悄改变抽帧语义。
+        let sampling = SamplingPolicy::new(
+            sampling_min_interval_ms,
+            sampling_static_hold_ms,
+            sampling_change_threshold,
+        )
+        .map_err(|error| error.to_string())?;
         Ok(Self {
             pipeline: positional[0].clone(),
             media: positional[1].clone(),
             report: report.ok_or("replay requires --report <report.pb>")?,
             max_points,
             audio_segment_ms,
+            sampling,
         })
     }
 }
@@ -196,6 +239,7 @@ fn replay(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         &arena_id,
         args.max_points,
         args.audio_segment_ms,
+        args.sampling,
     ) {
         Ok((plane, decode_truncated)) => {
             report.decoded = plane;
@@ -219,7 +263,7 @@ fn replay(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     std::fs::write(&args.report, report.encode_to_vec())?;
     let plane = report.decoded.as_ref();
     println!(
-        "replay report written: platform={} anchors={} decoded_items={} dropped={} gaps={} out_of_order={} descriptors={} leases_issued={} leases_released={} segments={} arena_peak_bytes={} blockers={}",
+        "replay report written: platform={} anchors={} decoded_items={} dropped={} gaps={} out_of_order={} descriptors={} leases_issued={} leases_released={} segments={} arena_peak_bytes={} sampling_kept={}/{} blockers={}",
         report.platform,
         report.emitted_anchors,
         report.decoded_items,
@@ -233,6 +277,12 @@ fn replay(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             .and_then(|plane| plane.audio_segments.as_ref())
             .map_or(0, |segments| segments.segments),
         plane.map_or(0, |plane| plane.arena_peak_bytes),
+        plane
+            .and_then(|plane| plane.sampling.first())
+            .map_or(0, |sampling| sampling.kept),
+        plane
+            .and_then(|plane| plane.sampling.first())
+            .map_or(0, |sampling| sampling.observed),
         report.blockers.join(",")
     );
     Ok(())
