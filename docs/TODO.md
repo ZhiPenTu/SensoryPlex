@@ -76,12 +76,16 @@
 - 现状：没有准入判据，实测存在三类静默降级——10-bit HEVC 被降成 8-bit 仍算成功、
   非音视频 pad 只写日志不进报告、5.1 音频原样透传（证据见 `docs/verification.md`
   "媒体格式准入"一节）。这三条都违反 AGENTS.md。
-- 目标：`crates/media/src/capability.rs`（矩阵 + `classify_caps`）在 caps 协商阶段判定；
-  `media.proto` 补几何（`display_rotation_deg`、SAR）与位深/色彩（`bit_depth`、primaries、
-  transfer、matrix）字段，以及时间基与帧率模式（`CONSTANT|VARIABLE|UNKNOWN`）；
-  实际解码器元素（`vtdec_hw`、`avdec_h264`）进入报告证据。
+- 目标：按 ADR-009 §4 在 typefind / demux / parser / autoplug 阶段采集源格式，按轨道标识关联；
+  `crates/media/src/capability.rs`（矩阵 + `classify_format`）结合源上下文与解码后格式完成准入，
+  不得仅凭 `pad-added` 的 raw caps 推断源编码或位深；信息缺失须有界等待后显式拒绝，CAPS 变化须重判。
+- 契约：`proto/common/v1/common.proto` 的 `BufferFormat` 补几何（`display_rotation_deg`、SAR）
+  与源位深/色彩（`bit_depth`、primaries、transfer、matrix）字段；`proto/media/v1/media.proto`
+  补源格式、轨道关联、应用的旋转角度、时间基与帧率模式（`CONSTANT|VARIABLE|UNKNOWN`），
+  以及实际解码器元素（`vtdec_hw`、`avdec_h264`）的报告证据；随后运行 `make proto`。
 - 验收：10-bit、多声道、未知 pad 三条拒绝路径各跑出稳定拒绝码（负样本可用 FFmpeg 合成，
-  但只能标注为拒绝路径验证样本）；已通过的正样本回放结论不得回退。
+  但只能标注为拒绝路径验证样本）；补充源信息缺失、多轨关联、相同 raw caps 来自不同源格式及
+  CAPS 变化的准入检查；已通过的正样本回放结论不得回退。
 - 注意：本项与 M1–M8 相互独立，但**必须先于**任何"新增支持格式"的动作。
 - 许可检查项：发布产物的 `ffmpeg -version` 不得含 `--enable-gpl` / libx264 / libx265 等 GPL 组件；
   `gst-libav` 受其底层 `libav*` 构建约束（本机为 GPL 构建，见 ADR-009 §5）。
