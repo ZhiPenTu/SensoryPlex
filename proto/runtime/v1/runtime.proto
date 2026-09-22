@@ -51,6 +51,45 @@ message HealthResponse { string state = 1; repeated string unavailable_capabilit
 message DrainRequest { uint32 grace_period_ms = 1; }
 message StopRequest {}
 
+// Host facts reported by the platform itself. Zero means unknown, never "not applicable".
+message HostResources {
+  // Bytes shared by CPU/GPU/accelerator. Zero when the platform has no unified memory.
+  uint64 unified_memory_bytes = 1;
+  uint64 total_memory_bytes = 2;
+  uint32 logical_cores = 3;
+}
+
+enum CapabilityState {
+  CAPABILITY_STATE_UNSPECIFIED = 0;
+  CAPABILITY_STATE_AVAILABLE = 1;
+  CAPABILITY_STATE_UNAVAILABLE = 2;
+}
+
+// One execution backend on this host. An unavailable backend must state a reason.
+message BackendCapability {
+  string backend = 1;
+  string platform = 2;
+  // Empty when the backend cannot report its runtime version, never a guessed value.
+  string runtime_version = 3;
+  repeated string precisions = 4;
+  repeated string memory_kinds = 5;
+  uint32 max_concurrency = 6;
+  CapabilityState state = 7;
+  string unavailable_reason = 8;
+}
+
+message DescribeCapabilitiesRequest {}
+message DescribeCapabilitiesResponse {
+  // Build target of the running runtime, for example macos-aarch64 or linux-x86_64.
+  string platform = 1;
+  HostResources host = 2;
+  repeated BackendCapability backends = 3;
+  repeated string unavailable_capabilities = 4;
+  // Memory kinds the runtime admits on this platform; media admission must not exceed it.
+  repeated string admitted_memory_kinds = 5;
+}
+
 service RuntimeService {
   rpc Health(HealthRequest) returns (HealthResponse);
+  rpc DescribeCapabilities(DescribeCapabilitiesRequest) returns (DescribeCapabilitiesResponse);
 }

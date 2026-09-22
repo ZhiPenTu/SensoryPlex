@@ -17,6 +17,19 @@ reserved，破坏语义的修改进入新的协议 major。当前为开发预览
   外部身份提供方、多用户 token、管理角色与审计日志不在当前底座实现范围内。
 - 默认不注册模型插件，不导入测试 observation，不把测试 fixture 作为媒体验收。
 
+能力契约（`RuntimeService.DescribeCapabilities`，ADR-008）：
+
+- 平台标识为 `<os>-<arch>` 构建目标口径，例如 `macos-aarch64`、`linux-x86_64`；
+  性能与抽样结论必须带该标识，不同平台的结果不得合并统计。
+- `unavailable_reason` 是必填语义：`state` 为 `CAPABILITY_STATE_UNAVAILABLE` 的后端必须说明原因，
+  禁止把"尚未接入"表现为"零结果成功"。
+- 未知保持未知：`runtime_version`、`precisions`、`max_concurrency` 与宿主内存探测失败时，
+  使用空值或 0，禁止用猜测值或默认容量填充。
+- `admitted_memory_kinds` 是该平台允许的 memory kind 集合，媒体准入不得超过它；
+  Apple Silicon 额外允许零拷贝 `unified_memory`，其余平台只有 `cpu_shared_memory`。
+- `Health.unavailable_capabilities` 与 `DescribeCapabilities.unavailable_capabilities` 同源，
+  两处不一致视为契约缺陷。
+
 `append_material` 是受信 timeline/storage 进程的内部入口；当前无公共写入 API。
 事实写入和 outbox 在同一事务完成。outbox 分发、NATS 消费去重和重试器尚待实现，
 因此不能把“已写 outbox”解释为“已发布 NATS”或“可语义检索”。

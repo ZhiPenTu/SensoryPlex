@@ -9,7 +9,9 @@ NATS 任务分发与 Milvus 语义索引尚未接入；相关 API 明确报告�
 
 ## 快速开始
 
-需要 Rust 1.96、Python 3.12、uv 和 Docker Compose v2。
+需要 Rust 1.96、Python 3.12、uv 和 Docker Compose v2。目标平台为 `macos-aarch64`
+（Apple Silicon，含 Mac mini 端侧部署）与 `linux-x86_64`（NVIDIA 性能主线）；macOS 侧
+加速进程需原生运行，容器无法访问 Metal/CoreML。
 
 ```sh
 make setup

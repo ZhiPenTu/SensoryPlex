@@ -42,6 +42,20 @@ REST Search API（随后补 MCP）
 - 不承诺所有 VLM 结果都低于 2 秒；高质量 VLM 采用异步补全路径。
 - 不将“全网唯一”“所有竞品均为离线”等市场结论作为技术决策依据；相关结论须经独立竞品调研验证。
 
+### 1.3 目标平台矩阵
+
+Apple Silicon macOS 与 NVIDIA Linux 同为一等目标，端侧交付对象包含 Mac mini 这类常驻家庭工作站；
+macOS 不是"开发机能编译"的附属平台。详见 ADR-008。
+
+| 目标 | 平台标识 | 角色 | 加速后端 | 验收含义 |
+|---|---|---|---|---|
+| Apple Silicon macOS | `macos-aarch64` | 本地开发 + Mac mini 单机端侧部署 | CoreML / Metal / VideoToolbox | 真实文件与 SRT 回放、端侧单机 Golden Path |
+| NVIDIA Linux | `linux-x86_64` | 性能主线（3090Ti POC） | CUDA + TensorRT | 延迟与吞吐基线 |
+| 端侧 NPU Linux | `linux-aarch64` | Gate C 之后评估 | QNN / RKNN / Ascend | 适配差距报告 |
+
+平台标识由 Runtime 通过 `DescribeCapabilities` 上报，取值为构建目标
+`<os>-<arch>`（`std::env::consts` 口径）；任何跨平台结论都必须标注平台与执行后端。
+
 ---
 
 ## 2. 总体架构决策
@@ -126,11 +140,11 @@ ONNX / vendor model artifact
      │
 Runtime Adapter (ExecutionBackend)
      │
- ┌───┼────────────┬─────────────┬────────────┐
- ▼   ▼            ▼             ▼            ▼
-CPU CUDA      TensorRT       OpenVINO      QNN/RKNN/Ascend
-     │            │             │            │
-   x86       RTX 3090Ti     Intel NPU    厂商端侧 NPU
+ ┌───┼────────────┬─────────────┬────────────┬──────────────┐
+ ▼   ▼            ▼             ▼            ▼              ▼
+CPU CUDA      TensorRT       OpenVINO   CoreML/Metal   QNN/RKNN/Ascend
+     │            │             │            │              │
+   x86       RTX 3090Ti     Intel NPU   Apple Silicon   厂商端侧 NPU
 ```
 
 **接口草案：**
@@ -144,7 +158,7 @@ metrics()
 unload()
 ```
 
-**后果：** 硬件厂商特有能力允许通过 `vendor_extensions` 暴露，但通用模型结果、错误码、超时、profiling 与 fallback 语义必须一致。3090Ti 路线优先采用 TensorRT；不能被 TensorRT 支持的算子应可回退至 CUDA EP 或模型插件的明确降级路径。
+**后果：** 硬件厂商特有能力允许通过 `vendor_extensions` 暴露，但通用模型结果、错误码、超时、profiling 与 fallback 语义必须一致。3090Ti 路线优先采用 TensorRT；不能被 TensorRT 支持的算子应可回退至 CUDA EP 或模型插件的明确降级路径。Apple Silicon 走 ONNX Runtime CoreML EP，Apple 专有加速（如 MLX）只能作为 `vendor_extensions`；CoreML 与 TensorRT 的精度和数值结果不等价，执行后端与精度必须进入结果血缘（见 ADR-008）。
 
 ### ADR-006：Timeline 和 MaterialUnit 是事实中心，向量库不是事实数据库
 
@@ -176,6 +190,20 @@ unload()
 
 **后果：** 每个 `MaterialUnit` 必须携带 enrichment 状态。API 允许先返回 fast 结果，并明确返回尚未完成的字段，不能伪装为最终完整结果。
 
+### ADR-008：Apple Silicon 是一等端侧目标
+
+**决策：** `macos-aarch64` 与 `linux-x86_64` 并列为 V1 支持目标（矩阵见 §1.3）。macOS 侧的实现、部署与验收独立成立，不依赖 NVIDIA 假设，也不以 Gate C 为前提。
+
+**理由：** 端侧 AI 的真实交付对象包含 Mac mini 这类常驻家庭工作站；若把 macOS 仅当开发环境，契约、部署脚本与验收口径都会按 CUDA/TensorRT 写死，返工成本高于现在支持。
+
+**后果（必须遵守）：**
+
+- **容器不承载 Apple 加速。** Docker Desktop 的 Linux 容器无法访问 Metal / ANE / CoreML。macOS 上 `runtime`、`media-worker`、`ai-worker` 必须以宿主原生进程运行（`launchd` 托管）；Compose 只承载 `postgres`、`nats` 与无加速依赖的 `gateway`。§9 的 `gpus: all` 拓扑仅适用于 Linux 节点。
+- **精度与后端必须可追溯。** CoreML fp16/int8 与 TensorRT 结果不等价；`Provenance.execution_backend` 与模型版本必须记录平台与精度，禁止用 macOS 结果覆盖或混淆 Linux 历史结果。
+- **统一内存要显式声明。** Apple Silicon 的 CPU/GPU/ANE 共享统一内存，Runtime 必须通过 `DescribeCapabilities` 上报 `unified_memory_bytes` 与允许的 `memory_kinds`；媒体准入使用的 memory kind 不得超过上报集合，零拷贝语义不得演变为传递裸指针（locator 仍是 Runtime 签发的 opaque handle）。
+- **容量按统一内存规划。** Mac mini 部署需给出 `pmset`/`caffeinate` 防休眠策略与统一内存预算；16GB 机型不得默认并行加载 ASR + OCR + Fast VLM，队列上限与模型量化档位必须随内存容量分级。
+- **能力缺失保持可见。** `DescribeCapabilities` 中不可用的后端必须给出 `unavailable_reason`；禁止把"尚未接入"表现为"零结果成功"，也禁止用健康检查通过代替能力验证。
+
 ---
 
 ## 3. 组件选型清单
@@ -184,10 +212,12 @@ unload()
 |---|---|---|---|
 | Runtime | Rust | C++ | 为 SDK 化、内存安全和长期运行服务 |
 | 实时媒体 | GStreamer + libsrt | MediaMTX 作为接入层 | 实时流用 GStreamer，离线辅助用 FFmpeg |
+| macOS 媒体栈 | Homebrew GStreamer（自带 libsrt 依赖）+ VideoToolbox 硬解 | FFmpeg 仅用于离线探测与回退 | Apple Silicon 原生 SR 支持；bottle 需较新 macOS，旧系统走源码编译 |
 | 事件与任务 | NATS JetStream | ZeroMQ（节点内轻量场景） | 不传大媒体数据 |
 | 内部 RPC | gRPC + Protobuf | — | 所有边界协议版本化 |
 | Agent API | FastAPI REST；后续 MCP | gRPC API | 先提供稳定 REST 检索能力 |
 | GPU 推理 | CUDA + TensorRT | ONNX Runtime CUDA EP | 3090Ti POC 默认路径 |
+| Apple Silicon 加速 | ONNX Runtime CoreML EP | Metal / MLX（`vendor_extensions`） | 与 NVIDIA 并列的一等目标；精度与 TensorRT 不等价，必须记录 |
 | 多模型服务 | Triton（多 GPU/多模型后启用） | 自管 worker | Triton 只负责 inference，不取代业务调度器 |
 | 跨硬件运行时 | ONNX Runtime EP | 厂商 Runtime Adapter | 硬件可插拔的关键 |
 | ASR | faster-whisper、FunASR 适配器 | 商业模型适配器 | 统一 ASR 输出契约 |
@@ -534,11 +564,17 @@ volumes:
   minio-data:
 ```
 
+**macOS 部署形态（ADR-008）：** Apple Silicon 上容器无法访问 Metal/CoreML，因此上述拓扑只用于 Linux 节点。
+Mac mini 部署时 Compose 仅运行 `postgres` 与 `nats`（`gateway` 无加速依赖，可继续容器化）；
+`runtime`、`media-worker`、`ai-worker` 以 `launchd` 托管的原生进程启动，并在启动日志与
+`DescribeCapabilities` 中上报芯片、统一内存、后端与精度。
+
 ### 9.1 部署与运维门槛
 
 - Compose 文件中仅使用镜像 tag 作为草图；实际环境必须锁定 digest、配置镜像扫描、最小权限、密钥注入及升级回滚版本。
 - PostgreSQL、NATS 与对象存储需要独立备份与恢复演练；“容器能启动”不等于数据可恢复。
 - GPU worker 在启动时记录 NVIDIA driver、CUDA、TensorRT、模型 hash、GPU UUID 与显存策略。
+- Apple Silicon 节点在启动时记录芯片型号、统一内存容量、macOS 版本、CoreML/Metal 精度与 VideoToolbox 硬解状态。
 - POC 的正式验收必须覆盖写路径：真实视频/流进入、素材产出、元数据写入、向量检索和时间点回跳；不能只检查 `/health`。
 
 ---
@@ -573,7 +609,7 @@ blob_write_failure_total / vector_index_lag_ms
 | 周次 | 目标 | 可验证产出 |
 |---:|---|---|
 | 1 | 定义边界与仓库骨架 | ADR、Proto 初版、Docker 开发环境、真实测试媒体集与验收脚本 |
-| 2 | 打通媒体接入 | SRT/File → GStreamer → 时间戳正确的帧/音频 descriptor；断流重连测试 |
+| 2 | 打通媒体接入 | SRT/File → GStreamer → 时间戳正确的帧/音频 descriptor；断流重连测试（macOS 与 Linux 各执行一次） |
 | 3 | 建立 Runtime 最小闭环 | Pipeline 生命周期、NATS 控制事件、有界队列和背压指标 |
 | 4 | 实现自适应抽帧与质量过滤 | 静态 PPT、翻页、运动视频三类回放数据的采样覆盖率报告 |
 | 5 | 接入流式 ASR | 分段、partial/final、时间轴及模型版本可追溯；延迟报告 |
@@ -589,7 +625,7 @@ blob_write_failure_total / vector_index_lag_ms
 
 - 新增跨进程字段必须先修改 Protobuf/契约，再写实现与契约测试。
 - 每个 bug 修复都包含可复现测试或可回放媒体样本。
-- 性能结论必须标明硬件、模型、输入分辨率、并发、队列策略与统计口径。
+- 性能结论必须标明平台（`macos-aarch64` / `linux-x86_64`）、执行后端与精度、硬件、模型、输入分辨率、并发、队列策略与统计口径；跨平台数据不得合并计算。
 - 任何模型、硬件或存储 fallback 都必须对上层暴露状态，禁止静默合成成功结果。
 
 ---
@@ -607,6 +643,9 @@ blob_write_failure_total / vector_index_lag_ms
 ### Gate C：第 12 周后是否进入 NPU SDK 与集群化
 
 前提：Golden Path 达标，部署可重复，指标与容量模型可用，且已有至少一种模型在 ONNX/运行时抽象上验证成功。
+
+Apple Silicon 支持不受 Gate C 限制：`macos-aarch64` 的媒体接入与端侧单机 Golden Path 属第 2–4 周交付物；
+CoreML 后端可作为 Gate C「至少一种模型在 ONNX/运行时抽象上验证成功」的证据之一，但仍需真实样本与延迟报告。
 
 只有通过 Gate C 后，才评估：K3s、GPU Operator、Triton 的更大规模使用、RTMP/桌面录屏、NAS 多节点同步、MCP 对外发布以及 Qualcomm/RKNN/Ascend 等 NPU 后端。
 

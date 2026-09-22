@@ -32,3 +32,21 @@ jobs:
       - run: make check
       - run: make integration
       - run: make runtime-smoke
+
+  check-apple-silicon:
+    # macOS 是一等端侧目标（ADR-008）；容器集成测试仍留在 ubuntu，
+    # 因为 macOS runner 上的 service container 行为未经本项目验证。
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.6"
+      - uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          components: rustfmt, clippy
+      - run: uv sync --frozen
+      - run: make proto
+      - run: git diff --exit-code -- plugins/python/common/src/edge_material_sdk/generated
+      - run: make check
+      - run: make runtime-smoke

@@ -44,6 +44,31 @@ CI 使用临时 PostgreSQL；集成测试必须显式通过，不能把跳过等
 不提供默认 drop-volume 操作。升级前保存镜像 digest、lockfile、配置和数据库备份。
 当前 Compose 是单机开发环境，不是对外生产部署。
 
+## Apple Silicon（macOS）开发与部署
+
+macOS 是一等目标平台（ADR-008），但容器无法访问 Metal/ANE/CoreML，因此加速相关进程必须原生运行。
+
+```sh
+brew install ffmpeg gstreamer   # GStreamer 自带 libsrt 依赖；ffmpeg 仅用于离线探测
+make setup
+make infra                      # Compose: postgres + nats
+make migrate
+make gateway                    # 原生 uvicorn
+make runtime                    # 原生命令行进程，gRPC 只绑定 127.0.0.1:50051
+```
+
+能力自检（不需要模型权重即可运行，未接入的能力会显式上报原因）：
+
+```sh
+make runtime-smoke   # 真实 Rust 进程 + Python 客户端，校验 DescribeCapabilities
+```
+
+- 支持的 memory kind 由 Runtime 上报：Apple Silicon 额外允许零拷贝 `unified_memory`，其余平台只有 `cpu_shared_memory`。
+- `SENSORYPLEX_TOTAL_MEMORY_BYTES` 只在宿主探测不可用（容器、CI）时用于声明容量，不得用于伪造容量。
+- Mac mini 常驻部署：用 `launchd` 托管原生进程，并按统一内存容量设置队列上限与模型量化档位；
+  需显式配置 `pmset`/`caffeinate` 防休眠策略，且 16GB 机型不得默认并行加载 ASR + OCR + Fast VLM。
+- 容器化只适用于 `postgres`、`nats` 与无加速依赖的 `gateway`；不要把 `runtime`/媒体/推理放进 Linux 容器后再声明 macOS 加速可用。
+
 ## 可选向量基础设施
 
 `deploy/compose/docker-compose.vector.yml` 包含 etcd、MinIO 和 Milvus，镜像锁定 digest，

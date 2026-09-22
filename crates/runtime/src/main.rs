@@ -1,7 +1,7 @@
-use sensoryplex_runtime::Pipeline;
+use sensoryplex_runtime::{capability, Pipeline};
 use sensoryplex_sdk::runtime::{
     runtime_service_server::{RuntimeService, RuntimeServiceServer},
-    HealthRequest, HealthResponse,
+    DescribeCapabilitiesRequest, DescribeCapabilitiesResponse, HealthRequest, HealthResponse,
 };
 use tonic::{Request, Response, Status};
 
@@ -10,14 +10,16 @@ struct Runtime;
 impl RuntimeService for Runtime {
     async fn health(&self, _: Request<HealthRequest>) -> Result<Response<HealthResponse>, Status> {
         Ok(Response::new(HealthResponse {
-            state: "degraded".into(),
-            unavailable_capabilities: vec![
-                "media_ingestion".into(),
-                "model_inference".into(),
-                "event_dispatch".into(),
-                "semantic_index".into(),
-            ],
+            state: capability::state().into(),
+            unavailable_capabilities: capability::unavailable_capabilities(),
         }))
+    }
+
+    async fn describe_capabilities(
+        &self,
+        _: Request<DescribeCapabilitiesRequest>,
+    ) -> Result<Response<DescribeCapabilitiesResponse>, Status> {
+        Ok(Response::new(capability::describe()))
     }
 }
 
@@ -39,7 +41,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let address = std::env::var("SENSORYPLEX_RUNTIME_ADDR")
         .unwrap_or_else(|_| "127.0.0.1:50051".into())
         .parse()?;
-    tracing::info!(%address, "runtime control endpoint started");
+    tracing::info!(
+        %address,
+        platform = %capability::platform(),
+        state = capability::state(),
+        "runtime control endpoint started"
+    );
     tonic::transport::Server::builder()
         .add_service(RuntimeServiceServer::new(Runtime))
         .serve_with_shutdown(address, async {
