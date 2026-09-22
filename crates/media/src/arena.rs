@@ -1,8 +1,7 @@
-//! Bounded shared-memory arena for decoded buffers.
+//! 解码缓冲的有界共享内存 arena。
 //!
-//! The arena is the only place decoded bytes live. Callers receive an opaque handle plus an
-//! offset/length pair, and the arena refuses to exceed its capacity instead of growing without
-//! limit. Bytes are never copied into control messages or logs.
+//! Arena 是解码后字节唯一存放的地方。调用方拿到一个不透明的句柄加上
+//! offset/length 对；arena 拒绝超出容量无限增长。字节不会被拷贝进控制消息或日志。
 
 use crate::MediaError;
 
@@ -40,7 +39,7 @@ impl Arena {
         })
     }
 
-    /// Opaque handle handed to data-plane consumers. Never a host pointer.
+    /// 交给 data-plane 消费者使用的不透明句柄；绝不是宿主指针。
     pub fn id(&self) -> &str {
         &self.id
     }
@@ -61,7 +60,7 @@ impl Arena {
         self.slabs.iter().filter(|slab| slab.live).count()
     }
 
-    /// Allocates a slab of `length` bytes and returns its offset.
+    /// 分配一个 `length` 字节的 slab 并返回其 offset。
     pub fn allocate(&mut self, length: usize) -> Result<usize, MediaError> {
         if length == 0 {
             return Err(MediaError::IoFailed("zero_length_allocation".into()));
@@ -93,13 +92,13 @@ impl Arena {
         Ok(())
     }
 
-    /// Reads back a live slab. Used to verify a lease handoff without copying bytes elsewhere.
+    /// 读回一个 live slab。用于在不把字节复制到别处的前提下校验 lease 交接。
     pub fn read(&self, offset: usize, length: usize) -> Result<&[u8], MediaError> {
         self.slab(offset, length)?;
         Ok(&self.bytes[offset..offset + length])
     }
 
-    /// Frees a slab and merges it with neighbouring free space.
+    /// 释放一个 slab 并与相邻空闲空间合并。
     pub fn release(&mut self, offset: usize) -> bool {
         let Some(index) = self.slabs.iter().position(|slab| slab.offset == offset) else {
             return false;
@@ -214,7 +213,7 @@ mod tests {
             "released slabs keep their reserved size"
         );
         assert_eq!(arena.live_slabs(), 0);
-        // The merged free region is reused instead of appending new space.
+        // 合并后的空闲区域会被复用，而不是再追加新空间。
         let reused = arena.allocate(16).unwrap();
         assert_eq!(reused, 0);
         assert_eq!(arena.used_bytes(), 16);

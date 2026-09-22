@@ -1,4 +1,4 @@
-"""Generate and namespace Python bindings; Rust bindings are built by cargo."""
+"""生成并命名空间化 Python 绑定；Rust 绑定由 cargo 构建。"""
 
 import re
 from pathlib import Path

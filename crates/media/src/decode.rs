@@ -1,8 +1,8 @@
-//! Local file decoding through GStreamer (ADR-003 golden path).
+//! 本地文件解码，基于 GStreamer（ADR-003 golden path）。
 //!
-//! Compiled only with the `gstreamer` feature so platforms without GStreamer development
-//! files can still build and test the rest of the crate. Both sinks run with bounded queues,
-//! so a consumer that stops draining slows the pipeline instead of buffering without limit.
+//! 仅在 `gstreamer` feature 开启时编译，便于没有 GStreamer 开发文件的平台
+//! 仍能构建并测试 crate 的其他部分。两个 sink 都使用有界队列，
+//! 消费端停止排空时会让 pipeline 减速，而不是无界地缓冲。
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -23,16 +23,16 @@ use crate::MediaError;
 pub const DEFAULT_SINK_MAX_BUFFERS: u32 = 8;
 pub const DEFAULT_PULL_TIMEOUT_MS: u64 = 5;
 pub const DEFAULT_STATE_TIMEOUT_S: u64 = 15;
-/// A decode that makes no progress for this many pulls is stalled, not slow.
+/// 连续多次 pull 都没有进展即视为卡住（stalled），而不是慢。
 pub const MAX_IDLE_ROUNDS: u32 = 2_000;
-/// Evidence stays small: the report proves the handoff contract, it is not a buffer dump.
+/// 证据保持精简：报告只证明交接契约，不是 buffer 转储。
 pub const MAX_EVIDENCE_DESCRIPTORS: usize = 4;
 pub const MAX_LISTED_SEGMENTS: usize = 64;
 pub const VIDEO_FRAME_KIND: &str = "video_frame";
 pub const AUDIO_PCM_KIND: &str = "audio_pcm";
 pub const AUDIO_SEGMENT_KIND: &str = "audio_segment";
 
-/// One decode run's bounds. Every loop in this module is governed by one of these.
+/// 单次 decode 运行的上限。本模块中的所有循环都受其中一项约束。
 #[derive(Debug, Clone)]
 pub struct DecodeRun {
     pub decode: DecodeConfig,
@@ -72,16 +72,16 @@ impl Default for DecodeConfig {
     }
 }
 
-/// One decoded sample plus the layout needed to describe it.
+/// 一个已解码的样本，加上描述它所需的布局信息。
 #[derive(Debug, Clone)]
 pub struct DecodedSample {
     pub track: TrackKind,
-    /// Presentation origin already subtracted from `pts_ms`, straight from the pipeline's
-    /// segment event. Zero means the container did not shift this track.
+    /// 已从 `pts_ms` 中减去 presentation origin（直接取自 pipeline 的 segment event）。
+    /// 为 0 表示容器没有平移这条轨道。
     pub origin_ms: i64,
-    /// `None` when the element produced no presentation timestamp; never invented.
+    /// element 未产生 presentation 时间戳时为 `None`，绝不会被伪造。
     pub pts_ms: Option<i64>,
-    /// `None` when the buffer carries no duration; the driver then needs the next sample.
+    /// buffer 不携带 duration 时为 `None`；驱动随后需要下一个样本才能确定时长。
     pub duration_ms: Option<i64>,
     pub width: u32,
     pub height: u32,
@@ -99,12 +99,12 @@ struct Chain {
     origin: Origin,
 }
 
-/// Where the presentation timeline starts for one track.
+/// 单条轨道的 presentation 时间轴起点。
 ///
-/// Containers can carry an edit list that trims the head of a stream (this sample's video
-/// track starts at media time 15000/90000 s). GStreamer reports the raw media timestamp and
-/// announces the presentation origin in the segment event, so a descriptor built from the raw
-/// timestamp would sit 166 ms away from every other tool's answer - and from the audio track.
+/// 容器可能携带一个裁掉流头部的 edit list（本样本的视频轨道起始媒体时间为
+/// 15000/90000 s）。GStreamer 报告的是原始媒体时间戳，并把 presentation origin
+/// 通过 segment event 告知。如果 descriptor 直接用原始时间戳构造，
+/// 与其他工具（以及与音频轨道）的结果会差 166 ms。
 type Origin = Arc<Mutex<Option<gst::ClockTime>>>;
 
 struct TrackHandle {
@@ -120,7 +120,7 @@ pub struct GstFileDecoder {
 }
 
 impl GstFileDecoder {
-    /// Builds and starts the pipeline. Missing tracks stay `None` instead of being faked.
+    /// 构建并启动 pipeline。缺失的轨道保持 `None`，不会被伪造。
     pub fn open(path: &Path, config: DecodeConfig) -> Result<Self, MediaError> {
         if !path.is_file() {
             return Err(MediaError::IoFailed("media_path_not_a_file".into()));
@@ -235,8 +235,8 @@ impl GstFileDecoder {
         self.handle(kind).is_some_and(|handle| handle.sink.is_eos())
     }
 
-    /// Pulls one sample, waiting at most `pull_timeout_ms`. `None` means "nothing available
-    /// yet" or end of stream; callers distinguish the two with `is_eos`.
+    /// 拉取一个样本，最长等待 `pull_timeout_ms`。`None` 表示"暂无可用样本"或流已结束；
+    /// 调用方通过 `is_eos` 区分这两种情况。
     pub fn pull(&self, kind: TrackKind) -> Result<Option<DecodedSample>, MediaError> {
         let Some(handle) = self.handle(kind) else {
             return Ok(None);
@@ -346,15 +346,15 @@ fn classify(caps: &gst::Caps) -> Option<TrackKind> {
     }
 }
 
-/// Container timestamps are nanosecond-exact and the contract is whole milliseconds, so
-/// round rather than truncate: truncation loses up to a millisecond per sample.
+/// 容器时间戳是纳秒精度的，但契约按毫秒对齐，所以要四舍五入而不是截断：
+/// 截断会让每个样本损失最多一毫秒。
 fn to_ms(value: gst::ClockTime) -> i64 {
     ((value.nseconds() as i128 + 500_000) / 1_000_000) as i64
 }
 
 fn presentation_ms(value: Option<gst::ClockTime>, origin: gst::ClockTime) -> Option<i64> {
-    // Subtracting first and rounding second keeps the shift exact; rounding both ends and then
-    // subtracting would re-introduce the drift the origin is there to remove.
+    // 先做减法再四舍五入，位移保持精确；如果两端分别四舍五入后再相减，
+    // 会重新引入 origin 原本要去除的漂移。
     value.map(|value| to_ms(value.checked_sub(origin).unwrap_or(value)))
 }
 
@@ -449,8 +449,7 @@ fn buffer_format(kind: TrackKind, sample: &DecodedSample) -> BufferFormat {
     }
 }
 
-/// A sample whose layout is unknown cannot be handed off: the descriptor would describe
-/// nothing. It is dropped with a reason instead.
+/// 布局未知的样本无法交接：descriptor 描述不出任何信息。这种样本会连同原因一起被丢弃。
 fn layout_problem(kind: TrackKind, sample: &DecodedSample) -> Option<&'static str> {
     match kind {
         TrackKind::Video if sample.width == 0 || sample.height == 0 => Some("missing_frame_size"),
@@ -462,7 +461,7 @@ fn layout_problem(kind: TrackKind, sample: &DecodedSample) -> Option<&'static st
     }
 }
 
-/// The layout of a track, taken from its first accepted sample. Never guessed.
+/// 一条轨道的布局信息，从首个被接受的样本中取得，绝不猜测。
 #[derive(Debug, Clone, Default)]
 struct SampleLayout {
     width: u32,
@@ -579,8 +578,8 @@ impl<'a> DecodeSession<'a> {
         self.tracks[index].drop_reasons.insert(reason);
     }
 
-    /// Turns one decoded sample into a verified descriptor, a track statistic and - for
-    /// audio - a segment contribution. Bytes never leave the arena.
+    /// 把一个解码后的样本转换为已校验的 descriptor、一条轨道统计，
+    /// 以及（音频场景下）一段 segment 贡献。字节不会离开 arena。
     fn accept(&mut self, sample: DecodedSample) -> Result<(), MediaError> {
         let index = track_index(sample.track);
         let Some(pts_ms) = sample.pts_ms.filter(|pts| *pts >= 0) else {
@@ -603,8 +602,8 @@ impl<'a> DecodeSession<'a> {
         let end_ms = pts_ms + duration_ms;
         {
             let track = &mut self.tracks[index];
-            // The origin is a property of the track, not of a buffer. A change mid-stream
-            // means a new segment started, which this replay path does not model.
+            // origin 是轨道的属性，而不是 buffer 的属性。流中途变化意味着
+            // 开始了新的 segment，本 replay 路径不建模这种情况。
             match track.origin_ms {
                 Some(seen) if seen != sample.origin_ms => {
                     return Err(MediaError::DecodeFailed(
@@ -614,7 +613,7 @@ impl<'a> DecodeSession<'a> {
                 Some(_) => {}
                 None => track.origin_ms = Some(sample.origin_ms),
             }
-            // A repeated interval is kept - the payload is real decoded audio - but counted.
+            // 重复的 interval 会被保留——payload 是真实的解码音频——但会被计数。
             if track.last_end_ms >= 0 && pts_ms < track.last_end_ms {
                 track.overlapping_samples += 1;
             }
@@ -781,11 +780,11 @@ impl<'a> DecodeSession<'a> {
     }
 }
 
-/// Decodes a local file into verified descriptors.
+/// 把本地文件解码为已校验的 descriptor。
 ///
-/// Every sample is copied into a bounded arena, converted into a read-only leased descriptor,
-/// verified and released; the returned plane carries the counters and a small evidence set.
-/// `truncated` means the sample budget stopped the run, which the caller must report.
+/// 每个样本都会被拷贝到有界 arena 中，转换为只读、带 lease 的 descriptor，
+/// 完成校验后释放；返回的 plane 携带计数器与少量证据集。
+/// `truncated` 表示样本预算耗尽导致运行被截断，调用方必须如实上报。
 pub fn decode_file(
     path: &Path,
     stream_id: &str,

@@ -1,8 +1,8 @@
-//! Runtime-issued read-only buffer leases.
+//! 由运行时签发的、只读的 buffer lease。
 
 use sensoryplex_sdk::{common::BufferLease, ContractError};
 
-/// Outstanding leases are bounded; an unbounded data plane is a defect, not a throttle.
+/// 存续中的 lease 数量是有界的；data plane 无界是缺陷，不是限流策略。
 pub const MAX_OUTSTANDING_LEASES: usize = 4096;
 
 #[derive(Debug, Default)]
@@ -12,7 +12,7 @@ pub struct LeaseRegistry {
 }
 
 impl LeaseRegistry {
-    /// Issues a read-only lease. `ttl_ms` of zero is rejected instead of defaulting.
+    /// 签发一个只读 lease。`ttl_ms` 为 0 时直接拒绝，而不是默认取值。
     pub fn issue(&mut self, now_ms: i64, ttl_ms: u32) -> Result<BufferLease, ContractError> {
         if ttl_ms == 0 {
             return Err(ContractError("invalid_lease_ttl"));
@@ -31,7 +31,7 @@ impl LeaseRegistry {
         Ok(lease)
     }
 
-    /// Accepts only leases this registry issued, that are unexpired and still read-only.
+    /// 仅接受本 registry 签发、未过期且仍为只读的 lease。
     pub fn validate(&self, lease: &BufferLease, now_ms: i64) -> Result<(), ContractError> {
         let held = self
             .outstanding
@@ -50,14 +50,14 @@ impl LeaseRegistry {
         Ok(())
     }
 
-    /// Releases a lease early. Returns false when the lease was unknown or already gone.
+    /// 提前释放 lease。lease 不存在或已被释放时返回 false。
     pub fn release(&mut self, lease_id: &str) -> bool {
         let before = self.outstanding.len();
         self.outstanding.retain(|lease| lease.lease_id != lease_id);
         self.outstanding.len() != before
     }
 
-    /// Drops expired leases and reports how many were reclaimed.
+    /// 丢弃过期 lease 并返回被回收的数量。
     pub fn expire(&mut self, now_ms: i64) -> usize {
         let before = self.outstanding.len();
         self.outstanding

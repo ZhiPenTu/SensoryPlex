@@ -1,7 +1,7 @@
-"""Replay one authorized local media file and verify the descriptor report.
+"""对一份已授权的本地媒体文件做 replay，并校验 descriptor 报告。
 
-Real media acceptance requires an explicitly authorized sample. A synthetic clip only
-exercises the plumbing and is never acceptance evidence (see AGENTS.md).
+真正的媒体验收需要显式授权的样本。合成片段仅用于跑通管道，绝不作为验收证据
+（见 AGENTS.md）。
 """
 
 import argparse
@@ -20,24 +20,24 @@ EXPECTED_BLOCKERS = {
 }
 DECODE_BLOCKER = "gstreamer_decode_not_implemented"
 ADMITTED_MEMORY_KINDS = {"cpu_shared_memory"}
-# Two independent implementations describe the same presentation timeline: ffprobe anchors and
-# the GStreamer decode path. Ms rounding may differ, so intervals are compared with slack.
+# 两条独立实现描述同一段 presentation 时间轴：ffprobe 的 anchor 与 GStreamer 的
+# decode 路径。毫秒级舍入可能不一致，因此区间比较时保留一定 slack。
 TIMELINE_TOLERANCE_MS = 1
-# Codec pre-skip (Opus `initial_padding=312` = 6.5 ms) is placed differently by each side at the
-# very start of a stream, so the first audio sample may legitimately differ by up to one codec
-# frame (20 ms for Opus). The offset is reported below instead of being asserted away; a real
-# misalignment such as the 166 ms edit-list defect is far larger and still fails this check.
+# Codec pre-skip（Opus `initial_padding=312` = 6.5 ms）在流的最开始两端放置方式不同，
+# 因此第一个音频样本最多可以相差一帧 codec 帧（Opus 为 20 ms）。该偏移会作为一项
+# 信息输出，而不是被强行 assert 掉；像 166 ms edit-list 那样的真实错位会远大于此，
+# 仍会被本检查捕获。
 VIDEO_START_TOLERANCE_MS = 1
 AUDIO_START_TOLERANCE_MS = 25
-# Segments are cut on the sample cursor, but their reported start is the pts of the frame that
-# carries the first sample. Matroska stores millisecond timestamps for 20 ms Opus frames, so that
-# pts can sit up to one codec frame before or after the previous segment's end. Real holes are
-# already separated by the segmenter's discontinuity rule (250 ms), so this slack cannot hide one.
+# Segment 按样本游标切分，但报告中的起始时间是该样本所在帧的 pts。
+# Matroska 对 20 ms Opus 帧按毫秒存储 pts，因此该 pts 可能落在上一 segment 结束前
+# 或结束后一个 codec 帧的距离内。真正的空洞已经由 segmenter 的 250 ms discontinuity
+# 规则隔开，因此这段 slack 不会掩盖真实空洞。
 SEGMENT_BOUNDARY_TOLERANCE_MS = 25
 
 
 def runtime_binary() -> Path:
-    """Prefer the release build the Makefile produces; a debug build is still accepted."""
+    """优先使用 Makefile 产出的 release 构建；debug 构建也接受。"""
     for profile in ("release", "debug"):
         candidate = ROOT / f"target/{profile}/sensoryplex-runtime"
         if candidate.is_file():
@@ -100,7 +100,7 @@ def check_honesty(report, media: Path) -> None:
 
 
 def check_decoded_plane(report) -> None:
-    """Verify the decoded data plane, or that an anchors-only build claims nothing."""
+    """校验已解码的 data plane，或确认仅 anchor 构建没有越界声明。"""
     decoded = report.decoded
     if DECODE_BLOCKER in set(report.blockers):
         assert not decoded.arena_id, "an anchors-only build must not report an arena"
@@ -120,7 +120,7 @@ def check_decoded_plane(report) -> None:
         "decoded byte totals disagree"
     )
 
-    # Every accepted sample becomes exactly one buffer, and each audio segment one more.
+    # 每个被接受的样本恰好生成一个 buffer，每段音频额外生成一个 segment。
     expected_descriptors = samples + decoded.audio_segments.segments
     assert decoded.descriptors_built == expected_descriptors, (
         f"descriptor count {decoded.descriptors_built} != samples + segments {expected_descriptors}"
@@ -165,8 +165,8 @@ def check_track(track, duration_ms: int, anchors: list) -> int:
         assert track.sample_rate > 0 and track.channels > 0 and track.audio_format, (
             "audio layout is unknown"
         )
-    # The decode path rebases onto the presentation origin; the prober anchors do the same, so
-    # both must agree on where the first sample sits and where the last one ends.
+    # decode 路径以 presentation origin 为基准重定位；probe 端 anchor 也是如此，
+    # 因此两端必须在第一个样本位置与最后一个样本收尾上保持一致。
     assert anchors, f"{label} has decoded samples but no timeline anchors"
     first = anchors[0].time_range.start_ms
     start_tolerance = VIDEO_START_TOLERANCE_MS if label == "video" else AUDIO_START_TOLERANCE_MS

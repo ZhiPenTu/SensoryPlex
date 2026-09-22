@@ -1,4 +1,4 @@
-"""Explicit PostgreSQL migrations with transactional locking and checksum checks."""
+"""显式 PostgreSQL 迁移，采用事务锁与校验和检查。"""
 
 import hashlib
 import os

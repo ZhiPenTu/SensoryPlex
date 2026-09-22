@@ -1,4 +1,4 @@
-"""Create local credentials without overwriting existing settings or logging secrets."""
+"""生成本地凭据，不会覆盖已有设置，也不会把密钥写入日志。"""
 
 import os
 import secrets

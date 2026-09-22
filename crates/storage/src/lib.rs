@@ -1,4 +1,4 @@
-//! Storage ports; implementations must confirm durable writes before returning.
+//! 存储端口；实现必须在返回前确认写入已持久化（durable）。
 use sensoryplex_sdk::{common::EventEnvelope, material::MaterialUnit};
 
 #[derive(Debug, thiserror::Error)]
@@ -12,7 +12,7 @@ pub enum StorageError {
 }
 
 pub trait MetadataStore: Send + Sync {
-    /// Append an immutable revision and its outbox event in one transaction.
+    /// 在一次事务中追加一条不可变 revision 及其 outbox 事件。
     fn append_revision(
         &self,
         material: &MaterialUnit,
@@ -26,7 +26,7 @@ pub trait MetadataStore: Send + Sync {
 }
 
 pub trait BlobStore: Send + Sync {
-    /// Only opaque, authorized object references leave this adapter.
+    /// 该 adapter 外部只能见到不透明、已授权的对象引用。
     fn verify(
         &self,
         object_ref: &str,

@@ -1,15 +1,15 @@
-//! Adaptive frame sampling over decoded video.
+//! 对已解码视频做自适应帧采样。
 //!
-//! The sampler never decides on its own to "drop" hard data silently: every observed frame ends
-//! up either as a keep (with a reason) or as a skip (with a reason), and the keep rate is bounded
-//! by construction, so a long high-motion stream cannot produce an unbounded sample set.
+//! 采样器从不擅自"静默丢弃"硬数据：每个观测到的帧要么成为 keep（带原因），
+//! 要么成为 skip（带原因），keep 速率在构造上就有界，因此一段长时高动态的流
+//! 也不会产生无界的样本集合。
 
 use crate::MediaError;
 
-/// Grid resolution of the frame signature. 8x8 keeps the comparison cheap and stable against
-/// compression noise while still reacting to a whole-screen replacement.
+/// 帧签名的网格分辨率。8x8 让比较足够廉价、对压缩噪声稳定，
+/// 同时仍能响应整屏替换。
 pub const SIGNATURE_GRID: usize = 8;
-/// Samples taken per grid cell (at most `SIGNATURE_CELL_SAMPLES^2` pixels contribute).
+/// 每个网格单元的采样数（最多 `SIGNATURE_CELL_SAMPLES^2` 个像素参与）。
 const SIGNATURE_CELL_SAMPLES: usize = 4;
 
 pub const DEFAULT_MIN_INTERVAL_MS: i64 = 1_000;
@@ -18,7 +18,7 @@ pub const DEFAULT_CHANGE_THRESHOLD: u32 = 8;
 pub const MIN_INTERVAL_LOWER_MS: i64 = 100;
 pub const MAX_INTERVAL_MS: i64 = 60_000;
 
-/// Why a frame was kept. Keeps are never anonymous.
+/// 帧被保留的原因。keep 绝不是匿名的。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeepReason {
     FirstFrame,
@@ -36,7 +36,7 @@ impl KeepReason {
     }
 }
 
-/// Why a frame was skipped. A skip must be explainable, never implicit.
+/// 帧被跳过的原因。skip 必须可解释，绝不能隐式发生。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkipReason {
     RateLimited,
@@ -113,7 +113,7 @@ impl SamplingPolicy {
         })
     }
 
-    /// Hard upper bound on keeps for a stream of `duration_ms`: the rate limit alone decides it.
+    /// 在 `duration_ms` 长度的流上 keep 数量的硬性上限，仅由速率限制决定。
     pub fn max_keeps(&self, duration_ms: i64) -> u64 {
         if duration_ms <= 0 {
             return 1;
@@ -122,7 +122,7 @@ impl SamplingPolicy {
     }
 }
 
-/// Compact luma signature of one frame: `SIGNATURE_GRID^2` cell averages.
+/// 单帧的紧凑亮度签名：共 `SIGNATURE_GRID^2` 个网格的平均值。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameSignature {
     cells: [u8; SIGNATURE_GRID * SIGNATURE_GRID],
@@ -139,7 +139,7 @@ impl FrameSignature {
         &self.cells
     }
 
-    /// Mean absolute difference against another signature, in luma units (0..=255).
+    /// 与另一签名的平均绝对差，单位为亮度（0..=255）。
     pub fn delta(&self, other: &Self) -> u32 {
         let sum: u32 = self
             .cells
@@ -150,8 +150,8 @@ impl FrameSignature {
         sum / self.cells.len() as u32
     }
 
-    /// Builds a signature from an RGBA frame. The layout must already be known: a frame whose
-    /// geometry is unknown cannot be sampled, and the caller reports that instead of guessing.
+    /// 从一帧 RGBA 数据构造签名。布局信息必须已知：几何信息未知的帧无法采样，
+    /// 调用方应如实上报，而不是猜测。
     pub fn from_rgba(bytes: &[u8], width: u32, height: u32) -> Option<Self> {
         if width == 0 || height == 0 {
             return None;
@@ -182,7 +182,7 @@ impl FrameSignature {
                         let r = bytes[index] as u32;
                         let g = bytes[index + 1] as u32;
                         let b = bytes[index + 2] as u32;
-                        // Integer luma, enough for change detection and cheaper than f32 maths.
+                        // 使用整数亮度，足以检测变化且比 f32 更廉价 maths.
                         sum += (77 * r + 150 * g + 29 * b) >> 8;
                         count += 1;
                         x += step_x;
@@ -200,7 +200,7 @@ impl FrameSignature {
     }
 }
 
-/// Counters for one sampling run. Every observed frame is accounted for exactly once.
+/// 一次采样运行的计数器。每一个被观察的帧都会被精确地计入一次。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SamplingCounters {
     pub observed: u64,
@@ -223,7 +223,7 @@ impl SamplingCounters {
             + self.skipped_missing_signature
     }
 
-    /// A skip reason must always exist when frames were skipped.
+    /// 出现跳过帧时，必须存在一个 skip reason。
     pub fn skip_reasons(&self) -> Vec<(&'static str, u64)> {
         [
             (SkipReason::RateLimited.name(), self.skipped_rate_limited),
@@ -268,8 +268,8 @@ impl AdaptiveSampler {
         &self.counters
     }
 
-    /// Observes one video frame. `signature` is `None` when the frame layout was unusable, which
-    /// is counted as an explicit skip rather than treated as "no change".
+    /// 观测一帧视频。当帧布局不可用时 `signature` 为 `None`，
+    /// 此时会被作为显式 skip 计入，而不是当作"无变化"。
     pub fn observe(&mut self, pts_ms: i64, signature: Option<FrameSignature>) -> Decision {
         self.counters.observed += 1;
         let delta = match signature {
@@ -380,7 +380,7 @@ mod tests {
         let mut sampler = AdaptiveSampler::new(policy);
         let mut keeps = Vec::new();
         let frame_ms = 40;
-        let frames = 250; // 10 seconds at 25 fps
+        let frames = 250; // 10 秒 @ 25 fps
         let mut pts = 0;
         for _ in 0..frames {
             if sampler.observe(pts, Some(signature(100))).kept() {
@@ -437,7 +437,7 @@ mod tests {
     fn the_keep_rate_is_bounded_even_when_every_frame_changes() {
         let policy = SamplingPolicy::new(1_000, 5_000, 4).unwrap();
         let mut sampler = AdaptiveSampler::new(policy);
-        let frames = 300; // 20 seconds at 15 fps, always changing
+        let frames = 300; // 20 秒 @ 15 fps，全程都在变化
         let duration_ms = (frames - 1) * 66;
         let mut pts = 0;
         for index in 0..frames {

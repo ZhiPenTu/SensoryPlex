@@ -1,4 +1,4 @@
-"""In-process worker building blocks; process isolation belongs to the runtime.
+"""进程内 worker 的构建块；进程隔离由运行时负责。
 
 Plugins implement deterministic processing. Durable idempotency, lease allocation,
 gRPC lifecycle serving and restart recovery are worker responsibilities.
@@ -119,7 +119,7 @@ class ProcessorPlugin(ABC):
             token.cancel()
             raise
         except Exception:
-            # Stack traces / media URLs / secrets never cross a plugin boundary.
+            # 堆栈跟踪 / 媒体 URL / 密钥绝不出现在插件边界上。
             return _failure(common.INTERNAL_PLUGIN_ERROR, "plugin_execution_failed", False)
 
 

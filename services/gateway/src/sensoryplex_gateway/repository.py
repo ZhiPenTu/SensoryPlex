@@ -1,4 +1,4 @@
-"""Metadata adapter. Reads always rehydrate the versioned protobuf fact.
+"""元数据 adapter。读取操作总会再水合出版本化的 protobuf 事实。
 
 The append entry point is for an authorized timeline worker, never public HTTP.
 """
@@ -17,7 +17,7 @@ class RevisionConflict(ValueError):
 
 
 def append_material(conn, material: MaterialUnit, *, trace_id: str) -> bool:
-    """Atomic fact + lineage + outbox; True=new, False=identical replay."""
+    """原子性事实 + lineage + outbox；True=新增，False=完全一致的 replay。"""
     validate_material(material)
     if not trace_id:
         raise ValueError("missing_trace_id")
@@ -198,7 +198,7 @@ def search_materials(conn, principal, request):
     clauses = ["source.owner=%s", LATEST, "m.status <> 'failed'"]
     params = [principal]
     if request.query:
-        # Literal substring search: '%' and '_' must not become wildcard queries.
+        # 字面子串查询：'%' 与 '_' 不得变成通配符查询。
         clauses.append("strpos(lower(m.search_text), lower(%s)) > 0")
         params.append(request.query)
     if request.stream_id:

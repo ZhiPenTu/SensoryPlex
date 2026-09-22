@@ -1,7 +1,7 @@
-//! Data-plane admission, lease lifecycle and offline media probing.
+//! Data-plane 准入、lease 生命周期管理与离线媒体探测。
 //!
-//! Buffer allocation/mapping and live GStreamer ingest remain Runtime-owned; this crate
-//! either produces verified anchors or reports exactly why it cannot.
+//! buffer 分配/映射与 GStreamer 实时 ingest 仍由 Runtime 拥有；本 crate 要么产出
+//! 已校验的 anchor，要么明确说明为什么无法产出。
 use sensoryplex_sdk::{common::BufferDescriptor, validate_digest, validate_range, ContractError};
 
 pub mod arena;

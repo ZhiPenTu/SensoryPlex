@@ -1,4 +1,4 @@
-"""Inspect authorized local media without producing fabricated observations."""
+"""检视已授权的本地媒体，绝不输出合成观测。"""
 
 import argparse
 import hashlib

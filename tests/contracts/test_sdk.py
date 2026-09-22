@@ -31,7 +31,7 @@ def test_material_time_and_lineage(material):
 
 
 class Echo(ProcessorPlugin):
-    """Test double, never registered as a model plugin."""
+    """测试替身，绝不会注册为模型插件。"""
 
     def describe(self):
         return runtime.PluginDescription(name="contract-test", version="0.1.0")

@@ -1,4 +1,4 @@
-"""Require a real DB, use isolated schemas, and never silently skip acceptance."""
+"""需要真实数据库，使用独立 schema，绝不静默跳过验收。"""
 
 import os
 import subprocess

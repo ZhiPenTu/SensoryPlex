@@ -2,16 +2,16 @@ use serde::Deserialize;
 use std::num::NonZeroUsize;
 use tokio::sync::mpsc;
 
-/// Platform, host inventory and backend capability reporting.
+/// 平台、宿主资源清单与后端能力上报。
 ///
-/// Capabilities that are not implemented stay listed as unavailable with a reason, so a
-/// caller can never mistake "not wired yet" for "working with zero results".
+/// 尚未实现的能力会按稳定顺序列在"不可用"中，并附上原因；调用方不会把
+/// "尚未接入"误判为"正常运行但结果为零"。
 pub mod capability {
     use sensoryplex_sdk::runtime::{
         BackendCapability, CapabilityState, DescribeCapabilitiesResponse, HostResources,
     };
 
-    /// Capabilities this build does not provide yet, in a stable order.
+    /// 本次构建尚未提供的能力，按稳定顺序排列。
     const PENDING_CAPABILITIES: [&str; 4] = [
         "media_ingestion",
         "model_inference",
@@ -19,7 +19,7 @@ pub mod capability {
         "semantic_index",
     ];
 
-    /// No `ExecutionBackend` implementation exists yet, including the CPU baseline.
+    /// 尚不存在任何 `ExecutionBackend` 实现，包括 CPU 基线。
     const BACKEND_UNAVAILABLE_REASON: &str = "execution_backend_not_implemented";
 
     pub fn platform() -> String {
@@ -41,7 +41,7 @@ pub mod capability {
             .collect()
     }
 
-    /// Accelerators expected on this build target; absence is a fact, not a fallback.
+    /// 本构建目标预期存在的加速器；缺失是事实，不视为回退。
     pub fn backend_names() -> Vec<String> {
         let mut names = vec!["cpu".to_string()];
         let accelerated: &[&str] = match platform().as_str() {
@@ -71,8 +71,8 @@ pub mod capability {
             .collect()
     }
 
-    /// Memory kinds the runtime admits here. Apple Silicon shares one memory pool with the
-    /// accelerators, so descriptors may use zero-copy `unified_memory` on that target only.
+    /// 运行时在此处允许使用的内存种类。Apple Silicon 与其加速器共享同一块内存池，
+    /// 因此 `unified_memory` 仅在该目标上允许 zero-copy descriptor。
     pub fn admitted_memory_kinds() -> Vec<String> {
         let mut kinds = vec!["cpu_shared_memory".to_string()];
         if has_unified_memory() {
@@ -110,8 +110,8 @@ pub mod capability {
         }
     }
 
-    /// `SENSORYPLEX_TOTAL_MEMORY_BYTES` is an explicit inventory override for hosts where
-    /// detection is unavailable (containers, CI). It is never used to fake capacity.
+    /// `SENSORYPLEX_TOTAL_MEMORY_BYTES` 是宿主无法自动检测总内存（容器、CI）
+    /// 时的显式清单覆盖值；它不会用来伪造容量。
     fn reported_total_memory_bytes() -> u64 {
         std::env::var("SENSORYPLEX_TOTAL_MEMORY_BYTES")
             .ok()
@@ -228,7 +228,7 @@ impl Pipeline {
     }
 }
 
-/// Admission never creates an unbounded queue or waits on a full slow path.
+/// 准入（admission）从不创建无界队列，也不在慢路径满载时阻塞等待。
 pub fn bounded_queue<T>(capacity: NonZeroUsize) -> (mpsc::Sender<T>, mpsc::Receiver<T>) {
     mpsc::channel(capacity.get())
 }

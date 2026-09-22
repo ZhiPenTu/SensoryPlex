@@ -1,1 +1,1 @@
-"""Repository maintenance commands, not service dependencies."""
+"""仓库维护命令，不作为服务依赖。"""

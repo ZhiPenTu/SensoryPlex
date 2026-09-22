@@ -1,4 +1,4 @@
-"""Read-only deployed Gateway smoke check. Never prints credentials."""
+"""对已部署 Gateway 的只读冒烟检查。绝不打印凭据。"""
 
 import json
 import urllib.error

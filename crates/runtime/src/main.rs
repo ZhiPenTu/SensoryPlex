@@ -13,25 +13,24 @@ use sensoryplex_sdk::runtime::{
 };
 use tonic::{Request, Response, Status};
 
-/// A gap larger than this is counted as a timeline discontinuity rather than smoothed over.
+/// 大于该阈值的间隔会被计入时间轴断层（discontinuity），不会被平滑掉。
 const GAP_THRESHOLD_MS: i64 = 1_000;
 const DEFAULT_MAX_POINTS: usize = 1_000_000;
 const DEFAULT_AUDIO_SEGMENT_MS: u32 = sensoryplex_media::segment::DEFAULT_AUDIO_SEGMENT_MS;
 
-/// What this build still cannot do, stated per build instead of assumed. A report never
-/// claims a capability the binary does not have.
+/// 列出本次构建仍无法完成的能力，按构建显式声明。报告中绝不声明二进制不具备的能力。
 fn replay_blockers() -> Vec<String> {
     let mut blockers = vec!["adaptive_sampling_not_implemented".to_string()];
     if !cfg!(feature = "gstreamer") {
         blockers.push("gstreamer_decode_not_implemented".to_string());
     }
-    // Leases are issued, validated and released, but no separate worker process consumes one yet.
+    // 目前已经签发、校验并释放 lease，但还没有独立的 worker 进程消费它。
     blockers.push("lease_consumer_not_implemented".to_string());
     blockers
 }
 
-/// Decodes the file into verified descriptors. Without the GStreamer feature this build has
-/// no decoder, and says so through `replay_blockers` rather than returning an empty plane.
+/// 将文件解码为已校验的 descriptor。未启用 GStreamer feature 的构建没有解码器，
+/// 会通过 `replay_blockers` 显式说明，而不是返回空 data plane。
 #[cfg(feature = "gstreamer")]
 fn decode_pass(
     media: &str,
@@ -67,7 +66,7 @@ struct ReplayArgs {
     pipeline: String,
     media: String,
     report: String,
-    /// Bound on timeline anchors and on decoded samples. There is no unbounded mode.
+    /// 时间轴锚点与解码样本数量的上限；不存在无界模式。
     max_points: usize,
     audio_segment_ms: u32,
 }
@@ -149,7 +148,7 @@ fn replay(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         source: Some(description.clone()),
         platform: capability::platform(),
         blockers: replay_blockers(),
-        // Only a real media acceptance run may ever set this; this build cannot.
+        // 只有真正通过媒体验收的运行才允许设置该标志；本次构建无法达成。
         golden_path_verified: false,
         ..Default::default()
     };
@@ -188,8 +187,8 @@ fn replay(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         report.blockers.push("max_points_truncated".into());
     }
 
-    // The anchors above come from ffprobe. This pass decodes the same file so the report
-    // carries real descriptors, real leases and a real arena, or an explicit reason why not.
+    // 上面的锚点来自 ffprobe。本步骤对同一文件再做解码，使报告携带真实的 descriptor、
+    // 真实的 lease 与真实的 arena；若做不到则给出明确原因。
     let (arena_id, stream_id) = arena_identity(&description);
     match decode_pass(
         &args.media,
@@ -205,8 +204,8 @@ fn replay(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Err(reason) => {
-            // An attempted decode that failed is evidence, not silence: keep it in the
-            // report, then fail the command so no caller mistakes this for a pass.
+            // 解码尝试失败本身就是证据，不是沉默：写入报告中，
+            // 然后让命令失败，避免任何调用方把它误判为通过。
             report.decoded = Some(DecodedDataPlane {
                 failure_reasons: vec![reason.clone()],
                 ..Default::default()
@@ -239,8 +238,8 @@ fn replay(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Arena and stream identity come from the content digest, so a replay is reproducible and a
-/// different file can never be confused with this one.
+/// Arena 与 stream 的身份由内容摘要（content digest）派生，因此 replay 可复现，
+/// 不会把不同的文件与本文件混淆。
 fn arena_identity(description: &MediaSourceDescription) -> (String, String) {
     let digest = description
         .source

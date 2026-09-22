@@ -1,4 +1,4 @@
-"""Contract checks for the media source and replay report messages."""
+"""media source 与 replay report 消息的契约校验。"""
 
 from edge_material_sdk.generated.media.v1 import media_pb2
 
@@ -32,7 +32,7 @@ def test_anchor_round_trips_as_a_half_open_range():
 
 
 def test_decoded_plane_defaults_claim_nothing():
-    """All zeros means "no decoding happened", so a build must not be read as successful."""
+    """全部为 0 表示"没有执行解码"，因此不能把该构建判为成功。"""
     decoded = media_pb2.ReplayReport().decoded
     assert decoded.arena_id == ""
     assert decoded.arena_capacity_bytes == 0

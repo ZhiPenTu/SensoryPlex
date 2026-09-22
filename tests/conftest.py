@@ -14,7 +14,7 @@ DIGEST = "sha256:" + "a" * 64
 
 @pytest.fixture
 def observation():
-    """Contract fixture only. Does not represent model or media E2E output."""
+    """仅作为契约 fixture，不代表模型或媒体 E2E 的真实输出。"""
     obs = Observation(
         observation_id="obs_contract",
         modality="asr_segment",

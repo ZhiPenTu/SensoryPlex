@@ -1,4 +1,4 @@
-"""Public SDK. Cross-process messages are generated exclusively from proto/."""
+"""公共 SDK。跨进程消息仅由 proto/ 生成。"""
 
 from .processor import CancelToken, PluginError, ProcessorPlugin
 

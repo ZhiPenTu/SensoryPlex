@@ -1,7 +1,7 @@
-//! Media source adapters and the stream-relative interval construction they feed.
+//! 媒体 source adapter 以及它们驱动的 stream 相对区间构造。
 //!
-//! Every adapter either produces anchors backed by probe output, or fails with a reason.
-//! There is no adapter that fabricates a timeline.
+//! 每个 adapter 要么产出由探测结果支撑的 anchor，要么以原因报错。
+//! 没有会"凭空造一条时间轴"的 adapter。
 
 use std::collections::{BTreeSet, VecDeque};
 use std::path::Path;
@@ -14,7 +14,7 @@ use sensoryplex_sdk::media::{
 use crate::probe::probe_file;
 use crate::MediaError;
 
-/// A probed timeline point whose end is not known yet. Stream order is preserved by the adapter.
+/// 尚未确定结束时间的探测时间点。adapter 保留 stream 内的顺序。
 #[derive(Debug, Clone, PartialEq)]
 pub struct PendingAnchor {
     pub track_kind: String,
@@ -24,9 +24,9 @@ pub struct PendingAnchor {
 
 pub trait MediaSource: Send {
     fn describe(&self) -> &MediaSourceDescription;
-    /// Next anchor in stream order. `None` means the source ended (EOF).
+    /// 下一个按 stream 顺序排列的 anchor。`None` 表示 source 已结束（EOF）。
     fn next_anchor(&mut self) -> Result<Option<PendingAnchor>, MediaError>;
-    /// Items the adapter could not turn into anchors. Never silent, never optimistic.
+    /// adapter 无法转换为 anchor 的项；绝不静默，绝不乐观。
     fn dropped_items(&self) -> u64 {
         0
     }
@@ -35,7 +35,7 @@ pub trait MediaSource: Send {
     }
 }
 
-/// Offline file adapter driven by ffprobe (ADR-003).
+/// 由 ffprobe 驱动的离线文件 adapter（ADR-003）。
 pub struct FileSource {
     description: MediaSourceDescription,
     queue: VecDeque<PendingAnchor>,
@@ -56,7 +56,7 @@ impl FileSource {
                         pts_ms,
                         keyframe: point.keyframe,
                     }),
-                    // N/A PTS is dropped with a reason; inventing a timestamp is forbidden.
+                    // N/A 的 PTS 会连同原因一起被丢弃；禁止凭空生成时间戳。
                     None => dropped_items += 1,
                 }
             }
@@ -93,15 +93,15 @@ impl MediaSource for FileSource {
     }
 }
 
-/// Adapter placeholder for ingestion this build does not implement. It refuses to emit
-/// anchors instead of returning an empty - and therefore misleading - timeline.
+/// 本次构建尚未实现的 ingestion adapter 占位。它拒绝产出 anchor，
+/// 不会返回一条"空的"——也即具有误导性的——时间轴。
 pub struct UnavailableSource {
     description: MediaSourceDescription,
     reason: String,
 }
 
 impl UnavailableSource {
-    /// SRT ingest needs the GStreamer adapter (ADR-003); until then it stays explicitly missing.
+    /// SRT ingestion 需要 GStreamer adapter（ADR-003）；在那之前它显式保持缺失状态。
     pub fn srt(stream_id: &str, uri_secret_ref: &str) -> Self {
         Self {
             description: MediaSourceDescription {
@@ -146,11 +146,11 @@ impl TrackIntervals {
     }
 }
 
-/// Builds half-open `[start_ms, end_ms)` anchors for one track.
+/// 为单条轨道构造半开区间 `[start_ms, end_ms)` 的 anchor。
 ///
-/// Points must already be in presentation order (see `reorder_to_presentation`). Every drop
-/// is explained: a point that collapses into the previous millisecond, arrives out of order
-/// despite sorting, or has no known closing timestamp is counted and named instead of clamped.
+/// 调用前点必须已经按 presentation 顺序排好（见 `reorder_to_presentation`）。
+/// 每一处丢弃都会给出原因：与上一毫秒重合的点、排序后仍乱序的点、
+/// 或收尾时间戳未知的点，会被计数并标注，而不是被强行夹紧。
 pub fn build_track_intervals(
     points: &[PendingAnchor],
     duration_ms: i64,
@@ -203,17 +203,17 @@ fn anchor(point: &PendingAnchor, start_ms: i64, end_ms: i64) -> TimelineAnchor {
     }
 }
 
-/// Assigns deterministic anchor ids after the interval list is final.
+/// 在区间列表定稿后，为 anchor 分配确定性的 id。
 pub fn label_anchors(intervals: &mut TrackIntervals) {
     for (index, anchor) in intervals.anchors.iter_mut().enumerate() {
         anchor.anchor_id = format!("{}-{:08}", anchor.track_kind, index + 1);
     }
 }
 
-/// Converts decoder output order into presentation order.
+/// 把解码输出顺序转换为 presentation 顺序。
 ///
-/// ffprobe reports frames in decode order, so streams with B-frames legitimately arrive with
-/// non-monotonic PTS. Sorting is a reorder, not a repair, and the moved count stays visible.
+/// ffprobe 按解码顺序返回帧，因此含 B-frame 的流会出现 PTS 非单调的现象。
+/// 这只是重排（reorder），不是修复，被移动的计数始终保留。
 pub fn reorder_to_presentation(points: &[PendingAnchor]) -> (Vec<PendingAnchor>, u64) {
     let mut reordered = 0;
     let mut previous: Option<i64> = None;
@@ -228,7 +228,7 @@ pub fn reorder_to_presentation(points: &[PendingAnchor]) -> (Vec<PendingAnchor>,
     (sorted, reordered)
 }
 
-/// Drains a source and builds one interval list per track, preserving adapter drop reasons.
+/// 排空一个 source 并为每条轨道生成区间列表，保留 adapter 的丢弃原因。
 pub fn drain_source(
     source: &mut dyn MediaSource,
     duration_ms: i64,
@@ -328,7 +328,7 @@ mod tests {
 
     #[test]
     fn decoder_order_is_reordered_and_counted_but_never_smoothed_away() {
-        // B-frame pattern: decode order 0, 160, 80 with presentation order 0, 80, 160.
+        // B-frame 模式：解码顺序 0, 160, 80，presentation 顺序 0, 80, 160。
         let decode_order = points(&[0, 160, 80]);
         let (ordered, reordered) = reorder_to_presentation(&decode_order);
         assert_eq!(reordered, 1);

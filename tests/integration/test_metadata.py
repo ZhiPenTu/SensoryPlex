@@ -35,7 +35,7 @@ def database():
 
 
 def seed_references(conn, material):
-    """Only test-scoped reference rows, not a simulated ingestion/AI result."""
+    """仅供测试使用的引用数据，不是模拟的 ingestion/AI 结果。"""
     obs = material.observations[0]
     p = obs.provenance
     conn.execute(
@@ -104,7 +104,7 @@ def test_api_filters_auth_time_boundaries_and_unavailable_capabilities(database,
         seed_references(conn, material)
         append_material(conn, material, trace_id="contract-trace")
     settings = Settings(database_url=database, api_token=TOKEN, principal="owner")
-    # The test schema must survive pool setup: connection options include search_path.
+    # 测试 schema 必须在 pool 建立后仍可用：连接选项中包含 search_path。
     with TestClient(create_app(settings)) as client:
         headers = {"Authorization": f"Bearer {TOKEN}"}
         assert client.get("/v1/health").status_code == 200

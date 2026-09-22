@@ -1,4 +1,4 @@
-"""Call the actual Rust gRPC process with the generated Python client."""
+"""使用生成的 Python 客户端调用真实的 Rust gRPC 进程。"""
 
 import os
 import platform as host_platform
@@ -17,7 +17,7 @@ from edge_material_sdk.generated.runtime.v1.runtime_pb2_grpc import RuntimeServi
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# Rust reports `std::env::consts`, which spells Apple Silicon as macos-aarch64.
+# Rust 使用 `std::env::consts`，其中 Apple Silicon 写作 macos-aarch64。
 SYSTEMS = {"darwin": "macos", "linux": "linux"}
 ARCHITECTURES = {"arm64": "aarch64", "aarch64": "aarch64", "x86_64": "x86_64"}
 

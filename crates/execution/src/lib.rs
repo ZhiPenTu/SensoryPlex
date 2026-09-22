@@ -1,4 +1,4 @@
-//! Hardware abstraction. Adapters must report fallback explicitly.
+//! 硬件抽象。Adapter 必须显式上报回退（fallback）情况，不得隐式假定。
 use sensoryplex_sdk::common::{BufferDescriptor, ProcessingError, RequestContext};
 
 #[derive(Debug, Clone)]

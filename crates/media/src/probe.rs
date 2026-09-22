@@ -1,5 +1,5 @@
-//! Offline media probing through ffprobe (ADR-003: real-time uses GStreamer, offline uses
-//! FFmpeg). No media bytes leave this module, and no digest is invented.
+//! 离线媒体探测，基于 ffprobe（ADR-003：实时路径用 GStreamer，离线路径用 FFmpeg）。
+//! 媒体字节不会离开本模块，摘要不会被合成。
 
 use std::path::Path;
 use std::process::Command;
@@ -9,8 +9,8 @@ use sha2::{Digest, Sha256};
 
 use crate::MediaError;
 
-/// One probed timeline point on a single track. `pts_ms` stays `None` when the container
-/// reports N/A, so callers can drop it with a reason instead of guessing a timestamp.
+/// 单条轨道上的一个探测时间点。当容器报告 N/A 时 `pts_ms` 保持 `None`，
+/// 调用方按原因丢弃，而不是猜测一个时间戳。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProbePoint {
     pub pts_ms: Option<i64>,
@@ -39,10 +39,10 @@ pub fn file_digest(path: &Path) -> Result<String, MediaError> {
     Ok(format!("sha256:{:x}", hasher.finalize()))
 }
 
-/// Probes a local file. The returned reference carries the digest, never the URI.
+/// 探测一个本地文件。返回的引用携带摘要，绝不携带 URI。
 ///
-/// Stream and source identity are derived from the content digest, so replaying the same
-/// file is idempotent and a different file can never be mistaken for it.
+/// Stream 与 source 的身份由内容摘要派生，因此对同一文件的 replay 是幂等的，
+/// 不会把不同文件误判为同一个。
 pub fn probe_file(uri_secret_ref: &str, path: &Path) -> Result<ProbedFile, MediaError> {
     if !path.is_file() {
         return Err(MediaError::IoFailed("media_path_not_a_file".into()));
@@ -114,7 +114,7 @@ fn duration_ms(path: &Path) -> Result<i64, MediaError> {
         Some(path),
     )?;
     match output.trim() {
-        "" | "N/A" => Ok(0), // Unknown duration stays zero on purpose.
+        "" | "N/A" => Ok(0), // 未知时长刻意保持为 0。
         value => seconds_to_ms(value),
     }
 }
@@ -242,7 +242,7 @@ fn ffprobe(args: &[&str], path: Option<&Path>) -> Result<String, MediaError> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// Empty codec means "the probe could not tell", never a guessed name.
+/// 空的 codec 表示"探测未能识别"，绝不是猜测得到的名称。
 fn known(value: Option<&&str>) -> String {
     match value.map(|value| value.trim()) {
         Some(value) if value.is_empty() || value == "N/A" => String::new(),
@@ -259,7 +259,7 @@ fn frame_rate(value: &str) -> f64 {
     let numerator: f64 = numerator.parse().unwrap_or(0.0);
     let denominator: f64 = denominator.parse().unwrap_or(0.0);
     if denominator == 0.0 {
-        return 0.0; // "0/0" means unknown frame rate.
+        return 0.0; // "0/0" 表示未知帧率。
     }
     numerator / denominator
 }

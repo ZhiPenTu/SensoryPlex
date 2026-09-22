@@ -1,4 +1,4 @@
-"""Structural preflight only; never imports or executes plugin code."""
+"""仅做结构化预检，绝不导入或执行插件代码。"""
 
 import argparse
 import json
@@ -15,7 +15,7 @@ def validate(path: Path):
     Draft202012Validator.check_schema(schema)
     errors = list(Draft202012Validator(schema).iter_errors(yaml.safe_load(path.read_text())))
     for error in errors:
-        # ValidationError.message may contain supplied secrets; print field + rule only.
+        # ValidationError.message 可能包含传入的密钥；只打印字段与规则。
         print(f"invalid field: {'.'.join(map(str, error.absolute_path))}; rule: {error.validator}")
     return not errors
 

@@ -1,8 +1,8 @@
-//! Audio segmentation over decoded PCM.
+//! 对已解码 PCM 做音频分段。
 //!
-//! Segment boundaries come from the samples a segment actually contains, so the reported
-//! `[start_ms, end_ms)` never covers audio the payload does not carry. A gap in the incoming
-//! timeline closes the segment instead of being absorbed into it.
+//! 分段边界由该段实际包含的样本决定，因此报告的 `[start_ms, end_ms)` 不会
+//! 覆盖 payload 实际不包含的音频。输入时间轴上出现空洞时会关闭当前段，
+//! 不会被吸收进段内。
 
 use std::collections::BTreeSet;
 
@@ -11,11 +11,11 @@ use crate::MediaError;
 pub const DEFAULT_AUDIO_SEGMENT_MS: u32 = 5_000;
 pub const MIN_AUDIO_SEGMENT_MS: u32 = 200;
 pub const MAX_AUDIO_SEGMENT_MS: u32 = 30_000;
-/// Decoded audio is forced to `F32LE`, so one frame is `channels * 4` bytes.
+/// 解码后的音频强制为 `F32LE`，因此一帧字节数为 `channels * 4`。
 pub const AUDIO_SAMPLE_BYTES: usize = 4;
-/// Sample durations arrive rounded to whole milliseconds, so consecutive samples almost never
-/// line up exactly. Only a hole at least this large is a real discontinuity; anything smaller
-/// is arithmetic, and closing a segment over it would fragment the stream for no reason.
+/// 样本时长按整毫秒四舍五入传入，因此相邻样本几乎不会精确对齐。
+/// 只有达到此阈值的空洞才算真正的 discontinuity；更小的只是算术误差，
+/// 若据此关闭 segment 会无谓地切碎流。
 pub const DISCONTINUITY_THRESHOLD_MS: i64 = 250;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -23,7 +23,7 @@ pub struct PendingSegment {
     pub start_ms: i64,
     pub end_ms: i64,
     pub bytes: Vec<u8>,
-    /// True when the segment is shorter than the configured length because the stream ended.
+    /// 当流结束时该段短于配置长度，则为 true。
     pub partial: bool,
 }
 
@@ -34,7 +34,7 @@ pub struct AudioSegmenter {
     channels: u32,
     start_ms: Option<i64>,
     end_ms: i64,
-    /// Expected continuation point. Only a match here keeps a segment open.
+    /// 预期的下一个连续点。只有与该点对齐才能让 segment 保持开启。
     cursor_ms: Option<i64>,
     pending: Vec<u8>,
     dropped_samples: u64,
@@ -86,7 +86,7 @@ impl AudioSegmenter {
         self.channels as usize * AUDIO_SAMPLE_BYTES
     }
 
-    /// Refuses to guess: without a sample rate and channel count there is no byte budget.
+    /// 拒绝猜测：没有 sample rate 与 channel count 就没有字节预算。
     pub fn push(
         &mut self,
         sample_rate: u32,
@@ -122,7 +122,7 @@ impl AudioSegmenter {
             return Ok(None);
         }
 
-        // A hole in the timeline ends the current segment; it is never bridged over.
+        // 时间轴上的空洞会关闭当前 segment，绝不会被跨过填补。
         let mut flushed = None;
         let drifted = self
             .cursor_ms
@@ -142,10 +142,9 @@ impl AudioSegmenter {
         self.end_ms = pts_ms + duration_ms;
         self.cursor_ms = Some(self.end_ms);
 
-        // The flush test runs on millisecond-rounded timestamps, so one segment can hold a
-        // little more audio than its nominal length. The bound stays at twice that: loose
-        // enough not to fire on rounding, hard enough that a stuck producer cannot grow this
-        // buffer without limit.
+        // flush 判断按毫秒级四舍五入后的时间戳进行，因此单段可以比名义长度多
+        // 容纳一点音频。上限取为名义长度的 2 倍：既不会被舍入误触发，
+        // 也确保卡住的生产者不能无限增长这段缓冲。
         let budget = 2 * self.segment_ms as usize * sample_rate as usize * self.frame_bytes()
             / 1_000
             + 2 * self.frame_bytes();
@@ -165,7 +164,7 @@ impl AudioSegmenter {
         Ok(flushed)
     }
 
-    /// Flushes the trailing partial segment, if any.
+    /// flush 末尾可能存在的短段。
     pub fn finish(&mut self) -> Option<PendingSegment> {
         let start = self.start_ms?;
         self.take(start)
@@ -190,7 +189,7 @@ impl AudioSegmenter {
 mod tests {
     use super::*;
 
-    /// 10 ms of mono f32 audio at 1 kHz, so one test sample is easy to reason about.
+    /// 1 kHz 单声道 10 ms 的 f32 音频样本，方便测试推理。
     const RATE: u32 = 1_000;
     const MONO_10MS: usize = 40;
 
@@ -241,8 +240,8 @@ mod tests {
 
     #[test]
     fn millisecond_rounding_does_not_fragment_a_continuous_stream() {
-        // 1024 samples at 44.1 kHz is 23.22 ms, reported as 23 ms: the cursor drifts by a
-        // fraction of a millisecond every sample and must not be read as a loss of audio.
+        // 44.1 kHz 下 1024 个样本为 23.22 ms，按 23 ms 上报：每帧 cursor 漂移
+        // 不到一毫秒，绝不能解读为音频丢失。
         let mut segmenter = AudioSegmenter::new(1_000).unwrap();
         let mut segments = Vec::new();
         let mut pts_ms = 0i64;
@@ -297,7 +296,7 @@ mod tests {
         let mut segmenter = AudioSegmenter::new(200).unwrap();
         let mut error = None;
         for _ in 0..200 {
-            // Same timestamp every time: the segment can never close on its own.
+            // 每次都是同一个时间戳：segment 无法自行关闭。
             error = segmenter.push(RATE, 1, 0, 10, &[0u8; MONO_10MS]).err();
             if error.is_some() {
                 break;

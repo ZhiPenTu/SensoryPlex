@@ -1,4 +1,4 @@
-//! Validates already-observed facts. No model results or confidence are synthesized.
+//! 校验已经观察到的事实；不得合成模型结果或置信度。
 use sensoryplex_sdk::{
     material::MaterialUnit, validate_digest, validate_observation, validate_range, ContractError,
 };

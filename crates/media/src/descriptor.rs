@@ -1,8 +1,7 @@
-//! Data-plane descriptor handoff for decoded buffers.
+//! 数据面 descriptor 交接，用于解码缓冲。
 //!
-//! Decoded bytes only ever live in the arena. What leaves this module is an opaque handle, an
-//! offset/length pair, a content digest and a runtime-issued read-only lease - the same
-//! contract plugins receive in production.
+//! 解码后的字节只在 arena 中存在。本模块对外只暴露不透明句柄、offset/length 对、
+//! 内容摘要以及运行时签发的只读 lease —— 与生产环境交给插件的契约一致。
 
 use sensoryplex_sdk::common::{
     BufferDescriptor, BufferFormat, BufferLease, BufferLocator, TimeRange,
@@ -14,17 +13,17 @@ use crate::arena::Arena;
 use crate::lease::LeaseRegistry;
 use crate::{validate_descriptor, MediaError};
 
-/// Decoded buffers are CPU-side today; a platform that admits `unified_memory` must opt in
-/// through `DescribeCapabilities` before anything else is handed off.
+/// 解码缓冲目前在 CPU 侧；只有通过 `DescribeCapabilities` 显式声明 `unified_memory`
+/// 的平台，才能启用对应的 descriptor 交接。
 pub const ADMITTED_MEMORY_KINDS: [&str; 1] = ["cpu_shared_memory"];
-/// A lease that outlives its handoff stops meaning anything, so it stays short by default.
+/// 超出交接窗口的 lease 不再有任何意义，因此默认 TTL 较短。
 pub const DEFAULT_LEASE_TTL_MS: u32 = 5_000;
 
 pub fn content_hash(bytes: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
 }
 
-/// Everything a descriptor needs that is not derived from the bytes themselves.
+/// 构造 descriptor 所需、但无法从字节本身派生出来的全部信息。
 pub struct BufferSpec<'a> {
     pub buffer_id: String,
     pub kind: &'a str,
@@ -33,7 +32,7 @@ pub struct BufferSpec<'a> {
     pub format: BufferFormat,
 }
 
-/// Counters for one replay's handoff. A failure is recorded and surfaced, never swallowed.
+/// 单次 replay 的交接计数器。失败会被记录并暴露，绝不静默吞掉。
 #[derive(Debug, Default)]
 pub struct HandoffCounters {
     pub built: u64,
@@ -59,11 +58,11 @@ impl HandoffCounters {
     }
 }
 
-/// Copies `bytes` into the arena, issues a real lease, verifies the resulting descriptor
-/// against the admission contract, then releases the lease and the slab.
+/// 将 `bytes` 拷贝进 arena，签发真实 lease，按准入契约校验生成的 descriptor，
+/// 然后释放 lease 与 slab。
 ///
-/// The released descriptor is returned as evidence; the bytes are not. A caller that cannot
-/// complete the handoff gets an error instead of an optimistic descriptor.
+/// 返回的是已释放的 descriptor 作为证据，字节本身不会返回。无法完成交接的调用方
+/// 收到错误，而不是拿到一个乐观的 descriptor。
 pub fn hand_off(
     arena: &mut Arena,
     leases: &mut LeaseRegistry,
@@ -121,8 +120,8 @@ pub fn hand_off(
         release_slab(arena);
         return Err(counters.fail(contract_code(error)));
     }
-    // The handle must still resolve to the exact payload the digest was taken from. A
-    // descriptor that points somewhere else is a defect, not a warning.
+    // 句柄必须仍能解析到摘要对应的同一份 payload。指向其他位置的 descriptor
+    // 是缺陷，不是警告。
     if let Err(error) = verify_payload(arena, &descriptor, bytes) {
         release_slab(arena);
         return Err(counters.fail(error.to_string()));
@@ -136,10 +135,9 @@ pub fn hand_off(
     Ok(descriptor)
 }
 
-/// Resolves a descriptor's handle back to the payload that produced its digest.
+/// 把 descriptor 的句柄解析回产生其摘要的那一份 payload。
 ///
-/// Comparing the arena contents with `expected` is the same guarantee as re-hashing - the
-/// digest was taken from `expected`, so equal bytes have an equal digest - at memcmp cost.
+/// 把 arena 内容与 `expected` 比较等价于重新做哈希 —— 摘要本来就是从 `expected` 算出的， - at memcmp cost.
 pub fn verify_payload<'a>(
     arena: &'a Arena,
     descriptor: &BufferDescriptor,
@@ -163,8 +161,7 @@ fn contract_code(error: ContractError) -> String {
     error.0.to_string()
 }
 
-/// Leases are only meaningful while someone is actively reading; this is the release path a
-/// consumer must run on success, cancellation and error.
+/// Lease 仅在有人正在读取时才有意义；这是消费端在成功、取消、出错时都必须执行的释放路径。
 pub fn release_lease(leases: &mut LeaseRegistry, lease: &BufferLease) -> bool {
     leases.release(&lease.lease_id)
 }
@@ -278,7 +275,7 @@ mod tests {
             &mut counters,
         )
         .unwrap();
-        // The released slab is reused, so the same size still fits; a larger payload cannot.
+        // 已释放的 slab 会被复用，因此同样大小仍能放下；更大的 payload 则放不下。
         hand_off(
             &mut arena,
             &mut leases,

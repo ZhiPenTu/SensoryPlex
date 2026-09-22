@@ -1,1 +1,1 @@
-"""REST adapter for versioned material contracts."""
+"""REST adapter，对接版本化的 material 契约。"""
