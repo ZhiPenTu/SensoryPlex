@@ -43,6 +43,24 @@ reserved，破坏语义的修改进入新的协议 major。当前为开发预览
 - `ReplayReport.golden_path_verified` 默认且当前恒为 false，只有真实授权样本通过完整验收才能置真；
   未实现的能力必须出现在 `blockers` 中，且报告不得包含媒体路径。
 
+解码数据平面契约（`ReplayReport.decoded`，仅在本次构建真的解码时才填充）：
+
+- 全零即"没有解码发生"，不得读作成功：`arena_id` 为空时不允许出现 `tracks`、`evidence_descriptors`
+  或非零 `descriptors_built`。
+- `DecodedTrackStat.first_pts_ms` / `last_end_ms` 用 `-1` 表示"未观察到"，禁止用 0 冒充起点。
+  `timeline_offset_ms` 记录从原始媒体时间戳减去的呈现原点（容器 edit list 场景下非零），
+  使 descriptor 时间轴与 ffprobe 锚点同处呈现时间轴。
+- `overlapping_samples` 统计区间重复上一段的 buffer：载荷真实，因此保留，但必须计数；
+  锚点路径对同一现象按 `collapsed_interval` 丢弃并计入 `dropped_items`，两处计数不可相加。
+- `descriptors_built == Σtrack.samples + audio_segments.segments`，`descriptors_validated` 必须等于
+  `descriptors_built`，`descriptor_failures` 非零时必须给出 `failure_reasons`。
+- `leases_issued == descriptors_built`，`leases_released == leases_issued`；未释放即泄漏，属于契约缺陷。
+- 交接证据只含受控引用：`memory_kind` 必须在该平台 `admitted_memory_kinds` 内，
+  `locator.handle` 等于 arena id 且绝不是宿主路径，`content_hash` 为 `sha256:` 前缀的十六进制摘要，
+  lease 为只读且带过期时间。证据里不出现帧或 PCM 字节。
+- `AudioSegment` 区间覆盖其携带的样本，`Σlisted.bytes == audio_segments.bytes ==` 音频轨字节
+  （当 `listed == segments` 时）；跨段 ms 取整允许 1 ms 偏差，尾部不足一段时 `partial=true`。
+
 `append_material` 是受信 timeline/storage 进程的内部入口；当前无公共写入 API。
 事实写入和 outbox 在同一事务完成。outbox 分发、NATS 消费去重和重试器尚待实现，
 因此不能把“已写 outbox”解释为“已发布 NATS”或“可语义检索”。

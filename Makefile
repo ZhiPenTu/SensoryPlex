@@ -2,7 +2,7 @@ UV ?= uv
 CARGO ?= cargo
 COMPOSE = docker compose --env-file .env -f deploy/compose/docker-compose.poc.yml
 
-.PHONY: setup configure proto check test integration format infra up down migrate gateway runtime pipeline-check runtime-smoke gateway-smoke media-replay
+.PHONY: setup configure proto check test integration format infra up down migrate gateway runtime pipeline-check runtime-smoke gateway-smoke media-replay media-check
 setup: configure
 	$(UV) sync --frozen
 	$(MAKE) proto
@@ -60,7 +60,16 @@ runtime-smoke:
 gateway-smoke:
 	$(UV) run python tools/smoke_gateway.py
 
+# Real decoding is opt-in: hosts without the GStreamer development files can pass MEDIA_FEATURES=
+# and still get the anchors-only report. Acceptance runs build release because a debug build
+# spends nearly all its time in unoptimised digests over decoded frames.
+MEDIA_FEATURES ?= gstreamer
+# Compile gate for the decode path: it needs the GStreamer development files, so it stays out of
+# `make check` and runs where that toolchain exists (macOS CI job, Apple Silicon dev hosts).
+media-check:
+	$(CARGO) clippy --locked -p sensoryplex-media -p sensoryplex-runtime --all-targets --features "$(MEDIA_FEATURES)" -- -D warnings
+
 media-replay:
 	@test -n "$(MEDIA)" || { echo "usage: make media-replay MEDIA=/absolute/path/to/authorized-sample.mp4"; exit 1; }
-	$(CARGO) build --locked -p sensoryplex-runtime
+	$(CARGO) build --locked --release -p sensoryplex-runtime --features "$(MEDIA_FEATURES)"
 	$(UV) run python tools/verify_replay.py --media "$(MEDIA)"

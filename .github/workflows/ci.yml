@@ -49,4 +49,7 @@ jobs:
       - run: make proto
       - run: git diff --exit-code -- plugins/python/common/src/edge_material_sdk/generated
       - run: make check
+      # GStreamer 只用于编译解码路径；这里不跑 media-replay，因为 CI 没有真实授权媒体。
+      - run: brew install gstreamer
+      - run: make media-check
       - run: make runtime-smoke

@@ -4,8 +4,13 @@
 //! either produces verified anchors or reports exactly why it cannot.
 use sensoryplex_sdk::{common::BufferDescriptor, validate_digest, validate_range, ContractError};
 
+pub mod arena;
+#[cfg(feature = "gstreamer")]
+pub mod decode;
+pub mod descriptor;
 pub mod lease;
 pub mod probe;
+pub mod segment;
 pub mod source;
 
 #[derive(Debug, thiserror::Error)]
@@ -20,6 +25,12 @@ pub enum MediaError {
     UnsupportedSource(String),
     #[error("media_io_failed: {0}")]
     IoFailed(String),
+    #[error("arena_capacity_exceeded: requested {requested} bytes of {capacity}")]
+    ArenaCapacityExceeded { requested: usize, capacity: usize },
+    #[error("decode_failed: {0}")]
+    DecodeFailed(String),
+    #[error("descriptor_rejected: {0}")]
+    DescriptorRejected(String),
 }
 
 pub fn validate_descriptor(

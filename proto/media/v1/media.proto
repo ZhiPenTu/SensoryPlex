@@ -51,6 +51,76 @@ message TimelineAnchor {
   bool keyframe = 5;
 }
 
+// Per-track decode accounting. Every number here is an observation from the decoder; a track
+// that produced nothing stays at zero instead of being given an optimistic default.
+message DecodedTrackStat {
+  string track_kind = 1; // video | audio
+  uint64 samples = 2;
+  uint64 bytes = 3;
+  // -1 means the track never reported a presentation timestamp; never a fabricated zero.
+  int64 first_pts_ms = 4;
+  // Exclusive end of the last emitted interval; -1 when it could not be observed.
+  int64 last_end_ms = 5;
+  uint32 width = 6;
+  uint32 height = 7;
+  string pixel_format = 8;
+  uint32 sample_rate = 9;
+  uint32 channels = 10;
+  string audio_format = 11;
+  uint64 dropped_samples = 12;
+  repeated string drop_reasons = 13;
+  // Presentation origin applied to the raw media timestamps, in milliseconds. Non-zero means
+  // the container declared an edit list and the descriptor timeline was shifted onto it.
+  int64 timeline_offset_ms = 14;
+  // Buffers whose interval repeats the previous one, which millisecond rounding can produce at
+  // the end of a stream. They are kept, never deleted, and always counted here.
+  uint64 overlapping_samples = 15;
+}
+
+// One audio segment cut from decoded PCM. The range covers exactly the samples it carries,
+// so a segment is never wider than its own payload.
+message AudioSegment {
+  string segment_id = 1;
+  edge.material.common.v1.TimeRange time_range = 2;
+  uint32 sample_rate = 3;
+  uint32 channels = 4;
+  uint64 bytes = 5;
+  // True when the segment is shorter than the configured length because the stream ended.
+  bool partial = 6;
+}
+
+message AudioSegmentReport {
+  uint32 segment_ms = 1;
+  uint64 segments = 2;
+  uint64 partial_segments = 3;
+  uint64 bytes = 4;
+  // Bounded preview; `listed_limit` below says how many segments were repeated here.
+  repeated AudioSegment listed = 5;
+  uint32 listed_limit = 6;
+  // Samples the segmenter itself could not place, plus the holes that closed a segment.
+  uint64 dropped_samples = 7;
+  uint64 discontinuities = 8;
+  repeated string drop_reasons = 9;
+}
+
+// Real data-plane accounting for one replay. All zeros means this build never decoded.
+message DecodedDataPlane {
+  string arena_id = 1;
+  uint64 arena_capacity_bytes = 2;
+  uint64 arena_peak_bytes = 3;
+  uint64 decoded_bytes = 4;
+  repeated DecodedTrackStat tracks = 5;
+  uint64 descriptors_built = 6;
+  uint64 descriptors_validated = 7;
+  uint64 descriptor_failures = 8;
+  repeated string failure_reasons = 9;
+  uint64 leases_issued = 10;
+  uint64 leases_released = 11;
+  // First descriptor verified for each track: handoff-contract evidence, still without bytes.
+  repeated edge.material.common.v1.BufferDescriptor evidence_descriptors = 12;
+  AudioSegmentReport audio_segments = 13;
+}
+
 // One replay attempt. Counters and reasons stay explicit instead of optimistic defaults.
 message ReplayReport {
   MediaSourceDescription source = 1;
@@ -67,4 +137,6 @@ message ReplayReport {
   repeated string drop_reasons = 10;
   // Stays false unless real authorized media passed the full acceptance path.
   bool golden_path_verified = 11;
+  // Populated only when this build actually decoded buffers.
+  DecodedDataPlane decoded = 12;
 }

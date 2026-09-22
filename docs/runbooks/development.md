@@ -35,6 +35,7 @@ make check       # Rust fmt/clippy/test + Python lint/format/契约测试
 make integration # 真实 PostgreSQL，随机隔离 schema，结束后只清理该测试 schema
 make runtime-smoke # 实际 Rust 进程与 Python 生成客户端 gRPC 互通
 make gateway-smoke # 对已启动容器验证鉴权、查询及未接入能力的错误响应
+make media-check   # 带 gstreamer feature 的 clippy 编译门（需要 GStreamer 开发文件）
 ```
 
 CI 使用临时 PostgreSQL；集成测试必须显式通过，不能把跳过等同于验收。
@@ -75,9 +76,19 @@ make runtime-smoke   # 真实 Rust 进程 + Python 客户端，校验 DescribeCa
 make media-replay MEDIA=/absolute/path/to/authorized-sample.mp4
 ```
 
-该命令用 ffprobe 读取真实 PTS，输出半开区间锚点报告并断言：摘要与文件一致、区间严格递增、
-锚点间无越界、报告不含媒体路径、`golden_path_verified` 为 false、未实现能力出现在 `blockers`。
-帧解码、`BufferDescriptor` 生成与 lease 交接尚未接入，因此该命令目前不产生任何 buffer。
+该命令先构建带 `gstreamer` feature 的 release runtime，再用 ffprobe 读锚点、用 GStreamer 真实解码，
+输出锚点 + 解码数据平面报告，并断言：摘要与文件一致、区间严格递增、锚点间无越界、报告不含媒体路径、
+`golden_path_verified` 为 false、未实现能力出现在 `blockers`，以及
+`descriptors_validated == descriptors_built`、`descriptor_failures == 0`、`leases_released == leases_issued`、
+`descriptors_built == Σsamples + segments`、段字节合计等于音频轨字节、证据 descriptor 引用 arena 而非宿主路径。
+
+切段长度由 `--audio-segment-ms N` 指定，默认 5000 ms，允许 200–30000 ms（越界即报
+`audio_segment_ms_out_of_range`，不夹取）；Pipeline 配置里的 `audio_segmenter` 阶段声明该处理步骤。
+段长度只影响分段粒度，不影响 descriptor 时间轴。
+
+没有 GStreamer 开发文件的主机可以执行 `make media-replay MEDIA=… MEDIA_FEATURES=`，此时报告只含锚点，
+`blockers` 会多出 `gstreamer_decode_not_implemented`，解码数据平面保持全零——这是诚实的降级，不是验收。
+macOS 上解码属于 ms 级性能路径，用 `make media-replay` 的 release 构建测量，不要把 debug 结果当结论。
 
 ## 可选向量基础设施
 

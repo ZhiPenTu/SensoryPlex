@@ -97,3 +97,56 @@ make media-replay MEDIA=/Users/tuzhipeng/Documents/SensoryPlex/video/1.mp4
 **仍不构成验收的部分：** 本样本只验证时间轴锚点与丢弃语义，不含解码、`BufferDescriptor`、
 真实 lease 交接、抽帧、音频切段、ASR/OCR/VLM 与 2–5 秒语义可见性。最后一帧区间以容器时长收口，
 因此可能长于该帧的实际显示时长（本例视频末帧 30567→30627 ms）。
+
+### GStreamer 解码、descriptor 交接与音频切段（2026-09-22）
+
+同一平台 `macos-aarch64`，同一授权样本 `video/1.mp4`（SHA-256 `3d94f00fe81b…`）。本切片把锚点路径
+换成真实解码：GStreamer 解出帧与 PCM，写入有界 arena，签发真实 lease，校验后再释放，并把音频切成
+5 秒段。**仍未接入抽帧、背压指标、SRT、模型与 2–5 秒语义可见性。**
+
+```sh
+make media-replay MEDIA=/Users/tuzhipeng/Documents/SensoryPlex/video/1.mp4
+```
+
+| 观察 | 结果 |
+| --- | --- |
+| 结论 | PASS：`descriptors=2246`、`descriptors_validated=2246`、`descriptor_failures=0`、`leases=2246/2246`（无泄漏）、`segments=7` |
+| 解码量与锚点一致 | 视频 918 样本、音频 1321 样本，合计 2239，等于 `decoded_items`；锚点路径同源得到 918 + 1319 |
+| 计数自洽（校验脚本断言） | `descriptors_built == Σsamples + segments`（2239 + 7 = 2246）；`decoded_bytes == Σtrack.bytes`；`leases_released == leases_issued` |
+| 内存边界 | arena 容量 64 MiB，`arena_peak_bytes=2073600`，等于一帧 RGBA 540×960×4；`decoded_bytes=1908975616` 为累计吞吐，不驻留 |
+| 交接证据 | 每轨首个 descriptor 记录 `memory_kind=cpu_shared_memory`、`locator.handle=arena-3d94f00fe81b`、`offset=0`、`read_only=true`、`content_hash=sha256:…`；locator 不含任何宿主路径 |
+| 音频切段 | 6 个完整 5 秒段（8 84736 B）+ 1 个 102400 B 尾部 partial 段；段字节合计 5410816，等于音频轨字节；相邻段首尾相接（毫秒取整处允许 1 ms） |
+| 双路时间轴对齐 | ffprobe 锚点与 GStreamer 解码在呈现时间轴上一致：两轨首个样本均为 0 ms，视频末帧 30600 ms 落在末锚点区间 [30567, 30627) 内 |
+| 全量检查 | `make check` 通过（rustfmt + clippy `-D warnings` + workspace 测试 + ruff + 27 项契约测试）；`make integration` 3 项通过；`make runtime-smoke` PASS |
+| Rust 单元测试 | `sensoryplex-media` 28 项通过：不含 GStreamer 的 arena/lease/descriptor/segment/probe/source 逻辑，含毫秒取整不切碎连续流、时间洞关闭段而不放宽、格式中途变化拒绝、停滞生产者被上限拦截 |
+
+**根因记录：容器 edit list 与呈现原点。** 该 MP4 视频轨带 edit list
+（`edit list 0 - media time: 15000, duration: 2754000`）。ffmpeg/ffprobe 会应用 edit list，因此视频 PTS
+从 0 开始；GStreamer 默认保留媒体时间戳，首帧报告 166 ms（15000/90000 s），导致 descriptor 时间轴整体
+比锚点晚 166 ms。修复方式是在 pipeline 的 segment event 上取呈现原点并整体减去，而不是给某条轨道打补丁。
+修正后视频 `first_pts_ms=0`、`timeline_offset_ms=167`：167 是 166.67 ms 的毫秒取整结果，与 ffprobe 的
+`pts_time=0.000000` 对齐；残差小于契约的毫秒粒度，因此记录为偏移而不是"误差"。
+
+**取舍记录：`DISCONTINUITY_THRESHOLD_MS=250`。** AAC 每帧 1024 采样 @44.1 kHz = 23.22 ms，转成毫秒后步长
+在 23/24 ms 之间摆动。若按"PTS 必须等于游标"判断断流，连续流会被切成 292 段而不是 7 段；因此只有偏差
+超过 250 ms（约 10 帧）才判定为真实时间洞并关闭当前段。段长度硬上限仍按 `2 × segment_ms` 计算并留出
+取整余量，停滞的生产者不会让缓冲区无界增长。
+
+**`overlapping_samples=2` 的解释。** 音频末尾 3 帧落在同一毫秒（30604 ms）。解码路径保留其载荷——那是真实
+解出的 PCM——但计入 `overlapping_samples`；锚点路径要求区间严格递增，因此把同毫秒的点显式丢弃，
+报告为 `drop_reasons=collapsed_interval`、`dropped_items=2`。两处计数描述的是同一现象，不是两次丢失。
+
+**性能记录：** 交接校验最初对同一份载荷做两次 SHA-256，debug 构建下约 83 ms/descriptor；改为一次
+`sha256` 生成 + 内存中按字节比对后消除。验收固定使用 `make media-replay` 的 release 构建，debug 构建
+几乎全部时间花在未优化摘要上，不作为性能结论。
+
+**未验证范围（不得当作媒体验收）：**
+
+- `blockers` 仍为 `adaptive_sampling_not_implemented` 与 `lease_consumer_not_implemented`：抽帧与背压、
+  真实 lease 消费方（模型 worker）未实现，`golden_path_verified` 恒为 false。
+- SRT 仍为 `UnavailableSource`；没有 SRT 端点，也没有断流重连验证。
+- 模型链路全部未接入：ASR/OCR/VLM/BGE 无实现，CoreML/Metal 后端仍报 `execution_backend_not_implemented`。
+- 该样本由 FFmpeg 生成/转码（`encoder=Lavf58.20.100`），不是设备直出；静态投屏、翻页切换、运动/多人对话
+  三类样本尚未回放，抽帧覆盖率结论不成立。
+- 检查在 `macos-aarch64` 本地完成；macOS CI job 与 `linux-x86_64` 侧解码验收未执行。
+- `make media-replay` 不在 CI 中：它需要真实授权媒体，合成片段不能作为验收证据。

@@ -13,12 +13,25 @@ from pathlib import Path
 from edge_material_sdk.generated.media.v1 import media_pb2
 
 ROOT = Path(__file__).resolve().parents[1]
-RUNTIME = ROOT / "target/debug/sensoryplex-runtime"
 PIPELINE = ROOT / "config/pipelines/file-material.yaml"
 EXPECTED_BLOCKERS = {
-    "gstreamer_decode_not_implemented",
-    "buffer_lease_handoff_not_implemented",
+    "adaptive_sampling_not_implemented",
+    "lease_consumer_not_implemented",
 }
+DECODE_BLOCKER = "gstreamer_decode_not_implemented"
+ADMITTED_MEMORY_KINDS = {"cpu_shared_memory"}
+# Two independent implementations describe the same presentation timeline: ffprobe anchors and
+# the GStreamer decode path. Ms rounding may differ, so intervals are compared with slack.
+TIMELINE_TOLERANCE_MS = 1
+
+
+def runtime_binary() -> Path:
+    """Prefer the release build the Makefile produces; a debug build is still accepted."""
+    for profile in ("release", "debug"):
+        candidate = ROOT / f"target/{profile}/sensoryplex-runtime"
+        if candidate.is_file():
+            return candidate
+    raise SystemExit("build the runtime first: make media-replay builds it for you")
 
 
 def file_digest(path: Path) -> str:
@@ -75,6 +88,145 @@ def check_honesty(report, media: Path) -> None:
     )
 
 
+def check_decoded_plane(report) -> None:
+    """Verify the decoded data plane, or that an anchors-only build claims nothing."""
+    decoded = report.decoded
+    if DECODE_BLOCKER in set(report.blockers):
+        assert not decoded.arena_id, "an anchors-only build must not report an arena"
+        assert not decoded.tracks, "an anchors-only build must not report decoded tracks"
+        assert not decoded.evidence_descriptors, "an anchors-only build must not report buffers"
+        assert decoded.descriptors_built == 0 and decoded.leases_issued == 0
+        return
+
+    assert decoded.arena_id and "/" not in decoded.arena_id, "arena id must be an opaque handle"
+    assert decoded.arena_capacity_bytes > 0, "the arena must have a bounded capacity"
+    assert decoded.arena_peak_bytes <= decoded.arena_capacity_bytes, "arena capacity was exceeded"
+    assert decoded.tracks, "a decoding build must report per-track statistics"
+
+    samples = sum(track.samples for track in decoded.tracks)
+    assert samples == report.decoded_items, "decoded samples must match the item count"
+    assert decoded.decoded_bytes == sum(track.bytes for track in decoded.tracks), (
+        "decoded byte totals disagree"
+    )
+
+    # Every accepted sample becomes exactly one buffer, and each audio segment one more.
+    expected_descriptors = samples + decoded.audio_segments.segments
+    assert decoded.descriptors_built == expected_descriptors, (
+        f"descriptor count {decoded.descriptors_built} != samples + segments {expected_descriptors}"
+    )
+    assert decoded.descriptors_validated == decoded.descriptors_built, (
+        "descriptors were not verified"
+    )
+    assert decoded.descriptor_failures == 0, decoded.failure_reasons
+    assert not decoded.failure_reasons, decoded.failure_reasons
+    assert decoded.leases_released == decoded.leases_issued, "leases leaked"
+    assert decoded.leases_issued == decoded.descriptors_built, "every buffer needs one lease"
+
+    anchors_by_track: dict[str, list] = {}
+    for anchor in report.anchors:
+        anchors_by_track.setdefault(anchor.track_kind, []).append(anchor)
+    for track in decoded.tracks:
+        check_track(track, report.source.duration_ms, anchors_by_track.get(track.track_kind, []))
+
+    check_segments(decoded, anchors_by_track)
+    check_evidence(decoded)
+
+
+def check_track(track, duration_ms: int, anchors: list) -> None:
+    label = track.track_kind
+    assert label in {"video", "audio"}, label
+    assert track.samples > 0 and track.bytes > 0, f"{label} decoded nothing"
+    if track.dropped_samples:
+        assert track.drop_reasons, f"{label} dropped samples without a reason"
+    assert 0 <= track.first_pts_ms <= duration_ms, f"{label} first pts is outside the source"
+    assert track.first_pts_ms < track.last_end_ms <= duration_ms, (
+        f"{label} interval is not half-open"
+    )
+    if label == "video":
+        assert track.width > 0 and track.height > 0 and track.pixel_format, (
+            "video layout is unknown"
+        )
+    else:
+        assert track.sample_rate > 0 and track.channels > 0 and track.audio_format, (
+            "audio layout is unknown"
+        )
+    # The decode path rebases onto the presentation origin; the prober anchors do the same, so
+    # both must agree on where the first sample sits and where the last one ends.
+    assert anchors, f"{label} has decoded samples but no timeline anchors"
+    first = anchors[0].time_range.start_ms
+    assert abs(track.first_pts_ms - first) <= TIMELINE_TOLERANCE_MS, (
+        f"{label} decode starts at {track.first_pts_ms}ms but the anchors start at {first}ms"
+    )
+    last = anchors[-1].time_range
+    assert last.start_ms <= track.last_end_ms <= last.end_ms, (
+        f"{label} decode ends at {track.last_end_ms}ms, outside the final anchor interval"
+    )
+
+
+def check_segments(decoded, anchors_by_track: dict) -> None:
+    report = decoded.audio_segments
+    audio = next((track for track in decoded.tracks if track.track_kind == "audio"), None)
+    assert report.segment_ms > 0, "audio segmenting was not configured"
+    if audio is None:
+        assert report.segments == 0 and not report.listed, "segments without an audio track"
+        return
+    assert report.segments > 0, "audio samples were decoded but never segmented"
+    assert report.dropped_samples == 0 or report.drop_reasons, (
+        "dropped audio samples must carry a reason"
+    )
+    assert report.segment_ms <= audio.last_end_ms, "the segment length exceeds the decoded audio"
+    if report.listed == report.segments:
+        listed = sum(segment.bytes for segment in report.listed)
+        assert listed == report.bytes == audio.bytes, (
+            "segment bytes do not add up to the audio bytes"
+        )
+        previous = None
+        for index, segment in enumerate(report.listed, start=1):
+            start, end = segment.time_range.start_ms, segment.time_range.end_ms
+            assert start < end, f"segment {index} is not half-open"
+            assert segment.bytes > 0 and segment.sample_rate == audio.sample_rate
+            assert end - start <= report.segment_ms + TIMELINE_TOLERANCE_MS, (
+                f"segment {index} is longer than the configured length"
+            )
+            if previous is not None:
+                assert abs(start - previous) <= TIMELINE_TOLERANCE_MS, (
+                    f"segment {index} does not continue the previous segment"
+                )
+            previous = end
+        tail = report.listed[-1]
+        assert tail.partial, "the short final segment must be flagged partial"
+        assert tail.time_range.end_ms == audio.last_end_ms, "the final segment is short"
+
+
+def check_evidence(decoded) -> None:
+    kinds = set()
+    for descriptor in decoded.evidence_descriptors:
+        label = descriptor.kind
+        kinds.add(label)
+        assert descriptor.memory_kind in ADMITTED_MEMORY_KINDS, descriptor.memory_kind
+        handle = descriptor.locator.handle
+        assert handle == decoded.arena_id and "/" not in handle, (
+            "the locator must reference the arena, never a host path"
+        )
+        assert descriptor.locator.length > 0, "an empty buffer was admitted"
+        assert descriptor.locator.offset + descriptor.locator.length <= decoded.arena_capacity_bytes
+        assert descriptor.stream_id, "a buffer without a stream identity is unusable"
+        start = descriptor.time_range.start_ms
+        end = descriptor.time_range.end_ms
+        assert 0 <= start < end, f"{label} evidence is not half-open"
+        assert descriptor.lease.read_only, "batch consumers get read-only leases"
+        assert descriptor.lease.lease_id and descriptor.lease.expires_at_unix_ms > 0, (
+            "an evidence lease must be explicit"
+        )
+        assert (
+            descriptor.content_hash.startswith("sha256:") and len(descriptor.content_hash) == 71
+        ), descriptor.content_hash
+        if label == "video_frame":
+            assert descriptor.format.width > 0 and descriptor.format.height > 0
+    if decoded.tracks:
+        assert kinds, "a decoding build must keep at least one evidence buffer"
+
+
 def describe_track(track) -> str:
     if track.track_kind == "video":
         return f"{track.track_kind}:{track.codec}@{track.width}x{track.height}"
@@ -94,7 +246,7 @@ def main() -> None:
         report_path = args.report or Path(workspace) / "replay-report.pb"
         subprocess.run(
             [
-                str(RUNTIME),
+                str(runtime_binary()),
                 "replay",
                 str(args.pipeline),
                 str(media),
@@ -107,11 +259,16 @@ def main() -> None:
     check_source(report, media)
     check_anchors(report)
     check_honesty(report, media)
+    check_decoded_plane(report)
+    decoded = report.decoded
     tracks = ", ".join(describe_track(track) for track in report.source.tracks)
     print(
         f"Replay verified: platform={report.platform} duration_ms={report.source.duration_ms} "
         f"tracks=[{tracks}] anchors={report.emitted_anchors} dropped={report.dropped_items} "
         f"gaps={report.gap_items} reordered={report.out_of_order_items} "
+        f"descriptors={decoded.descriptors_built} leases={decoded.leases_issued}"
+        f"/{decoded.leases_released} segments={decoded.audio_segments.segments} "
+        f"arena_peak_bytes={decoded.arena_peak_bytes} "
         f"drop_reasons={','.join(report.drop_reasons) or 'none'} "
         f"blockers={','.join(report.blockers)}"
     )

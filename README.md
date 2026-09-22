@@ -4,8 +4,10 @@
 Protobuf/gRPC + FastAPI** 工程，为 SRT/文件接入、感知、时间轴融合和可溯源检索提供基础。
 
 当前版本 **0.1.0：可运行工程底座**。已实现素材元数据事务写入、不可变 revision、
-来源/模型血缘校验，以及带鉴权的关键词、标签、时间范围查询。GStreamer、模型推理、
-NATS 任务分发与 Milvus 语义索引尚未接入；相关 API 明确报告能力不可用。
+来源/模型血缘校验，以及带鉴权的关键词、标签、时间范围查询。媒体侧已接入 GStreamer 真实解码
+（可选 `gstreamer` feature）：解码 → 有界 arena → `BufferDescriptor` → lease 签发/校验/释放 → 音频 5 秒切段，
+已在授权样本上通过回放验收。抽帧与背压指标、模型推理、NATS 任务分发与 Milvus 语义索引尚未接入；
+相关 API 明确报告能力不可用。
 
 ## 快速开始
 
@@ -30,6 +32,9 @@ make pipeline-check
 make runtime
 make media-replay MEDIA=/absolute/path/to/authorized-sample.mp4
 ```
+
+`make media-replay` 需要 GStreamer 开发文件；没有的主机可加 `MEDIA_FEATURES=` 退回纯锚点报告
+（解码数据平面保持全零，并在 `blockers` 中声明未实现）。
 
 ## 工程结构
 

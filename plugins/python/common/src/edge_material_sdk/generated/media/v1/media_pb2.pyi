@@ -76,8 +76,110 @@ class TimelineAnchor(_message.Message):
     keyframe: bool
     def __init__(self, anchor_id: _Optional[str] = ..., track_kind: _Optional[str] = ..., time_range: _Optional[_Union[_common_pb2.TimeRange, _Mapping]] = ..., pts_ms: _Optional[int] = ..., keyframe: bool = ...) -> None: ...
 
+class DecodedTrackStat(_message.Message):
+    __slots__ = ("track_kind", "samples", "bytes", "first_pts_ms", "last_end_ms", "width", "height", "pixel_format", "sample_rate", "channels", "audio_format", "dropped_samples", "drop_reasons", "timeline_offset_ms", "overlapping_samples")
+    TRACK_KIND_FIELD_NUMBER: _ClassVar[int]
+    SAMPLES_FIELD_NUMBER: _ClassVar[int]
+    BYTES_FIELD_NUMBER: _ClassVar[int]
+    FIRST_PTS_MS_FIELD_NUMBER: _ClassVar[int]
+    LAST_END_MS_FIELD_NUMBER: _ClassVar[int]
+    WIDTH_FIELD_NUMBER: _ClassVar[int]
+    HEIGHT_FIELD_NUMBER: _ClassVar[int]
+    PIXEL_FORMAT_FIELD_NUMBER: _ClassVar[int]
+    SAMPLE_RATE_FIELD_NUMBER: _ClassVar[int]
+    CHANNELS_FIELD_NUMBER: _ClassVar[int]
+    AUDIO_FORMAT_FIELD_NUMBER: _ClassVar[int]
+    DROPPED_SAMPLES_FIELD_NUMBER: _ClassVar[int]
+    DROP_REASONS_FIELD_NUMBER: _ClassVar[int]
+    TIMELINE_OFFSET_MS_FIELD_NUMBER: _ClassVar[int]
+    OVERLAPPING_SAMPLES_FIELD_NUMBER: _ClassVar[int]
+    track_kind: str
+    samples: int
+    bytes: int
+    first_pts_ms: int
+    last_end_ms: int
+    width: int
+    height: int
+    pixel_format: str
+    sample_rate: int
+    channels: int
+    audio_format: str
+    dropped_samples: int
+    drop_reasons: _containers.RepeatedScalarFieldContainer[str]
+    timeline_offset_ms: int
+    overlapping_samples: int
+    def __init__(self, track_kind: _Optional[str] = ..., samples: _Optional[int] = ..., bytes: _Optional[int] = ..., first_pts_ms: _Optional[int] = ..., last_end_ms: _Optional[int] = ..., width: _Optional[int] = ..., height: _Optional[int] = ..., pixel_format: _Optional[str] = ..., sample_rate: _Optional[int] = ..., channels: _Optional[int] = ..., audio_format: _Optional[str] = ..., dropped_samples: _Optional[int] = ..., drop_reasons: _Optional[_Iterable[str]] = ..., timeline_offset_ms: _Optional[int] = ..., overlapping_samples: _Optional[int] = ...) -> None: ...
+
+class AudioSegment(_message.Message):
+    __slots__ = ("segment_id", "time_range", "sample_rate", "channels", "bytes", "partial")
+    SEGMENT_ID_FIELD_NUMBER: _ClassVar[int]
+    TIME_RANGE_FIELD_NUMBER: _ClassVar[int]
+    SAMPLE_RATE_FIELD_NUMBER: _ClassVar[int]
+    CHANNELS_FIELD_NUMBER: _ClassVar[int]
+    BYTES_FIELD_NUMBER: _ClassVar[int]
+    PARTIAL_FIELD_NUMBER: _ClassVar[int]
+    segment_id: str
+    time_range: _common_pb2.TimeRange
+    sample_rate: int
+    channels: int
+    bytes: int
+    partial: bool
+    def __init__(self, segment_id: _Optional[str] = ..., time_range: _Optional[_Union[_common_pb2.TimeRange, _Mapping]] = ..., sample_rate: _Optional[int] = ..., channels: _Optional[int] = ..., bytes: _Optional[int] = ..., partial: bool = ...) -> None: ...
+
+class AudioSegmentReport(_message.Message):
+    __slots__ = ("segment_ms", "segments", "partial_segments", "bytes", "listed", "listed_limit", "dropped_samples", "discontinuities", "drop_reasons")
+    SEGMENT_MS_FIELD_NUMBER: _ClassVar[int]
+    SEGMENTS_FIELD_NUMBER: _ClassVar[int]
+    PARTIAL_SEGMENTS_FIELD_NUMBER: _ClassVar[int]
+    BYTES_FIELD_NUMBER: _ClassVar[int]
+    LISTED_FIELD_NUMBER: _ClassVar[int]
+    LISTED_LIMIT_FIELD_NUMBER: _ClassVar[int]
+    DROPPED_SAMPLES_FIELD_NUMBER: _ClassVar[int]
+    DISCONTINUITIES_FIELD_NUMBER: _ClassVar[int]
+    DROP_REASONS_FIELD_NUMBER: _ClassVar[int]
+    segment_ms: int
+    segments: int
+    partial_segments: int
+    bytes: int
+    listed: _containers.RepeatedCompositeFieldContainer[AudioSegment]
+    listed_limit: int
+    dropped_samples: int
+    discontinuities: int
+    drop_reasons: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, segment_ms: _Optional[int] = ..., segments: _Optional[int] = ..., partial_segments: _Optional[int] = ..., bytes: _Optional[int] = ..., listed: _Optional[_Iterable[_Union[AudioSegment, _Mapping]]] = ..., listed_limit: _Optional[int] = ..., dropped_samples: _Optional[int] = ..., discontinuities: _Optional[int] = ..., drop_reasons: _Optional[_Iterable[str]] = ...) -> None: ...
+
+class DecodedDataPlane(_message.Message):
+    __slots__ = ("arena_id", "arena_capacity_bytes", "arena_peak_bytes", "decoded_bytes", "tracks", "descriptors_built", "descriptors_validated", "descriptor_failures", "failure_reasons", "leases_issued", "leases_released", "evidence_descriptors", "audio_segments")
+    ARENA_ID_FIELD_NUMBER: _ClassVar[int]
+    ARENA_CAPACITY_BYTES_FIELD_NUMBER: _ClassVar[int]
+    ARENA_PEAK_BYTES_FIELD_NUMBER: _ClassVar[int]
+    DECODED_BYTES_FIELD_NUMBER: _ClassVar[int]
+    TRACKS_FIELD_NUMBER: _ClassVar[int]
+    DESCRIPTORS_BUILT_FIELD_NUMBER: _ClassVar[int]
+    DESCRIPTORS_VALIDATED_FIELD_NUMBER: _ClassVar[int]
+    DESCRIPTOR_FAILURES_FIELD_NUMBER: _ClassVar[int]
+    FAILURE_REASONS_FIELD_NUMBER: _ClassVar[int]
+    LEASES_ISSUED_FIELD_NUMBER: _ClassVar[int]
+    LEASES_RELEASED_FIELD_NUMBER: _ClassVar[int]
+    EVIDENCE_DESCRIPTORS_FIELD_NUMBER: _ClassVar[int]
+    AUDIO_SEGMENTS_FIELD_NUMBER: _ClassVar[int]
+    arena_id: str
+    arena_capacity_bytes: int
+    arena_peak_bytes: int
+    decoded_bytes: int
+    tracks: _containers.RepeatedCompositeFieldContainer[DecodedTrackStat]
+    descriptors_built: int
+    descriptors_validated: int
+    descriptor_failures: int
+    failure_reasons: _containers.RepeatedScalarFieldContainer[str]
+    leases_issued: int
+    leases_released: int
+    evidence_descriptors: _containers.RepeatedCompositeFieldContainer[_common_pb2.BufferDescriptor]
+    audio_segments: AudioSegmentReport
+    def __init__(self, arena_id: _Optional[str] = ..., arena_capacity_bytes: _Optional[int] = ..., arena_peak_bytes: _Optional[int] = ..., decoded_bytes: _Optional[int] = ..., tracks: _Optional[_Iterable[_Union[DecodedTrackStat, _Mapping]]] = ..., descriptors_built: _Optional[int] = ..., descriptors_validated: _Optional[int] = ..., descriptor_failures: _Optional[int] = ..., failure_reasons: _Optional[_Iterable[str]] = ..., leases_issued: _Optional[int] = ..., leases_released: _Optional[int] = ..., evidence_descriptors: _Optional[_Iterable[_Union[_common_pb2.BufferDescriptor, _Mapping]]] = ..., audio_segments: _Optional[_Union[AudioSegmentReport, _Mapping]] = ...) -> None: ...
+
 class ReplayReport(_message.Message):
-    __slots__ = ("source", "anchors", "decoded_items", "emitted_anchors", "dropped_items", "out_of_order_items", "gap_items", "platform", "blockers", "drop_reasons", "golden_path_verified")
+    __slots__ = ("source", "anchors", "decoded_items", "emitted_anchors", "dropped_items", "out_of_order_items", "gap_items", "platform", "blockers", "drop_reasons", "golden_path_verified", "decoded")
     SOURCE_FIELD_NUMBER: _ClassVar[int]
     ANCHORS_FIELD_NUMBER: _ClassVar[int]
     DECODED_ITEMS_FIELD_NUMBER: _ClassVar[int]
@@ -89,6 +191,7 @@ class ReplayReport(_message.Message):
     BLOCKERS_FIELD_NUMBER: _ClassVar[int]
     DROP_REASONS_FIELD_NUMBER: _ClassVar[int]
     GOLDEN_PATH_VERIFIED_FIELD_NUMBER: _ClassVar[int]
+    DECODED_FIELD_NUMBER: _ClassVar[int]
     source: MediaSourceDescription
     anchors: _containers.RepeatedCompositeFieldContainer[TimelineAnchor]
     decoded_items: int
@@ -100,4 +203,5 @@ class ReplayReport(_message.Message):
     blockers: _containers.RepeatedScalarFieldContainer[str]
     drop_reasons: _containers.RepeatedScalarFieldContainer[str]
     golden_path_verified: bool
-    def __init__(self, source: _Optional[_Union[MediaSourceDescription, _Mapping]] = ..., anchors: _Optional[_Iterable[_Union[TimelineAnchor, _Mapping]]] = ..., decoded_items: _Optional[int] = ..., emitted_anchors: _Optional[int] = ..., dropped_items: _Optional[int] = ..., out_of_order_items: _Optional[int] = ..., gap_items: _Optional[int] = ..., platform: _Optional[str] = ..., blockers: _Optional[_Iterable[str]] = ..., drop_reasons: _Optional[_Iterable[str]] = ..., golden_path_verified: bool = ...) -> None: ...
+    decoded: DecodedDataPlane
+    def __init__(self, source: _Optional[_Union[MediaSourceDescription, _Mapping]] = ..., anchors: _Optional[_Iterable[_Union[TimelineAnchor, _Mapping]]] = ..., decoded_items: _Optional[int] = ..., emitted_anchors: _Optional[int] = ..., dropped_items: _Optional[int] = ..., out_of_order_items: _Optional[int] = ..., gap_items: _Optional[int] = ..., platform: _Optional[str] = ..., blockers: _Optional[_Iterable[str]] = ..., drop_reasons: _Optional[_Iterable[str]] = ..., golden_path_verified: bool = ..., decoded: _Optional[_Union[DecodedDataPlane, _Mapping]] = ...) -> None: ...

@@ -2,10 +2,11 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use prost::Message;
+use sensoryplex_media::segment::{MAX_AUDIO_SEGMENT_MS, MIN_AUDIO_SEGMENT_MS};
 use sensoryplex_media::source::{drain_source, FileSource, MediaSource, UnavailableSource};
 use sensoryplex_media::MediaError;
 use sensoryplex_runtime::{capability, Pipeline};
-use sensoryplex_sdk::media::ReplayReport;
+use sensoryplex_sdk::media::{DecodedDataPlane, MediaSourceDescription, ReplayReport};
 use sensoryplex_sdk::runtime::{
     runtime_service_server::{RuntimeService, RuntimeServiceServer},
     DescribeCapabilitiesRequest, DescribeCapabilitiesResponse, HealthRequest, HealthResponse,
@@ -15,17 +16,60 @@ use tonic::{Request, Response, Status};
 /// A gap larger than this is counted as a timeline discontinuity rather than smoothed over.
 const GAP_THRESHOLD_MS: i64 = 1_000;
 const DEFAULT_MAX_POINTS: usize = 1_000_000;
-/// This build only anchors timelines; it does not decode buffers or hand out leases yet.
-const REPLAY_BLOCKERS: [&str; 2] = [
-    "gstreamer_decode_not_implemented",
-    "buffer_lease_handoff_not_implemented",
-];
+const DEFAULT_AUDIO_SEGMENT_MS: u32 = sensoryplex_media::segment::DEFAULT_AUDIO_SEGMENT_MS;
+
+/// What this build still cannot do, stated per build instead of assumed. A report never
+/// claims a capability the binary does not have.
+fn replay_blockers() -> Vec<String> {
+    let mut blockers = vec!["adaptive_sampling_not_implemented".to_string()];
+    if !cfg!(feature = "gstreamer") {
+        blockers.push("gstreamer_decode_not_implemented".to_string());
+    }
+    // Leases are issued, validated and released, but no separate worker process consumes one yet.
+    blockers.push("lease_consumer_not_implemented".to_string());
+    blockers
+}
+
+/// Decodes the file into verified descriptors. Without the GStreamer feature this build has
+/// no decoder, and says so through `replay_blockers` rather than returning an empty plane.
+#[cfg(feature = "gstreamer")]
+fn decode_pass(
+    media: &str,
+    stream_id: &str,
+    arena_id: &str,
+    max_samples: usize,
+    audio_segment_ms: u32,
+) -> Result<(Option<DecodedDataPlane>, bool), String> {
+    let run = sensoryplex_media::decode::DecodeRun {
+        decode: sensoryplex_media::decode::DecodeConfig::default(),
+        max_samples,
+        audio_segment_ms,
+    };
+    sensoryplex_media::decode::decode_file(Path::new(media), stream_id, arena_id, &run)
+        .map(|(plane, truncated)| (Some(plane), truncated))
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(not(feature = "gstreamer"))]
+fn decode_pass(
+    _media: &str,
+    _stream_id: &str,
+    _arena_id: &str,
+    _max_samples: usize,
+    _audio_segment_ms: u32,
+) -> Result<(Option<DecodedDataPlane>, bool), String> {
+    Ok((None, false))
+}
+
+const REPLAY_USAGE: &str = "usage: sensoryplex-runtime replay <pipeline.yaml> <media-path> --report <report.pb> [--max-points N] [--audio-segment-ms N]";
 
 struct ReplayArgs {
     pipeline: String,
     media: String,
     report: String,
+    /// Bound on timeline anchors and on decoded samples. There is no unbounded mode.
     max_points: usize,
+    audio_segment_ms: u32,
 }
 
 impl ReplayArgs {
@@ -33,6 +77,7 @@ impl ReplayArgs {
         let mut positional = Vec::new();
         let mut report = None;
         let mut max_points = DEFAULT_MAX_POINTS;
+        let mut audio_segment_ms = DEFAULT_AUDIO_SEGMENT_MS;
         let mut index = 0;
         while index < args.len() {
             match args[index].as_str() {
@@ -47,6 +92,13 @@ impl ReplayArgs {
                     max_points = value.parse().map_err(|_| "invalid --max-points")?;
                     index += 2;
                 }
+                "--audio-segment-ms" => {
+                    let value = args
+                        .get(index + 1)
+                        .ok_or("missing value for --audio-segment-ms")?;
+                    audio_segment_ms = value.parse().map_err(|_| "invalid --audio-segment-ms")?;
+                    index += 2;
+                }
                 value => {
                     positional.push(value.to_string());
                     index += 1;
@@ -54,16 +106,19 @@ impl ReplayArgs {
             }
         }
         if positional.len() != 2 || max_points == 0 {
-            return Err(
-                "usage: sensoryplex-runtime replay <pipeline.yaml> <media-path> --report <report.pb> [--max-points N]"
-                    .into(),
-            );
+            return Err(REPLAY_USAGE.into());
+        }
+        if !(MIN_AUDIO_SEGMENT_MS..=MAX_AUDIO_SEGMENT_MS).contains(&audio_segment_ms) {
+            return Err(format!(
+                "audio-segment-ms must be between {MIN_AUDIO_SEGMENT_MS} and {MAX_AUDIO_SEGMENT_MS}"
+            ));
         }
         Ok(Self {
             pipeline: positional[0].clone(),
             media: positional[1].clone(),
             report: report.ok_or("replay requires --report <report.pb>")?,
             max_points,
+            audio_segment_ms,
         })
     }
 }
@@ -91,12 +146,9 @@ fn replay(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let duration_ms = description.duration_ms;
 
     let mut report = ReplayReport {
-        source: Some(description),
+        source: Some(description.clone()),
         platform: capability::platform(),
-        blockers: REPLAY_BLOCKERS
-            .iter()
-            .map(|name| (*name).to_string())
-            .collect(),
+        blockers: replay_blockers(),
         // Only a real media acceptance run may ever set this; this build cannot.
         golden_path_verified: false,
         ..Default::default()
@@ -135,18 +187,73 @@ fn replay(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     if truncated {
         report.blockers.push("max_points_truncated".into());
     }
+
+    // The anchors above come from ffprobe. This pass decodes the same file so the report
+    // carries real descriptors, real leases and a real arena, or an explicit reason why not.
+    let (arena_id, stream_id) = arena_identity(&description);
+    match decode_pass(
+        &args.media,
+        &stream_id,
+        &arena_id,
+        args.max_points,
+        args.audio_segment_ms,
+    ) {
+        Ok((plane, decode_truncated)) => {
+            report.decoded = plane;
+            if decode_truncated {
+                report.blockers.push("decode_truncated".into());
+            }
+        }
+        Err(reason) => {
+            // An attempted decode that failed is evidence, not silence: keep it in the
+            // report, then fail the command so no caller mistakes this for a pass.
+            report.decoded = Some(DecodedDataPlane {
+                failure_reasons: vec![reason.clone()],
+                ..Default::default()
+            });
+            report.blockers.push("decode_failed".into());
+            std::fs::write(&args.report, report.encode_to_vec())?;
+            return Err(std::io::Error::other(format!("decode_failed: {reason}")).into());
+        }
+    }
+
     std::fs::write(&args.report, report.encode_to_vec())?;
+    let plane = report.decoded.as_ref();
     println!(
-        "replay report written: platform={} anchors={} decoded={} dropped={} gaps={} out_of_order={} blockers={}",
+        "replay report written: platform={} anchors={} decoded_items={} dropped={} gaps={} out_of_order={} descriptors={} leases_issued={} leases_released={} segments={} arena_peak_bytes={} blockers={}",
         report.platform,
         report.emitted_anchors,
         report.decoded_items,
         report.dropped_items,
         report.gap_items,
         report.out_of_order_items,
+        plane.map_or(0, |plane| plane.descriptors_validated),
+        plane.map_or(0, |plane| plane.leases_issued),
+        plane.map_or(0, |plane| plane.leases_released),
+        plane
+            .and_then(|plane| plane.audio_segments.as_ref())
+            .map_or(0, |segments| segments.segments),
+        plane.map_or(0, |plane| plane.arena_peak_bytes),
         report.blockers.join(",")
     );
     Ok(())
+}
+
+/// Arena and stream identity come from the content digest, so a replay is reproducible and a
+/// different file can never be confused with this one.
+fn arena_identity(description: &MediaSourceDescription) -> (String, String) {
+    let digest = description
+        .source
+        .as_ref()
+        .map(|source| source.content_hash.as_str())
+        .unwrap_or_default();
+    let short = digest.get(7..19).unwrap_or_default();
+    let stream_id = description
+        .source
+        .as_ref()
+        .map(|source| source.stream_id.clone())
+        .unwrap_or_default();
+    (format!("arena-{short}"), stream_id)
 }
 
 struct Runtime;

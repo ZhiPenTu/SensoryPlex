@@ -15,3 +15,9 @@ serde_yaml.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[features]
+default = []
+# Local file decoding through GStreamer. It is opt-in so hosts without the GStreamer
+# development files still build and test the rest of the workspace.
+gstreamer = ["sensoryplex-media/gstreamer"]
