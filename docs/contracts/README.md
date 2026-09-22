@@ -30,6 +30,19 @@ reserved，破坏语义的修改进入新的协议 major。当前为开发预览
 - `Health.unavailable_capabilities` 与 `DescribeCapabilities.unavailable_capabilities` 同源，
   两处不一致视为契约缺陷。
 
+媒体源契约（`media/v1/media.proto`）：
+
+- `MediaSourceRef` 只携带 secret 名称与内容摘要：本地文件为 `sha256:` 摘要，直播流为空；
+  文件源的 `stream_id`/`source_id` 由摘要派生，同一文件重复回放保持幂等。
+- `TimelineAnchor` 使用同一 stream 的 `[start_ms, end_ms)` 呈现顺序区间，`pts_ms` 等于区间起点；
+  锚点不携带媒体字节。
+- ffprobe 按解码顺序输出帧：含 B 帧的流会出现 PTS 非单调，Runtime 负责重排为呈现顺序并把
+  重排数量记入 `out_of_order_items`；重排是显式动作，不是静默修复。
+- 每个被丢弃的点都要有原因（`drop_reasons`，如 `collapsed_interval`、`duration_unknown_last_frame_interval`、
+  `pts_unavailable`）；禁止把未知时长、未知 PTS 或超出时长的点夹取成合法区间。
+- `ReplayReport.golden_path_verified` 默认且当前恒为 false，只有真实授权样本通过完整验收才能置真；
+  未实现的能力必须出现在 `blockers` 中，且报告不得包含媒体路径。
+
 `append_material` 是受信 timeline/storage 进程的内部入口；当前无公共写入 API。
 事实写入和 outbox 在同一事务完成。outbox 分发、NATS 消费去重和重试器尚待实现，
 因此不能把“已写 outbox”解释为“已发布 NATS”或“可语义检索”。

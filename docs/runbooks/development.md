@@ -69,6 +69,16 @@ make runtime-smoke   # 真实 Rust 进程 + Python 客户端，校验 DescribeCa
   需显式配置 `pmset`/`caffeinate` 防休眠策略，且 16GB 机型不得默认并行加载 ASR + OCR + Fast VLM。
 - 容器化只适用于 `postgres`、`nats` 与无加速依赖的 `gateway`；不要把 `runtime`/媒体/推理放进 Linux 容器后再声明 macOS 加速可用。
 
+真实文件回放（需要显式授权的样本，合成片段只能验证管道，不能作为验收）：
+
+```sh
+make media-replay MEDIA=/absolute/path/to/authorized-sample.mp4
+```
+
+该命令用 ffprobe 读取真实 PTS，输出半开区间锚点报告并断言：摘要与文件一致、区间严格递增、
+锚点间无越界、报告不含媒体路径、`golden_path_verified` 为 false、未实现能力出现在 `blockers`。
+帧解码、`BufferDescriptor` 生成与 lease 交接尚未接入，因此该命令目前不产生任何 buffer。
+
 ## 可选向量基础设施
 
 `deploy/compose/docker-compose.vector.yml` 包含 etcd、MinIO 和 Milvus，镜像锁定 digest，

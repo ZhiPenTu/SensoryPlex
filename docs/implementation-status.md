@@ -13,7 +13,7 @@
 | PostgreSQL | 显式迁移、不可变素材与模型版本、来源校验、事务 outbox | 保留与归档策略、outbox 消费与补偿 |
 | Gateway | Bearer 认证、owner 过滤、素材详情、历史版本、关键词/标签/时间查询 | 外部鉴权、语义检索、短期媒体授权 URL |
 | 存储/硬件 | Rust adapter traits，模型与配置 hash 契约 | NAS/MinIO/Milvus、ONNX/TensorRT 实现 |
-| 媒体与模型 | Pipeline 配置、真实媒体 probe 工具 | GStreamer SRT/File（macOS 用 Homebrew GStreamer + VideoToolbox）、ASR/OCR/VLM/BGE 插件 |
+| 媒体与模型 | Pipeline 配置、真实媒体 probe 工具、ffprobe 锚点回放（已在真实样本上通过：PTS 半开区间、B 帧重排计数、lease 注册表、显式丢弃原因） | GStreamer 解码与 buffer/lease 交接、SRT 接入、抽帧与音频切段；ASR/OCR/VLM/BGE 插件 |
 | 工程 | uv/Cargo 锁文件、Docker、检查命令、CI（ubuntu） | 真视频 Golden Path、macOS CI 与 `launchd` 常驻形态、压测、监控仪表盘 |
 
 下一里程碑：**本地文件 → GStreamer → PTS 正确的 frame/audio descriptor**，先完成
@@ -22,3 +22,7 @@
 
 该里程碑需在 `macos-aarch64` 与 `linux-x86_64` 上分别验收：macOS 侧以原生进程运行
 runtime/media-worker（容器无法访问 Metal/CoreML），NVIDIA 侧沿用容器与 CUDA/TensorRT 路径。
+
+当前锚点路径已在真实样本（`video/1.mp4`）上通过回放验收，但仍未解码任何帧：`BufferDescriptor` 与真实 lease
+签发、抽帧、音频切段、断流重连与背压指标都属于待办；SRT 走 `UnavailableSource`，调用即报
+`gstreamer_srt_ingest_not_implemented`。

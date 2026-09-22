@@ -4,6 +4,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let files = [
         "common/v1/common.proto",
         "material/v1/material.proto",
+        "media/v1/media.proto",
         "runtime/v1/runtime.proto",
         "gateway/v1/gateway.proto",
     ];

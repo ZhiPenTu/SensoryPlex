@@ -11,6 +11,11 @@ pub mod edge {
                 tonic::include_proto!("edge.material.material.v1");
             }
         }
+        pub mod media {
+            pub mod v1 {
+                tonic::include_proto!("edge.material.media.v1");
+            }
+        }
         pub mod runtime {
             pub mod v1 {
                 tonic::include_proto!("edge.material.runtime.v1");
@@ -25,7 +30,8 @@ pub mod edge {
 }
 
 pub use edge::material::{
-    common::v1 as common, gateway::v1 as gateway, material::v1 as material, runtime::v1 as runtime,
+    common::v1 as common, gateway::v1 as gateway, material::v1 as material, media::v1 as media,
+    runtime::v1 as runtime,
 };
 
 #[derive(Debug, thiserror::Error)]

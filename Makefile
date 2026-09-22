@@ -2,7 +2,7 @@ UV ?= uv
 CARGO ?= cargo
 COMPOSE = docker compose --env-file .env -f deploy/compose/docker-compose.poc.yml
 
-.PHONY: setup configure proto check test integration format infra up down migrate gateway runtime pipeline-check runtime-smoke gateway-smoke
+.PHONY: setup configure proto check test integration format infra up down migrate gateway runtime pipeline-check runtime-smoke gateway-smoke media-replay
 setup: configure
 	$(UV) sync --frozen
 	$(MAKE) proto
@@ -59,3 +59,8 @@ runtime-smoke:
 
 gateway-smoke:
 	$(UV) run python tools/smoke_gateway.py
+
+media-replay:
+	@test -n "$(MEDIA)" || { echo "usage: make media-replay MEDIA=/absolute/path/to/authorized-sample.mp4"; exit 1; }
+	$(CARGO) build --locked -p sensoryplex-runtime
+	$(UV) run python tools/verify_replay.py --media "$(MEDIA)"

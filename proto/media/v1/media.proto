@@ -1,0 +1,70 @@
+syntax = "proto3";
+package edge.material.media.v1;
+
+import "common/v1/common.proto";
+
+// ADR-003: real-time media uses GStreamer, offline tools use FFmpeg. The kind only selects
+// the adapter; it never changes timeline semantics.
+enum MediaSourceKind {
+  MEDIA_SOURCE_KIND_UNSPECIFIED = 0;
+  MEDIA_SOURCE_KIND_FILE = 1;
+  MEDIA_SOURCE_KIND_SRT = 2;
+}
+
+// References a source without carrying the URI or its credentials.
+message MediaSourceRef {
+  string stream_id = 1;
+  string source_id = 2;
+  MediaSourceKind kind = 3;
+  // Secret name only. The URI itself never enters control messages or logs.
+  string uri_secret_ref = 4;
+  // sha256 of the local file; empty for live streams, never a placeholder digest.
+  string content_hash = 5;
+}
+
+message MediaTrack {
+  string track_kind = 1; // video | audio
+  string codec = 2;
+  uint32 width = 3;
+  uint32 height = 4;
+  uint32 sample_rate = 5;
+  uint32 channels = 6;
+  double average_frame_rate = 7;
+  // false when the container cannot report timing; such a track cannot feed timeline fusion.
+  bool timing_known = 8;
+}
+
+message MediaSourceDescription {
+  MediaSourceRef source = 1;
+  repeated MediaTrack tracks = 2;
+  // 0 means unknown (live stream or unreadable container), never an assumed duration.
+  int64 duration_ms = 3;
+  string probe_tool = 4;
+}
+
+// A decoded timeline anchor on one stream. Anchors carry no media bytes.
+message TimelineAnchor {
+  string anchor_id = 1;
+  string track_kind = 2;
+  edge.material.common.v1.TimeRange time_range = 3;
+  int64 pts_ms = 4;
+  bool keyframe = 5;
+}
+
+// One replay attempt. Counters and reasons stay explicit instead of optimistic defaults.
+message ReplayReport {
+  MediaSourceDescription source = 1;
+  repeated TimelineAnchor anchors = 2;
+  uint64 decoded_items = 3;
+  uint64 emitted_anchors = 4;
+  uint64 dropped_items = 5;
+  uint64 out_of_order_items = 6;
+  uint64 gap_items = 7;
+  string platform = 8;
+  // Capabilities this build did not implement, for example gstreamer_srt_ingest.
+  repeated string blockers = 9;
+  // Why items were dropped. A drop is always explained, never silent.
+  repeated string drop_reasons = 10;
+  // Stays false unless real authorized media passed the full acceptance path.
+  bool golden_path_verified = 11;
+}

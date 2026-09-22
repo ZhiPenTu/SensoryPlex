@@ -28,6 +28,7 @@ make check
 make integration
 make pipeline-check
 make runtime
+make media-replay MEDIA=/absolute/path/to/authorized-sample.mp4
 ```
 
 ## 工程结构

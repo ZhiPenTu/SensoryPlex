@@ -1,5 +1,26 @@
-//! Data-plane admission checks. Buffer allocation/mapping remains Runtime-owned.
+//! Data-plane admission, lease lifecycle and offline media probing.
+//!
+//! Buffer allocation/mapping and live GStreamer ingest remain Runtime-owned; this crate
+//! either produces verified anchors or reports exactly why it cannot.
 use sensoryplex_sdk::{common::BufferDescriptor, validate_digest, validate_range, ContractError};
+
+pub mod lease;
+pub mod probe;
+pub mod source;
+
+#[derive(Debug, thiserror::Error)]
+pub enum MediaError {
+    #[error("media_tool_missing: {0}")]
+    ToolMissing(String),
+    #[error("media_probe_failed: {0}")]
+    ProbeFailed(String),
+    #[error("invalid_probe_output: {0}")]
+    InvalidProbeOutput(String),
+    #[error("unsupported_media_source: {0}")]
+    UnsupportedSource(String),
+    #[error("media_io_failed: {0}")]
+    IoFailed(String),
+}
 
 pub fn validate_descriptor(
     buffer: &BufferDescriptor,

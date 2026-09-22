@@ -8,6 +8,7 @@ from grpc_tools import protoc
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "plugins/python/common/src/edge_material_sdk/generated"
+PACKAGES = "common|material|media|runtime|gateway"
 
 
 def main():
@@ -28,13 +29,13 @@ def main():
         raise SystemExit(result)
     for path in (p for p in OUT.rglob("*") if p.suffix in {".py", ".pyi"}):
         code = re.sub(
-            r"^from (common|material|runtime|gateway)(\.\S+) import ",
+            rf"^from ({PACKAGES})(\.\S+) import ",
             r"from edge_material_sdk.generated.\1\2 import ",
             path.read_text(),
             flags=re.MULTILINE,
         )
         code = re.sub(
-            r"(BuildTopDescriptorsAndMessages\(DESCRIPTOR, ')(common|material|runtime|gateway)(\.)",
+            rf"(BuildTopDescriptorsAndMessages\(DESCRIPTOR, ')({PACKAGES})(\.)",
             r"\1edge_material_sdk.generated.\2\3",
             code,
         )
