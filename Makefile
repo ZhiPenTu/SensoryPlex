@@ -1,8 +1,10 @@
 UV ?= uv
 CARGO ?= cargo
 COMPOSE = docker compose --env-file .env -f deploy/compose/docker-compose.poc.yml
+STREAM_COMPOSE = docker compose -f deploy/compose/docker-compose.stream.yml
 
-.PHONY: setup configure proto check test integration format infra up down migrate gateway runtime pipeline-check runtime-smoke gateway-smoke media-replay media-check
+.PHONY: setup configure proto check test integration format infra up down migrate gateway runtime pipeline-check runtime-smoke gateway-smoke media-replay media-check handoff-check
+.PHONY: stream-up stream-down stream-status stream-logs
 setup: configure
 	$(UV) sync --frozen
 	$(MAKE) proto
@@ -41,6 +43,21 @@ up:
 down:
 	$(COMPOSE) down
 
+stream-up:
+	$(STREAM_COMPOSE) up -d
+	@curl --fail --silent --show-error --connect-timeout 2 --max-time 3 --retry 5 --retry-connrefused --retry-delay 1 --retry-max-time 20 http://127.0.0.1:9998/metrics >/dev/null
+	@echo "MediaMTX 已启动；OBS 服务器 rtmp://127.0.0.1:1935/live，串流密钥 obs。是否有媒体输入请执行 make stream-status。"
+
+stream-down:
+	$(STREAM_COMPOSE) down
+
+stream-status:
+	$(STREAM_COMPOSE) ps
+	@curl --fail --silent --show-error --connect-timeout 2 --max-time 3 http://127.0.0.1:9998/metrics
+
+stream-logs:
+	$(STREAM_COMPOSE) logs --tail 100 mediamtx
+
 migrate:
 	$(UV) run python tools/migrate.py
 
@@ -73,3 +90,10 @@ media-replay:
 	@test -n "$(MEDIA)" || { echo "usage: make media-replay MEDIA=/absolute/path/to/authorized-sample.mp4"; exit 1; }
 	$(CARGO) build --locked --release -p sensoryplex-runtime --features "$(MEDIA_FEATURES)"
 	$(UV) run python tools/verify_replay.py --media "$(MEDIA)"
+
+# 跨进程数据面验收：Runtime 保留字节，独立 Python 进程按 lease 读取、校验并释放。
+# 需要真实授权样本，与 media-replay 同一份素材即可。
+handoff-check:
+	@test -n "$(MEDIA)" || { echo "usage: make handoff-check MEDIA=/absolute/path/to/authorized-sample.mp4"; exit 1; }
+	$(CARGO) build --locked --release -p sensoryplex-runtime --features "$(MEDIA_FEATURES)"
+	$(UV) run python tools/verify_handoff.py --media "$(MEDIA)"

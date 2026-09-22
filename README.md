@@ -7,6 +7,8 @@ Protobuf/gRPC + FastAPI** 工程，为 SRT/文件接入、感知、时间轴融�
 来源/模型血缘校验，以及带鉴权的关键词、标签、时间范围查询。媒体侧已接入 GStreamer 真实解码
 （可选 `gstreamer` feature）：解码 → 有界 arena → `BufferDescriptor` → lease 签发/校验/释放 → 音频 5 秒切段，
 并对视频做自适应抽帧（keep/skip 全部带原因），已在授权样本与 6 个公开许可样本上通过回放验收。
+跨进程数据面（M3）也已落地：`replay --handoff-listen` 把样本留在共享内存里，独立进程按 lease 读取、
+校验摘要并显式释放，容量与 lease 生命周期都有上限（见 ADR-010；消费方目前是验收脚本，不是模型 worker）。
 背压指标、模型推理、NATS 任务分发与 Milvus 语义索引尚未接入；
 相关 API 明确报告能力不可用。
 
@@ -25,6 +27,7 @@ make up
 `.env` 中。初始数据库没有业务数据，搜索返回空数组；工程不会自动生成模型结果。
 
 本地源码开发、端口、测试、迁移和回滚见 [开发手册](docs/runbooks/development.md)。
+OBS 本机推流可执行 `make stream-up`，配置与接流地址见 [OBS 推流手册](docs/runbooks/obs-streaming.md)。
 
 ```sh
 make check
@@ -32,10 +35,13 @@ make integration
 make pipeline-check
 make runtime
 make media-replay MEDIA=/absolute/path/to/authorized-sample.mp4
+make handoff-check MEDIA=/absolute/path/to/authorized-sample.mp4
 ```
 
 `make media-replay` 需要 GStreamer 开发文件；没有的主机可加 `MEDIA_FEATURES=` 退回纯锚点报告
-（解码数据平面保持全零，并在 `blockers` 中声明未实现）。
+（解码数据平面保持全零，并在 `blockers` 中声明未实现）。`make handoff-check` 在同一份素材上再跑一次
+跨进程数据面验收：Runtime 保留字节，独立 Python 进程按 lease 读取、校验摘要并释放，
+越界与过期路径必须给出显式拒绝码。
 
 ## 工程结构
 
@@ -56,6 +62,7 @@ tools/                  配置、代码生成、迁移、测试与真实媒体�
 - [技术选型 ADR 与 V1 实施蓝图](技术选型ADR与V1实施蓝图.md)
 - [开放式插件开发文档](开放式插件开发文档.md)
 - [ADR-009：媒体格式支持矩阵与拒绝语义](docs/adr/ADR-009-媒体格式支持矩阵与拒绝语义.md)
+- [ADR-010：跨进程数据面的安全边界与可见性](docs/adr/ADR-010-跨进程数据面的安全边界.md)
 - [实现状态与后续阶段](docs/implementation-status.md)
 - [契约与查询语义](docs/contracts/README.md)
 - [初始化验证记录](docs/verification.md)

@@ -1107,6 +1107,7 @@ version = "0.1.0"
 dependencies = [
  "gstreamer",
  "gstreamer-app",
+ "libc",
  "sensoryplex-sdk",
  "sha2",
  "thiserror",

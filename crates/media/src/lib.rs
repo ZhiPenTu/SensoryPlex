@@ -8,10 +8,12 @@ pub mod arena;
 #[cfg(feature = "gstreamer")]
 pub mod decode;
 pub mod descriptor;
+pub mod handoff;
 pub mod lease;
 pub mod probe;
 pub mod sampler;
 pub mod segment;
+pub mod shm;
 pub mod source;
 
 #[derive(Debug, thiserror::Error)]
@@ -34,6 +36,15 @@ pub enum MediaError {
     DescriptorRejected(String),
     #[error("sampling_rejected: {0}")]
     SamplingRejected(String),
+}
+
+/// 单调性不成立的系统时钟读数只用于 lease TTL 与过期判定；读不到时返回 0，
+/// 而不是编造一个时间。交接双方必须同机，因此这个口径是共享的。
+pub fn now_unix_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as i64)
+        .unwrap_or_default()
 }
 
 pub fn validate_descriptor(

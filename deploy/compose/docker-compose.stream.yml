@@ -1,0 +1,35 @@
+name: sensoryplex-stream
+
+services:
+  mediamtx:
+    image: bluenviron/mediamtx:1.21.1@sha256:5ce2a948eb68df06ce2e13870db8df8e30d516ac4dc40e04bfe8aee3bdf7be40
+    restart: unless-stopped
+    user: "65532:65532"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    cpus: "1.0"
+    mem_limit: 128m
+    pids_limit: 64
+    environment:
+      GOMEMLIMIT: 96MiB
+      GOMAXPROCS: "2"
+    ports:
+      # OBS 与接流进程均在本机；不开放局域网或公网访问。
+      - "127.0.0.1:1935:1935/tcp"
+      - "127.0.0.1:8554:8554/tcp"
+      - "127.0.0.1:8890:8890/udp"
+      - "127.0.0.1:9998:9998/tcp"
+    volumes:
+      - type: bind
+        source: ../mediamtx/mediamtx.yml
+        target: /mediamtx.yml
+        read_only: true
+        bind:
+          create_host_path: false
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+    stop_grace_period: 10s

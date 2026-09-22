@@ -3,9 +3,33 @@
 //! Arena 是解码后字节唯一存放的地方。调用方拿到一个不透明的句柄加上
 //! offset/length 对；arena 拒绝超出容量无限增长。字节不会被拷贝进控制消息或日志。
 
+use crate::shm::ShmSegment;
 use crate::MediaError;
 
 pub const DEFAULT_ARENA_CAPACITY_BYTES: usize = 64 * 1024 * 1024;
+
+/// 字节的实际存放位置：本进程内（默认）或 POSIX 共享内存（跨进程交接）。
+#[derive(Debug)]
+enum Backing {
+    Anonymous(Vec<u8>),
+    Shared(ShmSegment),
+}
+
+impl Backing {
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            Self::Anonymous(bytes) => bytes,
+            Self::Shared(segment) => segment.as_slice(),
+        }
+    }
+
+    fn as_mut_slice(&mut self) -> &mut [u8] {
+        match self {
+            Self::Anonymous(bytes) => bytes,
+            Self::Shared(segment) => segment.as_mut_slice(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 struct Slab {
@@ -18,7 +42,9 @@ struct Slab {
 pub struct Arena {
     id: String,
     capacity: usize,
-    bytes: Vec<u8>,
+    bytes: Backing,
+    /// 段名只在 lease 服务里交给消费者，绝不进入 descriptor。
+    segment_name: Option<String>,
     slabs: Vec<Slab>,
     used_bytes: usize,
     peak_bytes: usize,
@@ -32,7 +58,25 @@ impl Arena {
         Ok(Self {
             id: id.to_string(),
             capacity,
-            bytes: vec![0; capacity],
+            bytes: Backing::Anonymous(vec![0; capacity]),
+            segment_name: None,
+            slabs: Vec::new(),
+            used_bytes: 0,
+            peak_bytes: 0,
+        })
+    }
+
+    /// 创建一个可跨进程读取的 arena。`seed` 决定段名，因此段名不可从 `id` 推导。
+    pub fn shared(id: &str, capacity: usize, seed: &[u8]) -> Result<Self, MediaError> {
+        if id.is_empty() || capacity == 0 {
+            return Err(MediaError::IoFailed("invalid_arena_configuration".into()));
+        }
+        let (segment, name) = ShmSegment::create(seed, capacity)?;
+        Ok(Self {
+            id: id.to_string(),
+            capacity,
+            bytes: Backing::Shared(segment),
+            segment_name: Some(name),
             slabs: Vec::new(),
             used_bytes: 0,
             peak_bytes: 0,
@@ -46,6 +90,15 @@ impl Arena {
 
     pub fn capacity(&self) -> usize {
         self.capacity
+    }
+
+    /// 跨进程消费者用来建立映射的段名。匿名 arena 返回 `None`。
+    pub fn segment_name(&self) -> Option<&str> {
+        self.segment_name.as_deref()
+    }
+
+    pub fn is_shared(&self) -> bool {
+        self.segment_name.is_some()
     }
 
     pub fn used_bytes(&self) -> usize {
@@ -88,14 +141,15 @@ impl Arena {
 
     pub fn write(&mut self, offset: usize, payload: &[u8]) -> Result<(), MediaError> {
         self.slab(offset, payload.len())?;
-        self.bytes[offset..offset + payload.len()].copy_from_slice(payload);
+        self.bytes.as_mut_slice()[offset..offset + payload.len()].copy_from_slice(payload);
         Ok(())
     }
 
-    /// 读回一个 live slab。用于在不把字节复制到别处的前提下校验 lease 交接。
+    /// 读回一个 live slab 内部的任意连续区间。交接给消费者的是"读取窗口"，
+    /// 窗口可以比 slab 窄、也可以从 slab 中间开始；越界或跨段一律拒绝。
     pub fn read(&self, offset: usize, length: usize) -> Result<&[u8], MediaError> {
-        self.slab(offset, length)?;
-        Ok(&self.bytes[offset..offset + length])
+        self.containing_slab(offset, length)?;
+        Ok(&self.bytes.as_slice()[offset..offset + length])
     }
 
     /// 释放一个 slab 并与相邻空闲空间合并。
@@ -157,6 +211,21 @@ impl Arena {
             }
         }
         self.slabs = merged;
+    }
+
+    /// 找到完全包含 `[offset, offset + length)` 的 live slab。
+    fn containing_slab(&self, offset: usize, length: usize) -> Result<Slab, MediaError> {
+        if length == 0 {
+            return Err(MediaError::IoFailed("zero_length_slab".into()));
+        }
+        let end = offset
+            .checked_add(length)
+            .ok_or_else(|| MediaError::IoFailed("unknown_or_released_arena_slab".into()))?;
+        self.slabs
+            .iter()
+            .find(|slab| slab.live && slab.offset <= offset && slab.offset + slab.length >= end)
+            .copied()
+            .ok_or_else(|| MediaError::IoFailed("unknown_or_released_arena_slab".into()))
     }
 
     fn slab(&self, offset: usize, length: usize) -> Result<Slab, MediaError> {
@@ -240,5 +309,26 @@ mod tests {
         assert!(arena.read(offset, 8).is_err());
         assert!(arena.read(31, 8).is_err());
         assert!(arena.write(0, &[]).is_err());
+    }
+
+    #[test]
+    fn a_shared_arena_is_readable_through_an_independent_mapping() {
+        let mut arena = Arena::shared("arena-shared", 4096, b"shared-arena-test").unwrap();
+        let name = arena
+            .segment_name()
+            .expect("shared arenas publish a name")
+            .to_string();
+        assert!(arena.is_shared());
+        let offset = arena.allocate(5).unwrap();
+        arena.write(offset, b"hello").unwrap();
+        // 第二个映射代表另一个进程：它必须看到同样的字节，且看不到未分配的尾部。
+        let reader = ShmSegment::open(&name, 4096).unwrap();
+        assert_eq!(&reader.as_slice()[offset..offset + 5], b"hello");
+        assert_eq!(&reader.as_slice()[offset + 5..offset + 6], &[0u8]);
+        drop(reader);
+        assert!(Arena::new("arena-anon", 4096)
+            .unwrap()
+            .segment_name()
+            .is_none());
     }
 }

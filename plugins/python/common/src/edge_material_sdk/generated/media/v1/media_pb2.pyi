@@ -217,7 +217,7 @@ class DecodedDataPlane(_message.Message):
     def __init__(self, arena_id: _Optional[str] = ..., arena_capacity_bytes: _Optional[int] = ..., arena_peak_bytes: _Optional[int] = ..., decoded_bytes: _Optional[int] = ..., tracks: _Optional[_Iterable[_Union[DecodedTrackStat, _Mapping]]] = ..., descriptors_built: _Optional[int] = ..., descriptors_validated: _Optional[int] = ..., descriptor_failures: _Optional[int] = ..., failure_reasons: _Optional[_Iterable[str]] = ..., leases_issued: _Optional[int] = ..., leases_released: _Optional[int] = ..., evidence_descriptors: _Optional[_Iterable[_Union[_common_pb2.BufferDescriptor, _Mapping]]] = ..., audio_segments: _Optional[_Union[AudioSegmentReport, _Mapping]] = ..., sampling: _Optional[_Iterable[_Union[SamplingReport, _Mapping]]] = ...) -> None: ...
 
 class ReplayReport(_message.Message):
-    __slots__ = ("source", "anchors", "decoded_items", "emitted_anchors", "dropped_items", "out_of_order_items", "gap_items", "platform", "blockers", "drop_reasons", "golden_path_verified", "decoded")
+    __slots__ = ("source", "anchors", "decoded_items", "emitted_anchors", "dropped_items", "out_of_order_items", "gap_items", "platform", "blockers", "drop_reasons", "golden_path_verified", "decoded", "handoff_state")
     SOURCE_FIELD_NUMBER: _ClassVar[int]
     ANCHORS_FIELD_NUMBER: _ClassVar[int]
     DECODED_ITEMS_FIELD_NUMBER: _ClassVar[int]
@@ -230,6 +230,7 @@ class ReplayReport(_message.Message):
     DROP_REASONS_FIELD_NUMBER: _ClassVar[int]
     GOLDEN_PATH_VERIFIED_FIELD_NUMBER: _ClassVar[int]
     DECODED_FIELD_NUMBER: _ClassVar[int]
+    HANDOFF_STATE_FIELD_NUMBER: _ClassVar[int]
     source: MediaSourceDescription
     anchors: _containers.RepeatedCompositeFieldContainer[TimelineAnchor]
     decoded_items: int
@@ -242,4 +243,5 @@ class ReplayReport(_message.Message):
     drop_reasons: _containers.RepeatedScalarFieldContainer[str]
     golden_path_verified: bool
     decoded: DecodedDataPlane
-    def __init__(self, source: _Optional[_Union[MediaSourceDescription, _Mapping]] = ..., anchors: _Optional[_Iterable[_Union[TimelineAnchor, _Mapping]]] = ..., decoded_items: _Optional[int] = ..., emitted_anchors: _Optional[int] = ..., dropped_items: _Optional[int] = ..., out_of_order_items: _Optional[int] = ..., gap_items: _Optional[int] = ..., platform: _Optional[str] = ..., blockers: _Optional[_Iterable[str]] = ..., drop_reasons: _Optional[_Iterable[str]] = ..., golden_path_verified: bool = ..., decoded: _Optional[_Union[DecodedDataPlane, _Mapping]] = ...) -> None: ...
+    handoff_state: str
+    def __init__(self, source: _Optional[_Union[MediaSourceDescription, _Mapping]] = ..., anchors: _Optional[_Iterable[_Union[TimelineAnchor, _Mapping]]] = ..., decoded_items: _Optional[int] = ..., emitted_anchors: _Optional[int] = ..., dropped_items: _Optional[int] = ..., out_of_order_items: _Optional[int] = ..., gap_items: _Optional[int] = ..., platform: _Optional[str] = ..., blockers: _Optional[_Iterable[str]] = ..., drop_reasons: _Optional[_Iterable[str]] = ..., golden_path_verified: bool = ..., decoded: _Optional[_Union[DecodedDataPlane, _Mapping]] = ..., handoff_state: _Optional[str] = ...) -> None: ...

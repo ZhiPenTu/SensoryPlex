@@ -179,4 +179,9 @@ message ReplayReport {
   bool golden_path_verified = 11;
   // Populated only when this build actually decoded buffers.
   DecodedDataPlane decoded = 12;
+  // Whether this run handed the decoded bytes to an independent consumer process.
+  // A plain replay must report "not_exercised": a report must never imply that the
+  // lease consumer ran. "exposed_on=<addr>" means the data plane was served there,
+  // and the lease accounting lives in that run's `handoff_stats` line.
+  string handoff_state = 13;
 }

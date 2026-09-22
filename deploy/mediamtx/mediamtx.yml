@@ -1,0 +1,47 @@
+# 本机单流接入层：仅转封装和转发，解码与模型仍由宿主原生进程负责。
+logLevel: info
+logDestinations: [stdout]
+logStructured: true
+dumpPackets: false
+readTimeout: 10s
+writeTimeout: 10s
+writeQueueSize: 512
+
+# 仅允许一个命名路径；访问边界由 Compose 的 loopback 端口绑定提供。
+# obs 是本地路径标识，不是鉴权密钥；扩大监听范围前必须添加独立鉴权。
+authMethod: internal
+authInternalUsers:
+  - user: any
+    permissions:
+      - action: publish
+        path: live/obs
+      - action: read
+        path: live/obs
+      - action: metrics
+
+api: false
+metrics: true
+metricsAddress: :9998
+pprof: false
+playback: false
+rtsp: true
+rtspTransports: [tcp]
+rtspAddress: :8554
+rtmp: true
+rtmpAddress: :1935
+srt: true
+srtAddress: :8890
+hls: false
+webrtc: false
+moq: false
+
+pathDefaults:
+  source: publisher
+  maxReaders: 4
+  overridePublisher: false
+  record: false
+  # 无源时保持不可用，禁止播放占位片段冒充真实输入。
+  alwaysAvailable: false
+
+paths:
+  live/obs:

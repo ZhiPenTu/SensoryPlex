@@ -1,0 +1,105 @@
+syntax = "proto3";
+package edge.material.media.v1;
+
+import "common/v1/common.proto";
+
+// 跨进程数据面：运行时把已解码的 buffer 保留在共享内存里，消费者按 lease 领取一个
+// "读取窗口"，从段里读出字节后显式释放。
+//
+// 约束（AGENTS.md）：
+// - 消息里只出现不透明句柄、偏移与摘要，永远不带原始帧 / 音频 / tensor / 密钥；
+// - 保留表与 arena 都有上限：超出就显式拒绝，绝不无限堆积，也绝不静默丢弃；
+// - 每一次拒绝都带 `ProcessingError.reason_code`，调用方不必靠日志猜失败原因；
+// - lease 只对本机、同 UID 的进程有意义，段名不是路径，也不构成授权。
+
+// 保留表里的一条 buffer。字节本身不在消息里。
+message RetainedBuffer {
+  string buffer_id = 1;
+  string kind = 2;
+  string stream_id = 3;
+  edge.material.common.v1.TimeRange time_range = 4;
+  edge.material.common.v1.BufferFormat format = 5;
+  // 该 buffer 在共享段内的字节区间；消费者的窗口必须落在其中。
+  uint64 offset_bytes = 6;
+  uint64 length_bytes = 7;
+  // 整条 buffer 的摘要。`Acquire` 授权窗口后返回的摘要只覆盖被授予的窗口，不是这一个。
+  string content_hash = 8;
+  // 非空表示已被消费者领走。同一 buffer 同时只允许一个消费者。
+  string lease_id = 9;
+}
+
+// 数据面的有界性证据：每个数字都是计数，不是估计值。
+//
+// 两条恒等式必须成立，消费者和编排脚本都按它们对账：
+//   retained_total = retained + released_total + expired_total   （每条保留的 buffer 都有归宿）
+//   offered_total = retained_total + retain_rejections           （每个保留请求都有结果）
+// 其中 `offered_total` 与解码侧交接的样本数一一对应，因此可以和 ReplayReport 对账。
+message HandoffStats {
+  uint64 retained_limit = 1;
+  uint64 retained = 2;
+  uint64 leased = 3;
+  uint64 retained_total = 4;
+  uint64 released_total = 5;
+  uint64 expired_total = 6;
+  // 保留期的写侧拒绝（保留表满、段满）。它是有界容量的证据，不是故障。
+  uint64 retain_rejections = 7;
+  // 消费期被拒绝的请求（越界、未知 buffer、非法 TTL、重复领取、迟到释放）。
+  uint64 request_rejections = 8;
+  // 两类拒绝的原因拆分：两者之和等于各原因计数之和。
+  map<string, uint64> rejection_reasons = 9;
+  uint64 arena_capacity_bytes = 10;
+  uint64 arena_used_bytes = 11;
+  uint64 arena_peak_bytes = 12;
+  uint64 arena_live_slabs = 13;
+  // 保留请求的累计数（成功 + 被容量拒绝）。
+  uint64 offered_total = 14;
+}
+
+message ListRetainedRequest {}
+message ListRetainedResponse {
+  repeated RetainedBuffer buffers = 1;
+  HandoffStats stats = 2;
+  // 共享内存段名：不透明、有界的句柄，不是文件路径。生产者退出后段即失效，
+  // 因此消费者必须在生产者存活期间打开它。
+  string segment_name = 3;
+}
+
+message HandoffStatsRequest {}
+message HandoffStatsResponse {
+  HandoffStats stats = 1;
+  string segment_name = 2;
+}
+
+message AcquireBufferRequest {
+  string buffer_id = 1;
+  // 读取窗口，单位字节；0/0 表示整条 buffer。窗口必须落在该 buffer 自己的区间内，
+  // 越界或跨到相邻 buffer 一律拒绝，而不是被夹取到合法范围。
+  uint64 offset_bytes = 2;
+  uint64 length_bytes = 3;
+  // 0 表示使用服务端的默认 TTL，不是"永不过期"。
+  uint32 ttl_ms = 4;
+}
+
+message AcquireBufferResponse {
+  bool granted = 1;
+  // 成功时才有值：含只读 lease、locator（不透明句柄 + offset/length）与窗口摘要。
+  edge.material.common.v1.BufferDescriptor buffer = 2;
+  string segment_name = 3;
+  uint64 arena_capacity_bytes = 4;
+  edge.material.common.v1.ProcessingError error = 5;
+}
+
+message ReleaseBufferRequest { string lease_id = 1; }
+message ReleaseBufferResponse {
+  bool released = 1;
+  // 被释放的 buffer 身份：迟到的释放不会返回成功，也不会返回错误的 buffer_id。
+  string buffer_id = 2;
+  edge.material.common.v1.ProcessingError error = 3;
+}
+
+service BufferHandoffService {
+  rpc List(ListRetainedRequest) returns (ListRetainedResponse);
+  rpc Stats(HandoffStatsRequest) returns (HandoffStatsResponse);
+  rpc Acquire(AcquireBufferRequest) returns (AcquireBufferResponse);
+  rpc Release(ReleaseBufferRequest) returns (ReleaseBufferResponse);
+}

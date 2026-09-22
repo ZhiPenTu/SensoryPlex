@@ -286,3 +286,86 @@ keep（首帧 / 内容变化 / 静止心跳）或带原因的 skip（速率上�
 **未验证范围（不得当作完成）：** 覆盖率是**帧数**口径，不是语义口径。被跳过的帧是否真的没有携带
 OCR/ASR/VLM 需要的信息，只有接入模型（M8）之后才能验证；当前策略是启发式，不能据此声称"抽帧不丢语义"。
 6 个样本仍是 CFR，VFR 与断流重连样本仍缺（见 `docs/TODO.md`）。
+
+### M3 跨进程数据面：lease 消费方与真实交接（2026-09-23）
+
+在这一轮之前，lease 只是"签发后立刻在同一个进程里释放"：账面对得上，但没有真实交接，
+`ReplayReport.blockers` 一直挂着 `lease_consumer_not_implemented`。本轮把它做成**三个进程**的数据面，
+blocker 也随之移除。
+
+**结构（三者必须是不同进程，否则验收没有意义）**
+
+1. `tools/verify_handoff.py`（编排 + 对账）：解析生产者输出、起消费者、核对两侧计数。
+2. `sensoryplex-runtime replay … --handoff-listen 127.0.0.1:PORT`（生产者）：解码后把样本留在 POSIX
+   共享内存里，按 lease 授权窗口，最后打印 `handoff_ready` / `handoff_stats` 并向 `ReplayReport`
+   写 `handoff_state`。
+3. `tools/handoff_worker.py`（消费者）：**独立 Python 进程**，不参与解码、不知道媒体文件，
+   只能通过 gRPC 拿到段名与窗口；`shm_open` + `mmap` 段，校验摘要后显式 `Release`。
+
+消费者进程与生产者进程 PID 不同这条是断言，不是描述；段名每次运行随机派生
+（`/sp.<12 位十六进制>`），无法从报告里的 arena handle 推导。
+
+**真实执行结果（`uv run python tools/verify_handoff.py --media <样本>`，两个场景各跑一次）**
+
+| 样本 | 场景 | 保留表上限 | arena | offered | retained | rejected | released | expired | full_retention |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `video/1.mp4` | large_bounds | 4096 | 256 MB | 1347 | 1347 | 0 | 1346 | 1 | true |
+| `video/1.mp4` | bounded_backlog | 6 | 128 MB | 1347 | 6 | 1341 | 5 | 1 | false |
+| `sasebo-basketball` | large_bounds | 4096 | 256 MB | 3033 | 3033 | 0 | 3032 | 1 | true |
+| `sasebo-basketball` | bounded_backlog | 6 | 128 MB | 3033 | 6 | 3027 | 5 | 1 | false |
+| `officehours-panel` | large_bounds | 4096 | 256 MB | 112055 | 4096 | 107959 | 4095 | 1 | false |
+| `officehours-panel` | bounded_backlog | 6 | 128 MB | 112055 | 6 | 112049 | 5 | 1 | false |
+
+`offered` 与报告对得上：`video/1.mp4` 的 `Σtrack.samples = 1347`（26 保留视频帧 + 1321 音频样本），
+`officehours-panel` 为 112055（470 + 111585）；两者的 `descriptors - Σtrack.samples` 分别是 7 与 446，
+即各自的音频段数（前者 6 段 + 1 个尾部 partial 段）。
+`large_bounds` 在 `officehours-panel` 上确实放不下整批（112055 > 4096），因此它不是"必然全保留"的断言：
+脚本要求所有拒绝都必须是**容量原因**，而不是无条件的零拒绝。
+
+**结论都是可复核的，不是"看起来跑通了"：**
+
+1. **两条恒等式 + 无悬挂 slab。** 每个场景都断言 `retained_total == retained + released + expired`
+   与 `offered == retained_total + retain_rejections`，并断言结束时 `arena_live_slabs == 0`。
+2. **越界不夹取。** 消费者请求跨到相邻 buffer 的窗口得到 `mapping_out_of_range`，
+   只给 `offset` 不给 `length`（或反之）得到 `ambiguous_window`；生产者侧的 `request_rejections > 0`
+   与消费者侧拒绝计数必须一致（两处独立统计）。
+3. **摘要绑定窗口。** 整条 buffer 的 `content_hash` 与 `Acquire` 返回的窗口摘要是两个值；
+   脚本在至少两条视频 buffer 上验证过子窗口摘要与整条不同，且内容与 mmap 读到的字节一致。
+   不足两条视频 buffer 时该检查记 `sub_window_tested=false`，不会假装做过。
+4. **lease 生命周期有出口。** 故意让一条 lease 以 50 ms TTL 过期：过期后 buffer 被回收，
+   迟到的 `Release` 得到 `unknown_or_released_lease`，同一个 buffer 再次 `Acquire` 得到 `unknown_buffer`。
+   `expired == 1` 是断言，其余 buffer 必须显式释放（`released == leases_issued - expired`）。
+5. **有界容量是显式拒绝，不是堆积。** `bounded_backlog` 把保留表钉在 6：
+   拒绝数 1341 / 3027 / 112049，原因全部是 `handoff_backlog_full`，进程内存不随样本时长增长。
+6. **诚实性。** `ReplayReport.handoff_state` 在带 `--handoff-listen` 时是 `exposed_on=127.0.0.1:<port>`，
+   不带时是 `not_exercised`——一次没起消费方的 replay 不会被读成"数据面已验证"。
+   `verify_replay.py` 已把 `EXPECTED_BLOCKERS` 收紧为空集，并断言 `handoff_state == not_exercised`；
+   `golden_path_verified` 仍为 false。
+
+**顺带修掉三个真实缺陷（都是被这轮验收逼出来的）：**
+
+- `Arena::read(offset, len)` 原先要求 `offset` **恰好等于** slab 起点，子窗口一律读不到 —— 交接窗口天生是子窗口。
+  现在按 slab 区间做包含判定（`containing_slab`）。
+- `BufferHandoff::expire()` 先做 lease 反查再回收，顺序反了，导致"buffer 挂着已失效 lease 永不释放"。
+  现在先回收再清 lease。
+- 窗口合法性原先排在 `buffer_already_leased` 之后，导致非法窗口会掩盖"已被领走"这个更准确的原因；
+  现在先判窗口。
+
+**契约新增：** `media/v1/handoff.proto`（`BufferHandoffService`：`List`/`Stats`/`Acquire`/`Release`，
+`RetainedBuffer`、`HandoffStats`、`AcquireBufferRequest{offset,length,ttl_ms}`），
+`ReplayReport.handoff_state`，以及 Runtime CLI 的 `--handoff-listen` / `--handoff-arena-bytes` /
+`--handoff-retained-limit` / `--handoff-ttl-ms` / `--handoff-wait-timeout-ms` / `--handoff-idle-timeout-ms`。
+契约测试 `tests/contracts/test_handoff_contract.py` 6 项通过（`make check` 的契约测试总数 35 项）。
+
+**复现命令：** `make handoff-check MEDIA=/absolute/path/to/authorized-sample.mp4`（先构建 release runtime）。
+
+**未验证范围（不得当作完成）：**
+
+- **同 UID 进程之间没有逐 buffer 内存隔离**：lease 约束的是"该不该读那个窗口"，不是"能不能读到字节"，
+  消费者是受信组件。这一条由消费者以 `same_uid_segment_visibility` 显式上报，安全边界见
+  [ADR-010](adr/ADR-010-跨进程数据面的安全边界.md)。
+- 数据面只在本机有意义（共享内存不可跨主机映射），`--handoff-listen` 只接受回环地址；
+  跨机要走别的传输方式，本轮没有做。
+- 消费方是**验收脚本**，不是模型 worker：ASR/OCR/VLM/BGE 仍未接入，语义可见性仍无证据。
+- 未验证跨平台：全部在 `macos-aarch64` 完成，Linux/x86_64 侧（`docs/TODO.md` M6）未验收。
+- 未验证长时间运行下的段泄漏与反复 replay 的清理行为；未验证进程被强杀后段名残留的表现。

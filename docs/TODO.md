@@ -21,6 +21,8 @@
       （证据：`video/1.mp4` 与 `video/samples/` 6 个公开许可样本，见 `tests/fixtures/media/OPEN-SAMPLES.md`）
 - [x] 视频自适应抽帧（M1）：进入 arena 前判定，keep/skip 全部带原因，保留率随内容自适应
       （证据：`docs/verification.md` "M1 自适应抽帧：接线与真实样本覆盖率"）
+- [x] 跨进程数据面（M3）：Runtime 保留字节 + 独立进程按 lease 读取/校验/释放，容量与 lease 生命周期有上限
+      （证据：`docs/verification.md` "M3 跨进程数据面：lease 消费方与真实交接"；契约见 ADR-010）
 
 ## 1. 其他模块（先做这些，再做优化）
 
@@ -40,15 +42,28 @@
 - 目标：把等待时间、队列峰值、丢弃与超时以计数 + 原因暴露（报告或指标端点）。
 - 验收：在 `officehours-panel`（最长静止段 57.8s）与 `sasebo-basketball`（持续运动）上跑出非零指标。
 
-### M3 lease 消费方（模型 worker 基座）
+### M3 lease 消费方（跨进程数据面）
 
-- 现状：lease 在签发进程内立即释放，等于没有真实交接；blocker `lease_consumer_not_implemented`。
-- 目标：独立 Python worker 经 gRPC 取 descriptor 引用 + lease、读 arena、显式释放；超时/失败可观察。
-- 验收：正常路径 + lease 过期路径 + arena 越界路径各有一条真实执行记录；移除对应 blocker。
+- 状态：**已完成**（证据见 `docs/verification.md` "M3 跨进程数据面：lease 消费方与真实交接"）。
+- 结果：`sensoryplex-runtime replay --handoff-listen` 把样本留在 POSIX 共享内存里，独立进程
+  `tools/handoff_worker.py` 经 `BufferHandoffService` 领窗口、读字节、校验摘要、显式释放；
+  `lease_consumer_not_implemented` 已从 `blockers` 移除（`verify_replay.py` 的 `EXPECTED_BLOCKERS` 收紧为空集）。
+  三个样本（`video/1.mp4`、`sasebo-basketball`、`officehours-panel`）× 两个场景全部通过：
+  越界/非法窗口/重复领取/迟到释放/过期 TTL 各得到稳定拒绝码，
+  `offered == retained_total + retain_rejections`、`retained_total == retained + released + expired`、
+  `arena_live_slabs == 0`，且 `offered` 与 `ReplayReport` 的交接样本数一致。
+- 仍未验证（不要当成已完成）：消费方是**验收脚本不是模型 worker**，语义链路（M8）没有进展；
+  同 UID 进程间没有逐 buffer 内存隔离（lease 不是隔离，见 ADR-010）；只在本机回环验证过，
+  跨主机不适用；`macos-aarch64` 之外未验收；未验证长时间运行的段清理与强杀后的段残留。
+- 注意（保持有效）：一次没有 `--handoff-listen` 的 replay 必须继续报 `handoff_state=not_exercised`，
+  不得被读成"数据面已验证"。
 
 ### M4 SRT 接入与断流重连
 
 - 现状：`UnavailableSource`，调用即报 `gstreamer_srt_ingest_not_implemented`。
+  本机已有 MediaMTX 接入基础设施（`make stream-up`，见 `docs/runbooks/obs-streaming.md`），
+  能用授权样本向本地 `srtsink` 回放并做独立 GStreamer 诊断；但**服务器上有流不等于 Runtime 已处理**，
+  Runtime 侧的 SRT Source 与断流重连都还没有实现。
 - 待输入：SRT 端点（host:port、streamid、加密/密码引用方式），或允许用 ffmpeg 从授权文件向本地
   `srtsink` 推流做回放。
 - 验收：真实 SRT 源回放 + 主动断流后重连，锚点/descriptor 计数与丢弃原因可解释。
@@ -72,7 +87,7 @@
 ### M8 模型插件（ASR/OCR/VLM/BGE）
 
 - 现状：完全未接入，CoreML/Metal 报 `execution_backend_not_implemented`。
-- 前置：M1（抽帧）与 M3（lease 消费方）。
+- 前置已满足：M1（抽帧）与 M3（跨进程数据面）都已完成；本项仍未开始，没有任何模型被接入。
 - 验收：至少一个模型在真实样本上产出带时间锚点、来源、版本与置信度语义的 observation。
 
 ### M9 格式准入与显式拒绝（ADR-009，新增格式之前必须先做）

@@ -16,6 +16,7 @@ use sensoryplex_sdk::media;
 
 use crate::arena::{Arena, DEFAULT_ARENA_CAPACITY_BYTES};
 use crate::descriptor::{hand_off, BufferSpec, HandoffCounters};
+use crate::handoff::{BufferHandoff, RetainPolicy};
 use crate::lease::LeaseRegistry;
 use crate::sampler::{AdaptiveSampler, Decision, FrameSignature, SamplingPolicy};
 use crate::segment::{AudioSegmenter, PendingSegment};
@@ -44,6 +45,8 @@ pub struct DecodeRun {
     /// 视频抽帧策略。抽帧始终启用：未抽帧的运行只能在报告里显式说明，
     /// 不能用"全保留"冒充。
     pub sampling: SamplingPolicy,
+    /// 保留式交接：打开后字节留在共享内存里等第二个进程领取 lease。
+    pub handoff: RetainPolicy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -432,13 +435,6 @@ fn buffer_kind(kind: TrackKind) -> &'static str {
     }
 }
 
-fn now_unix_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis() as i64)
-        .unwrap_or_default()
-}
-
 fn buffer_format(kind: TrackKind, sample: &DecodedSample) -> BufferFormat {
     match kind {
         TrackKind::Video => BufferFormat {
@@ -550,6 +546,8 @@ struct DecodeSession<'a> {
     sampler: AdaptiveSampler,
     segmenter: Option<AudioSegmenter>,
     segment_report: media::AudioSegmentReport,
+    /// 保留式交接的数据面。`None` 表示本次运行不保留字节（进程内自校验路径）。
+    handoff: Option<BufferHandoff>,
 }
 
 impl<'a> DecodeSession<'a> {
@@ -562,7 +560,7 @@ impl<'a> DecodeSession<'a> {
         Ok(Self {
             stream_id,
             stream_short,
-            now_ms: now_unix_ms(),
+            now_ms: crate::now_unix_ms(),
             segment_ms: run.audio_segment_ms,
             arena: Arena::new(arena_id, DEFAULT_ARENA_CAPACITY_BYTES)?,
             leases: LeaseRegistry::default(),
@@ -573,6 +571,17 @@ impl<'a> DecodeSession<'a> {
             ],
             evidence: Vec::new(),
             sampler: AdaptiveSampler::new(run.sampling),
+            handoff: match run.handoff.enabled {
+                // 段名按运行随机派生：句柄（arena id，会出现在报告里）不可反推出段名，
+                // 消费者只能从 lease 服务的应答里拿到它（见 ADR-010）。
+                true => Some(BufferHandoff::new(
+                    arena_id,
+                    run.handoff.arena_capacity_bytes,
+                    Some(&crate::shm::run_seed()),
+                    run.handoff.retained_limit,
+                )?),
+                false => None,
+            },
             segmenter: None,
             segment_report: media::AudioSegmentReport {
                 segment_ms: run.audio_segment_ms,
@@ -649,23 +658,38 @@ impl<'a> DecodeSession<'a> {
                 buffer_kind(sample.track),
                 track.next_index
             );
+            let kind = buffer_kind(sample.track);
+            let time_range = TimeRange {
+                start_ms: pts_ms,
+                end_ms,
+            };
+            let format = buffer_format(sample.track, &sample);
             let descriptor = hand_off(
                 &mut self.arena,
                 &mut self.leases,
                 BufferSpec {
-                    buffer_id,
-                    kind: buffer_kind(sample.track),
+                    buffer_id: buffer_id.clone(),
+                    kind,
                     stream_id: self.stream_id,
-                    time_range: TimeRange {
-                        start_ms: pts_ms,
-                        end_ms,
-                    },
-                    format: buffer_format(sample.track, &sample),
+                    time_range,
+                    format: format.clone(),
                 },
                 &sample.bytes,
                 self.now_ms,
                 &mut self.counters,
             )?;
+            // 真实跨进程交接：字节留在共享内存里等消费者领取 lease。容量类拒绝（保留表满、
+            // 段满）是**有界行为**，已经计入 `BufferHandoff` 的统计；契约违规才让本次 decode 失败。
+            if let Some(handoff) = self.handoff.as_mut() {
+                handoff.retain_or_reject(
+                    &buffer_id,
+                    kind,
+                    self.stream_id,
+                    time_range,
+                    format,
+                    &sample.bytes,
+                )?;
+            }
             if track.samples == 0 {
                 track.layout = SampleLayout {
                     width: sample.width,
@@ -768,7 +792,7 @@ impl<'a> DecodeSession<'a> {
         Ok(())
     }
 
-    fn finish(mut self) -> Result<media::DecodedDataPlane, MediaError> {
+    fn finish(mut self) -> Result<(media::DecodedDataPlane, Option<BufferHandoff>), MediaError> {
         let flushed = self.segmenter.as_mut().map(|segmenter| {
             (
                 segmenter.sample_rate(),
@@ -788,7 +812,7 @@ impl<'a> DecodeSession<'a> {
             }
         }
         let sampling = self.sampling_report();
-        Ok(media::DecodedDataPlane {
+        let plane = media::DecodedDataPlane {
             arena_id: self.arena.id().to_string(),
             arena_capacity_bytes: self.arena.capacity() as u64,
             arena_peak_bytes: self.arena.peak_bytes() as u64,
@@ -803,7 +827,9 @@ impl<'a> DecodeSession<'a> {
             evidence_descriptors: self.evidence,
             audio_segments: Some(self.segment_report),
             sampling: vec![sampling],
-        })
+        };
+        // 保留式数据面在 decode 结束后仍然存活：字节必须留到消费者领取并释放。
+        Ok((plane, self.handoff.take()))
     }
 
     /// 抽帧口径。被跳过的帧在这里有完整明细，同时也计入轨道的 `dropped_samples`：
@@ -832,17 +858,27 @@ impl<'a> DecodeSession<'a> {
     }
 }
 
+/// 一次 decode 运行的结果：报告、可选的保留式数据面，以及是否被预算截断。
+pub struct DecodeOutcome {
+    pub plane: media::DecodedDataPlane,
+    /// `Some` 表示字节仍留在共享内存里；调用方**必须**在进程存活期间把它交给消费者，
+    /// 并在退出前核对释放/过期计数。
+    pub handoff: Option<BufferHandoff>,
+    /// 样本预算耗尽导致运行被截断，调用方必须如实上报。
+    pub truncated: bool,
+}
+
 /// 把本地文件解码为已校验的 descriptor。
 ///
 /// 每个样本都会被拷贝到有界 arena 中，转换为只读、带 lease 的 descriptor，
 /// 完成校验后释放；返回的 plane 携带计数器与少量证据集。
-/// `truncated` 表示样本预算耗尽导致运行被截断，调用方必须如实上报。
+/// 打开 `run.handoff` 时，同一批字节还会被保留到共享内存，供第二个进程按 lease 领取。
 pub fn decode_file(
     path: &Path,
     stream_id: &str,
     arena_id: &str,
     run: &DecodeRun,
-) -> Result<(media::DecodedDataPlane, bool), MediaError> {
+) -> Result<DecodeOutcome, MediaError> {
     if run.max_samples == 0 {
         return Err(MediaError::DecodeFailed(
             "decode_sample_budget_is_zero".into(),
@@ -889,5 +925,10 @@ pub fn decode_file(
             }
         }
     }
-    Ok((session.finish()?, truncated))
+    let (plane, handoff) = session.finish()?;
+    Ok(DecodeOutcome {
+        plane,
+        handoff,
+        truncated,
+    })
 }

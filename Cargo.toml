@@ -11,6 +11,7 @@ publish = false
 [workspace.dependencies]
 sensoryplex-sdk = { path = "crates/sdk" }
 sensoryplex-media = { path = "crates/media" }
+libc = "0.2"
 gstreamer = "0.25"
 gstreamer-app = "0.25"
 prost = "0.13"

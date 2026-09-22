@@ -68,6 +68,14 @@ impl LeaseRegistry {
     pub fn outstanding(&self) -> usize {
         self.outstanding.len()
     }
+
+    /// 仍在册的 lease id。用于把"buffer 被谁占着"与"lease 是否还活着"对上。
+    pub fn outstanding_ids(&self) -> Vec<String> {
+        self.outstanding
+            .iter()
+            .map(|lease| lease.lease_id.clone())
+            .collect()
+    }
 }
 
 #[cfg(test)]

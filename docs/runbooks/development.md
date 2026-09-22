@@ -90,6 +90,31 @@ make media-replay MEDIA=/absolute/path/to/authorized-sample.mp4
 `blockers` 会多出 `gstreamer_decode_not_implemented`，解码数据平面保持全零——这是诚实的降级，不是验收。
 macOS 上解码属于 ms 级性能路径，用 `make media-replay` 的 release 构建测量，不要把 debug 结果当结论。
 
+跨进程数据面验收（M3，同一份素材即可）：
+
+```sh
+make handoff-check MEDIA=/absolute/path/to/authorized-sample.mp4
+```
+
+它起三个进程：`verify_handoff.py`（编排/对账）、`sensoryplex-runtime replay --handoff-listen`
+（生产者，持有共享内存与保留表）、`handoff_worker.py`（消费者，只能通过 gRPC 拿段名与窗口）。
+断言包括：两个场景（保留表 4096 / 钉在 6）都满足
+`offered == retained_total + retain_rejections` 与 `retained_total == retained + released + expired`、
+运行结束时 `arena_live_slabs == 0`、越界/非法窗口/重复领取/迟到释放/过期 TTL 各自拿到稳定拒绝码，
+且 `ReplayReport.handoff_state == exposed_on=<listen>`、`golden_path_verified == false`。
+
+手工起一个数据面（只在回环地址上，非回环会被拒绝启动）：
+
+```sh
+target/release/sensoryplex-runtime replay config/pipelines/file-material.yaml /abs/sample.mp4 \
+  --report /tmp/report.pb --handoff-listen 127.0.0.1:50511 \
+  --handoff-arena-bytes 268435456 --handoff-retained-limit 4096 --handoff-ttl-ms 30000
+```
+
+不带 `--handoff-listen` 的 replay 仍然合法，但报告会写 `handoff_state=not_exercised`——
+它不代表数据面已验证。安全边界（段名随机派生、lease 不是内存隔离、同 UID 可见性）见
+[ADR-010](../adr/ADR-010-跨进程数据面的安全边界.md)。
+
 ## 可选向量基础设施
 
 `deploy/compose/docker-compose.vector.yml` 包含 etcd、MinIO 和 Milvus，镜像锁定 digest，

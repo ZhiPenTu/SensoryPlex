@@ -79,6 +79,33 @@ reserved，破坏语义的修改进入新的协议 major。当前为开发预览
   `missing_signature`）；禁止静默丢帧。
 - `DecodedTrackStat.last_end_ms` 描述该轨解码到哪里，抽帧只缩短交接，不缩短它。
 
+跨进程数据面契约（`media/v1/handoff.proto`，**BufferHandoffService**；安全边界见
+[ADR-010](../adr/ADR-010-跨进程数据面的安全边界.md)）：
+
+- `ReplayReport.handoff_state` 必须显式说明数据面这次有没有被使用：带 `--handoff-listen` 时为
+  `exposed_on=<addr>`，否则为 `not_exercised`。一次没有消费方的 replay 不得被读成"数据面已验证"。
+- 控制消息只带**不透明引用**：`buffer_id`、字节偏移与长度、`sha256:` 摘要、时间区间、
+  `BufferFormat`、lease 标识以及共享内存段名。**不出现**帧、PCM、tensor、宿主路径或密钥；
+  原始字节只留在共享段里，靠 lease 授权窗口读取。
+- 段名按运行随机派生（`/sp.<12 位十六进制>`），**不可从 arena handle 或报告推导**，
+  且不出现在 `ReplayReport` 中；它是不透明句柄，不是路径，也不是授权凭证。
+- gRPC 只允许绑定回环地址：共享内存不可跨主机映射，`--handoff-listen` 给非回环地址直接拒绝启动。
+- `List` / `Stats` 返回 `HandoffStats`，其中两条恒等式必须成立，消费者与验收脚本各算一遍：
+  `retained_total = retained + released_total + expired_total`（每条保留的 buffer 都有归宿）、
+  `offered_total = retained_total + retain_rejections`（每个保留请求都有结果）。
+- `offered_total` 必须等于本次解码交接的样本数（`Σtrack.samples`）：数据面与报告的计数对不上即为缺陷。
+- 保留表上限 `<= 4096`、lease TTL 限定 `[50, 60000] ms`、单条 buffer 区间不超过 60 s，越界一律拒绝，
+  不做夹取；写侧容量拒绝只有 `handoff_backlog_full` 与 `arena_capacity_exceeded` 两种原因。
+- 消费期拒绝码是稳定字符串：`mapping_out_of_range`（越界，含跨到相邻 buffer）、`ambiguous_window`
+  （只给 offset 不给 length 或反之）、`unknown_buffer`、`invalid_lease_ttl`、`buffer_already_leased`、
+  `unknown_or_released_lease`（迟到释放）；一律通过 `ProcessingError.reason_code` 返回，不只写日志。
+- `Acquire` 返回的 `BufferDescriptor.content_hash` 只覆盖**被授予的窗口**，不是整条 buffer；
+  lease 为只读且带过期时间，`leased` 与 `request_rejections` 分别统计在途与拒绝。
+- 同一 buffer 同时只允许一个消费者：重复领取是显式拒绝，不是静默共享。
+- **lease 不是内存隔离**：同 UID 进程映射整段后仍能看到相邻 buffer 的字节；消费进程属于受信组件，
+  这一点在验收输出里以 `same_uid_segment_visibility` 显式上报，不得当作已实现的安全边界。
+- 生产者退出时 `shm_unlink` 段名；消费者只解除自己的映射，不删名。
+
 媒体格式准入契约（ADR-009，**[媒体格式支持矩阵与拒绝语义](../adr/ADR-009-媒体格式支持矩阵与拒绝语义.md)**，
 以下为待实现要求，当前状态见 [实现状态](../implementation-status.md)）：
 

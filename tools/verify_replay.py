@@ -14,9 +14,10 @@ from edge_material_sdk.generated.media.v1 import media_pb2
 
 ROOT = Path(__file__).resolve().parents[1]
 PIPELINE = ROOT / "config/pipelines/file-material.yaml"
-EXPECTED_BLOCKERS = {
-    "lease_consumer_not_implemented",
-}
+# 跨进程交接已实现（证据见 `make handoff-check`），因此这里不再要求任何 blocker；
+# 但一次**不带** --handoff-listen 的 replay 并没有消费方，报告必须如实说明。
+EXPECTED_BLOCKERS: set[str] = set()
+EXPECTED_HANDOFF_STATE = "not_exercised"
 DECODE_BLOCKER = "gstreamer_decode_not_implemented"
 ADMITTED_MEMORY_KINDS = {"cpu_shared_memory"}
 # 两条独立实现描述同一段 presentation 时间轴：ffprobe 的 anchor 与 GStreamer 的
@@ -105,6 +106,10 @@ def check_anchors(report) -> None:
 def check_honesty(report, media: Path) -> None:
     assert not report.golden_path_verified, "this build cannot claim the golden path"
     assert EXPECTED_BLOCKERS <= set(report.blockers), report.blockers
+    assert report.handoff_state == EXPECTED_HANDOFF_STATE, (
+        "a replay without --handoff-listen must report the lease consumer as not exercised, "
+        f"got {report.handoff_state!r}"
+    )
     assert str(media).encode() not in report.SerializeToString(), (
         "the report must not carry the media path"
     )
