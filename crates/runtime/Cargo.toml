@@ -1,0 +1,15 @@
+[package]
+name = "sensoryplex-runtime"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+sensoryplex-sdk.workspace = true
+tokio.workspace = true
+tonic.workspace = true
+serde.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

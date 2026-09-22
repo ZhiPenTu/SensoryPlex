@@ -1,0 +1,29 @@
+apiVersion: edge.material/v1
+kind: Pipeline
+metadata:
+  name: file-material-poc
+spec:
+  source:
+    type: file
+    uri_secret_ref: SOURCE_URI
+  queue_capacity: 32
+  data_egress: local_only
+  processors:
+    - type: adaptive_sampler
+    - type: audio_segmenter
+    - type: asr
+      model: faster-whisper-large-v3
+    - type: ocr
+      model: paddleocr-v5
+    - type: vlm
+      model: qwen-vl-fast
+    - type: timeline_fusion
+    - type: embedding
+      model: bge-m3
+  slow_enrichment:
+    - type: vlm
+      model: qwen-vl-quality
+  sinks:
+    - type: blob_storage
+    - type: metadata_store
+    - type: vector_store

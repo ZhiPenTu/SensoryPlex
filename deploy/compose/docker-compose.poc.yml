@@ -1,0 +1,62 @@
+name: sensoryplex
+services:
+  postgres:
+    image: postgres:16-alpine@sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229
+    environment:
+      POSTGRES_DB: sensoryplex
+      POSTGRES_USER: sensoryplex
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run make configure}
+    ports: ["127.0.0.1:${POSTGRES_PORT:-25432}:5432"]
+    volumes: ["postgres-data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sensoryplex -d sensoryplex"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  nats:
+    image: nats:2.11.3-alpine@sha256:a79a6ff6e42ef41ef964c52bef9fe6eed02fc91cf348801e3dddbbd57636077a
+    command: ["-js", "-sd", "/data", "-m", "8222"]
+    ports: ["127.0.0.1:${NATS_PORT:-24222}:4222", "127.0.0.1:28222:8222"]
+    volumes: ["nats-data:/data"]
+    restart: unless-stopped
+
+  migrate:
+    build:
+      context: ../..
+      dockerfile: services/gateway/Dockerfile
+    image: sensoryplex-gateway:0.1.0
+    command: ["/app/.venv/bin/python", "tools/migrate.py"]
+    environment:
+      SENSORYPLEX_DATABASE_URL: postgresql://sensoryplex:${POSTGRES_PASSWORD}@postgres:5432/sensoryplex
+    depends_on:
+      postgres: {condition: service_healthy}
+    restart: "no"
+
+  gateway:
+    build:
+      context: ../..
+      dockerfile: services/gateway/Dockerfile
+    image: sensoryplex-gateway:0.1.0
+    environment:
+      SENSORYPLEX_DATABASE_URL: postgresql://sensoryplex:${POSTGRES_PASSWORD}@postgres:5432/sensoryplex
+      SENSORYPLEX_API_TOKEN: ${SENSORYPLEX_API_TOKEN:?Run make configure}
+      SENSORYPLEX_PRINCIPAL: ${SENSORYPLEX_PRINCIPAL:-local-developer}
+    ports: ["127.0.0.1:${GATEWAY_PORT:-8090}:8090"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "/app/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/v1/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  nats-data:

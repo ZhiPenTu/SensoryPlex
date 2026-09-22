@@ -1,0 +1,11 @@
+.git
+.venv
+target
+__pycache__
+.env
+.env.*
+.data
+.logs
+.pytest_cache
+.ruff_cache
+tests/fixtures/media

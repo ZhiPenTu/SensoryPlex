@@ -1,0 +1,34 @@
+name: engineering-checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine@sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229
+        env:
+          POSTGRES_DB: sensoryplex_test
+          POSTGRES_USER: sensoryplex_test
+          POSTGRES_PASSWORD: ci-ephemeral-only
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U sensoryplex_test -d sensoryplex_test"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      SENSORYPLEX_TEST_DATABASE_URL: postgresql://sensoryplex_test:ci-ephemeral-only@localhost:5432/sensoryplex_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.6"
+      - uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          components: rustfmt, clippy
+      - run: uv sync --frozen
+      - run: make proto
+      - run: git diff --exit-code -- plugins/python/common/src/edge_material_sdk/generated
+      - run: make check
+      - run: make integration
+      - run: make runtime-smoke

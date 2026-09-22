@@ -1,0 +1,40 @@
+[project]
+name = "sensoryplex"
+version = "0.1.0"
+description = "Edge multimodal material runtime development workspace"
+requires-python = ">=3.12,<3.13"
+dependencies = ["edge-material-sdk", "sensoryplex-gateway"]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["plugins/python/common", "services/gateway"]
+
+[tool.uv.sources]
+edge-material-sdk = { workspace = true }
+sensoryplex-gateway = { workspace = true }
+
+[dependency-groups]
+dev = [
+  "grpcio-tools>=1.71,<1.72",
+  "pytest>=8.3,<9",
+  "pytest-asyncio>=0.26,<1",
+  "httpx>=0.28,<1",
+  "ruff>=0.11,<1",
+  "jsonschema>=4.23,<5",
+  "pyyaml>=6,<7",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = ["integration: requires SENSORYPLEX_TEST_DATABASE_URL"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = ["plugins/python/common/src/edge_material_sdk/generated"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

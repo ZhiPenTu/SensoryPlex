@@ -1,0 +1,88 @@
+syntax = "proto3";
+package edge.material.common.v1;
+
+// All media intervals are half-open milliseconds on one stream: [start_ms, end_ms).
+message TimeRange {
+  int64 start_ms = 1;
+  int64 end_ms = 2;
+}
+
+message RequestContext {
+  string request_id = 1;
+  string trace_id = 2;
+  string pipeline_run_id = 3;
+  string stream_id = 4;
+  string source_id = 5;
+  int64 deadline_unix_ms = 6;
+  uint32 attempt = 7;
+  string idempotency_key = 8;
+  PrivacyPolicy privacy_policy = 9;
+}
+
+message PrivacyPolicy {
+  string data_egress = 1; // V1: local_only; absent policy is denied.
+  bool retain_derived_payload = 2;
+}
+
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  INVALID_INPUT = 1;
+  UNSUPPORTED_CAPABILITY = 2;
+  UNSUPPORTED_MEMORY_KIND = 3;
+  DEADLINE_EXCEEDED = 4;
+  RESOURCE_EXHAUSTED = 5;
+  TRANSIENT_BACKEND_FAILURE = 6;
+  DATA_POLICY_DENIED = 7;
+  INTERNAL_PLUGIN_ERROR = 8;
+}
+
+message ProcessingError {
+  ErrorCode code = 1;
+  string reason_code = 2;
+  bool retryable = 3;
+  uint32 retry_after_ms = 4;
+}
+
+message BufferDescriptor {
+  string buffer_id = 1;
+  string kind = 2;
+  string memory_kind = 3;
+  BufferLocator locator = 4;
+  BufferFormat format = 5;
+  string stream_id = 6;
+  TimeRange time_range = 7;
+  BufferLease lease = 8;
+  string content_hash = 9;
+}
+
+message BufferLocator {
+  string handle = 1; // Opaque Runtime-issued handle, never a host pointer.
+  uint64 offset = 2;
+  uint64 length = 3;
+}
+
+message BufferFormat {
+  string pixel_format = 1;
+  uint32 width = 2;
+  uint32 height = 3;
+  repeated uint32 strides = 4;
+  uint32 sample_rate = 5;
+  uint32 channels = 6;
+}
+
+message BufferLease {
+  string lease_id = 1;
+  int64 expires_at_unix_ms = 2;
+  bool read_only = 3;
+}
+
+// Control messages carry IDs and references, never media bytes.
+message EventEnvelope {
+  string event_id = 1;
+  string event_type = 2;
+  string stream_id = 3;
+  string trace_id = 4;
+  string payload_ref = 5;
+  int64 created_at_unix_ms = 6;
+  uint32 schema_version = 7;
+}

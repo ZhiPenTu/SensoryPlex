@@ -1,0 +1,26 @@
+syntax = "proto3";
+package edge.material.gateway.v1;
+
+import "material/v1/material.proto";
+
+message SearchRequest {
+  string query = 1;
+  string stream_id = 2;
+  optional int64 start_ms = 3;
+  optional int64 end_ms = 4;
+  repeated string modalities = 5;
+  repeated string tags = 6;
+  optional double min_confidence = 7;
+  uint32 limit = 8; // 0 means 20; maximum 100.
+  string mode = 9; // keyword (implemented), semantic (requires index worker).
+}
+message SearchResponse {
+  repeated edge.material.material.v1.MaterialUnit materials = 1;
+  string mode = 2;
+  string index_version = 3;
+}
+message GetMaterialRequest { string material_unit_id = 1; optional uint32 revision = 2; }
+service MaterialQueryService {
+  rpc Search(SearchRequest) returns (SearchResponse);
+  rpc GetMaterial(GetMaterialRequest) returns (edge.material.material.v1.MaterialUnit);
+}

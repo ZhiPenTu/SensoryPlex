@@ -1,0 +1,56 @@
+syntax = "proto3";
+package edge.material.runtime.v1;
+
+import "common/v1/common.proto";
+import "material/v1/material.proto";
+import "google/protobuf/struct.proto";
+
+service ProcessorPluginService {
+  rpc Describe(DescribeRequest) returns (PluginDescription);
+  rpc ValidateConfig(ValidateConfigRequest) returns (ValidationResult);
+  rpc Start(StartRequest) returns (LifecycleResponse);
+  rpc Process(ProcessRequest) returns (ProcessResponse);
+  rpc Cancel(CancelRequest) returns (LifecycleResponse);
+  rpc Health(HealthRequest) returns (HealthResponse);
+  rpc Drain(DrainRequest) returns (LifecycleResponse);
+  rpc Stop(StopRequest) returns (LifecycleResponse);
+}
+
+message DescribeRequest {}
+message PluginDescription {
+  string name = 1;
+  string version = 2;
+  string protocol = 3;
+  repeated string consumes = 4;
+  repeated string produces = 5;
+  repeated string memory_kinds = 6;
+}
+message ValidateConfigRequest { google.protobuf.Struct config = 1; }
+message ValidationResult { bool valid = 1; repeated string field_errors = 2; }
+message StartRequest { google.protobuf.Struct config = 1; }
+message LifecycleResponse { string state = 1; edge.material.common.v1.ProcessingError error = 2; }
+message PluginInput {
+  oneof value {
+    edge.material.common.v1.BufferDescriptor buffer = 1;
+    edge.material.material.v1.Observation observation = 2;
+  }
+}
+message ProcessRequest {
+  edge.material.common.v1.RequestContext context = 1;
+  repeated PluginInput inputs = 2;
+  string processor_release_id = 3;
+}
+message ProcessResponse {
+  repeated edge.material.material.v1.Observation observations = 1;
+  repeated string warnings = 2;
+  edge.material.common.v1.ProcessingError error = 3;
+}
+message CancelRequest { string request_id = 1; }
+message HealthRequest {}
+message HealthResponse { string state = 1; repeated string unavailable_capabilities = 2; }
+message DrainRequest { uint32 grace_period_ms = 1; }
+message StopRequest {}
+
+service RuntimeService {
+  rpc Health(HealthRequest) returns (HealthResponse);
+}
