@@ -253,6 +253,41 @@ reserved，破坏语义的修改进入新的协议 major。当前为开发预览
   `pcm_s16le`）没有 parser/decoder，此时的取值是 `demuxer_passthrough`——这是一个确定的答案，
   不是空串，也不得被读成"用了内置解码器"。该语义写在 `media.proto` 的 `decoder_element=17` 注释里。
 
+向量索引落库契约（ADR-020，**[向量索引落库与检索闭环](../adr/ADR-020-向量索引落库与检索闭环.md)**，
+**以下语义已实现并实测**：`services/index-worker`，证据见 [验证记录](../verification.md) 的
+"M8 剩余：向量索引落库与检索闭环（ADR-020）"一节）：
+
+- `embedding_record` 是向量落库的**事实行**；向量本体在向量库里，本表只存引用与重建依据。
+  迁移 `0003_embedding_index.sql` 追加 `observation_id`、`vector_index_key`、`error_code`、
+  `indexed_at`、`created_at`、`updated_at`，并把顺序写成行不变式（由数据库强制，不是靠代码自觉）：
+  `ready` ⇒ `vector_ref IS NOT NULL AND indexed_at IS NOT NULL`；`failed` ⇒ `error_code IS NOT NULL`；
+  `ready` ⇒ `error_code IS NULL`。
+- `state` 描述**最近一次尝试**，`vector_ref`/`indexed_at` 描述**最近一次确认写入**：重跑失败会把行改成
+  `failed` 但**不清空**已有引用（库里那份向量确实还在），而检索只认 `state='ready'`，
+  所以它不会被当成成功命中返回。
+- `embedding_id` 是**确定性**主键：`emb_` + `sha256(<observation_id>|<material_unit_id>|<revision>)`
+  前 32 位十六进制。同一份输入重跑得到同一个 id（幂等），不同 material/revision/observation 必不相同。
+  identity 冲突（同一 id 换了观察、key、模型或摘要）显式报 `embedding_identity_conflict` /
+  `embedding_payload_conflict`，不覆盖别人的行。
+- **collection 名就是 `vector_index_key`**（`material_<slug>_d<实测维度>_v<契约版本>`）：换模型或换维度
+  得到另一个 collection，旧向量留在旧 collection，不原地迁移、不补零、不截断。写入前要求三方维度一致
+  ——key 后缀、payload 自称的维度、向量实际长度——否则 `vector_dimension_mismatch`；已存在的同名
+  collection 必须与当前契约逐字段一致，否则 `vector_collection_contract_mismatch`。
+- **`vector_ref` 是逻辑引用**：`milvus://<collection>/<embedding_id>`，**不含**主机、端口、本地路径或
+  库文件名（宿主路径属于部署配置）。Lite 形态与服务端形态产生同一个引用。
+- **向量库不是事实源，也不是鉴权依据**：命中必须回查 PostgreSQL——`state='ready'` + material 行存在
+  且 `status <> 'failed'` + `source.owner` 等于当前 principal——才允许作为结果返回；
+  查不到的回查计入 `unindexed_hits`（是"被丢弃的命中"，不是"没有命中"）。
+- 稳定原因码（顶层与逐条都只用这些码，不解析异常文本）：`vector_store_unavailable`（路径/凭据/客户端
+  不可用）、`vector_store_locked`（Lite 数据目录被同机另一进程 flock 持有，可重试）、
+  `vector_collection_contract_mismatch` / `vector_index_type_mismatch`、`vector_collection_load_failed`、
+  `vector_upsert_failed` / `vector_query_failed` / `vector_search_failed`、`vector_confirm_mismatch`、
+  `invalid_embedding_payload`、`invalid_vector_index_key`、`invalid_vector_ref`、`index_key_mismatch`、
+  `vector_dimension_mismatch`、`embedding_identity_conflict`、`embedding_payload_conflict`。
+- 形态边界：本机验收用 Milvus **Lite 文件形态**，它是**进程独占**的（数据目录 flock），
+  因此 edge 是"单写进程"；`deploy/compose/docker-compose.vector.yml` 的服务端拓扑因本机 Docker Hub
+  不可达**未验收**，不得据此声称服务端可用。
+
 `append_material` 是受信 timeline/storage 进程的内部入口；当前无公共写入 API。
 事实写入和 outbox 在同一事务完成。outbox 分发、NATS 消费去重和重试器尚待实现，
 因此不能把“已写 outbox”解释为“已发布 NATS”或“可语义检索”。

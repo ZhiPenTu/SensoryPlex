@@ -19,9 +19,9 @@
 | PostgreSQL | 显式迁移、不可变素材与模型版本、来源校验、事务 outbox | 保留与归档策略、outbox 消费与补偿 |
 | Gateway | Bearer 认证、owner 过滤、素材详情、历史版本、关键词/标签/时间查询 | 外部鉴权、语义检索、短期媒体授权 URL |
 | Console / Platform API | 独立 React / TS / Vite 工程、统一模块化 API、会话/CSRF/RBAC、真实上传与 Range 回看、插件配置版本、方案/任务草稿、作用域凭据、账户/角色管理与审计；运行手册见 `docs/runbooks/console.md` | Runtime 媒体准入、安装与生命周期、方案发布、任务执行及素材来源映射；当前不是完整业务 Golden Path |
-| 存储/硬件 | Rust adapter traits，模型与配置 hash 契约 | NAS/MinIO/Milvus、ONNX/TensorRT 实现 |
+| 存储/硬件 | Rust adapter traits，模型与配置 hash 契约；向量落库与检索走 `services/index-worker` 的 Milvus（本机 **Lite 文件形态**，写后回读确认） | NAS/MinIO、服务端 Milvus 拓扑（本机 Docker Hub 不可达，未验收）、ONNX/TensorRT 实现 |
 | 直播接入基础设施 | 本机 MediaMTX 1.21.1（独立 Compose，仅回环端口）；SRT 直推（GStreamer `srtsink` 与用户自有 OBS）与 Runtime `ingest` 已打通：稳定窗口、断流恢复、无源失败、实时数据面交接、VideoToolbox 视频五个场景通过，OBS 真实直推亦实测（无 timing 码流的视频时长按 PTS 差分补齐），见 `docs/verification.md` | Mac mini / 跨机部署、SRT 加密与带凭据 publish、`linux-x86_64` 侧验收；服务器上有流不等于语义链路可用 |
-| 媒体与模型 | Pipeline 配置、真实媒体 probe 工具、ffprobe 锚点回放，GStreamer 真实解码 → arena → `BufferDescriptor` → lease 签发/校验/释放 → 音频 5 秒切段，视频自适应抽帧（keep/skip 全部带原因，7 个真实样本通过），跨进程数据面：Runtime 保留字节、独立进程按 lease 读取（3 个样本 × 2 个场景通过，具备有界容量与稳定拒绝码），SRT 实时接入 `ingest`（`make live-check` 五个场景通过），背压与队列可观察：三条有界队列的深度/峰值/容量、按原因与按种类的丢弃、lease 等待时间（`verify_backpressure.py` 4 场景 + OBS 直播实测，见 `docs/verification.md`），以及第一个**端侧模型插件**：本机 ollama `moondream:v2`（VLM），插件经 `LeaseBufferReader` 读真实视频帧产出带锚点/来源/版本/显式置信度语义的 observation，`tools/ai_worker.py` 只发现与调用不读字节，`make model-check` 四进程通过（见 `docs/verification.md` 的"M8"一节与 ADR-012），以及**媒体格式准入与显式拒绝**：承诺矩阵写成数据、源格式按 stream ID 关联、被拒轨道带稳定拒绝码进报告（`make capability-check` **19 场景**通过：6 个公开授权正样本 + 13 条拒绝路径，见 `docs/verification.md` 的"M9"一节与 ADR-009），以及第二个**端侧模型插件**（ASR）：本机 MLX Whisper 经 `LeaseBufferReader` 读真实音频段产出带锚点/来源/显式置信度语义的转写 observation，音频样本布局（`sample_format`）与音频段描述符进保留表一并落成契约，`make asr-check` 四进程通过（见 `docs/verification.md` 的"M10"一节与 ADR-014），以及第三个（OCR）与第四个（BGE 文本向量）端侧模型插件：OCR 以随包携带的 PP-OCR 组合权重的**组合摘要**为身份、产出带帧像素坐标的文字块；BGE **不接数据面**（`acceptsMemoryKinds: []`），消费上游 OCR 事实产出**维度版本化**的 L2 归一化向量，`make ocr-check` / `make embed-check` 均多进程通过 | 运行时侧加速后端能力上报（`coreml`/`metal` 在 Rust 侧仍记为不可用，因为本版本没有任何 in-process `ExecutionBackend`）；向量库落库与检索；ASR 的 Linux 后端（`mlx` 是 Apple Silicon 专属）；插件**未签名**（`local_native` 形态，签名/SBOM 只有结构预检）；旋转的采集与应用（v1 未实现） |
+| 媒体与模型 | Pipeline 配置、真实媒体 probe 工具、ffprobe 锚点回放，GStreamer 真实解码 → arena → `BufferDescriptor` → lease 签发/校验/释放 → 音频 5 秒切段，视频自适应抽帧（keep/skip 全部带原因，7 个真实样本通过），跨进程数据面：Runtime 保留字节、独立进程按 lease 读取（3 个样本 × 2 个场景通过，具备有界容量与稳定拒绝码），SRT 实时接入 `ingest`（`make live-check` 五个场景通过），背压与队列可观察：三条有界队列的深度/峰值/容量、按原因与按种类的丢弃、lease 等待时间（`verify_backpressure.py` 4 场景 + OBS 直播实测，见 `docs/verification.md`），以及第一个**端侧模型插件**：本机 ollama `moondream:v2`（VLM），插件经 `LeaseBufferReader` 读真实视频帧产出带锚点/来源/版本/显式置信度语义的 observation，`tools/ai_worker.py` 只发现与调用不读字节，`make model-check` 四进程通过（见 `docs/verification.md` 的"M8"一节与 ADR-012），以及**媒体格式准入与显式拒绝**：承诺矩阵写成数据、源格式按 stream ID 关联、被拒轨道带稳定拒绝码进报告（`make capability-check` **19 场景**通过：6 个公开授权正样本 + 13 条拒绝路径，见 `docs/verification.md` 的"M9"一节与 ADR-009），以及第二个**端侧模型插件**（ASR）：本机 MLX Whisper 经 `LeaseBufferReader` 读真实音频段产出带锚点/来源/显式置信度语义的转写 observation，音频样本布局（`sample_format`）与音频段描述符进保留表一并落成契约，`make asr-check` 四进程通过（见 `docs/verification.md` 的"M10"一节与 ADR-014），以及第三个（OCR）与第四个（BGE 文本向量）端侧模型插件：OCR 以随包携带的 PP-OCR 组合权重的**组合摘要**为身份、产出带帧像素坐标的文字块；BGE **不接数据面**（`acceptsMemoryKinds: []`），消费上游 OCR 事实产出**维度版本化**的 L2 归一化向量，`make ocr-check` / `make embed-check` 均多进程通过，以及**向量落库与检索闭环**：`services/index-worker`（`sensoryplex-index`）把 BGE 向量写进 Milvus（本机 **Lite 文件形态**）并**读回来确认**才置 `embedding_record.state='ready'`，检索命中必须回查 PostgreSQL 的 `ready` + material 存在 + `source.owner` 才允许返回（被丢弃的命中单独计数），`make index-check` **11 个场景**通过（见 `docs/verification.md` 与 ADR-020） | 运行时侧加速后端能力上报（`coreml`/`metal` 在 Rust 侧仍记为不可用，因为本版本没有任何 in-process `ExecutionBackend`）；常驻 index-worker 消费与网关语义检索接线（`mode=semantic` 仍 501，RRF/混合检索未做）；服务端 Milvus 形态（本机 Docker Hub 不可达，未验收）；ASR 的 Linux 后端（`mlx` 是 Apple Silicon 专属）；插件**未签名**（`local_native` 形态，签名/SBOM 只有结构预检）；旋转的采集与应用（v1 未实现） |
 | 工程 | uv/Cargo 锁文件、Docker、检查命令、CI（`check`/`check-console` + **Apple Silicon** `check-apple-silicon`，远端 `macos-15-arm64` 已真实通过）、macOS `launchd` 常驻形态与统一内存分级（`tools/macos_resident.py`，见 ADR-015） | 真视频 Golden Path、Linux NVIDIA 侧 CI、压测、监控仪表盘 |
 
 下一里程碑：**本地文件 → GStreamer → PTS 正确的 frame/audio descriptor**，先完成
@@ -58,7 +58,7 @@ MLX Whisper（ASR，读音频段）、PP-OCR（OCR，读视频帧）与 BGE（�
 字节**，worker 用 `--input-observations` 走 observation 输入路径）；`tools/ai_worker.py` 只做发现与
 调用（不读字节），四者的验收脚本都是真跑多进程。边界见
 [ADR-012](adr/ADR-012-模型插件与端侧推理边界.md)。仍未实现的是**运行时（Rust）侧对加速后端的能力
-上报**、**向量库落库与检索**、以及插件签名验证；`metal` 在 ONNX 路径上没有独立执行后端。
+上报**、**常驻 index-worker 消费与网关侧语义检索**、以及插件签名验证；`metal` 在 ONNX 路径上没有独立执行后端。
 因此 `golden_path_verified` 恒为 false，不得把本节读作 Golden Path 已完成；
 接入的 VLM 只保证链路语义正确，**不保证描述可用**（模型输出不稳定）。
 抽帧的覆盖率目前只到帧数口径，语义覆盖仍未用模型输出度量。
@@ -106,9 +106,26 @@ CoreML 收益未取得；`metal`（ONNX 路径）、`linux-x86_64`、Mac mini �
 都通过）；observation 路径的对账显式写 `drain.leases=0`，且报告里**没有**数据面统计。决策与实测见
 [ADR-017](adr/ADR-017-BGE文本向量与维度版本化.md) 与 `docs/verification.md` 的"M8 BGE"一节。
 **仍未验证的仍然不得声称可用**：向量**质量**未验收（无召回/排序基准，中文长文本与领域文本未覆盖）；
-本切片**不落向量库**（`storage=inline_payload`、`vector_ref=null`），Milvus 建索引/写入/检索未验证；
-换模型或换维度后的旧向量迁移未决策；CoreML 实测**更慢**（短文本 0.78 ms vs 3.16 ms），不声称加速；
+插件本身仍**不落向量库**（`storage=inline_payload`、`vector_ref=null`）——写入由独立进程 `services/index-worker` 承担（ADR-020，Milvus **Lite 文件形态**，11 场景通过）；服务端 Milvus 拓扑因本机 Docker Hub 不可达**未验收**，换模型或换维度按 ADR-020 走新 collection（不原地迁移）；CoreML 实测**更慢**（短文本 0.78 ms vs 3.16 ms），不声称加速；
 `linux-x86_64`、Mac mini 与跨机未验证。
+
+向量落库与检索闭环（M8 剩余项）也已落地：`services/index-worker`（`sensoryplex-index`）是 BGE
+之后的 sink——它把插件产出的向量写进向量库、**读回来确认**之后才把 `embedding_record.state` 置成
+`ready`（迁移 `0003_embedding_index.sql` 把这条顺序写成行不变式：`ready` 必须有 `vector_ref`+`indexed_at`、
+`failed` 必须有 `error_code`）。collection 名就是 `vector_index_key`（换模型/换维度=新 collection，
+不原地迁移），索引 FLAT + COSINE，`vector_ref` 只是逻辑引用（`milvus://<collection>/<id>`，不含主机
+路径与端口）。**Milvus 不是事实源**：它只回答"哪条最近"，命中必须回查 PostgreSQL 的 `ready` +
+material 存在 + `source.owner` 才允许返回，被丢弃的命中单独计数（非 owner 与被标 `failed` 的记录
+即使还在向量库里也不返回）。`make index-check EMBEDDINGS=<ai-worker.json>` 用真实 BGE 向量 +
+真实 PostgreSQL + 真实 Milvus Lite 跑 **11 个场景**（写入确认、跨进程持久、检索回查、非 owner 丢弃、
+failed 不返回、幂等、维度篡改、库不可达、collection 契约漂移、不外泄、数据目录被别的进程锁住）全过。
+边界：本机 Milvus **Lite 是进程独占的**（数据目录 flock，被占用即 `vector_store_locked`，不重试、
+不换路径），因此 edge 形态是单写进程；服务端拓扑见
+`deploy/compose/docker-compose.vector.yml`，但本机 Docker Hub 不可达
+（`milvusdb/milvus` 拉取 EOF），**standalone 形态未经写入与检索验收**；常驻消费（NATS/outbox）
+与网关 `mode=semantic` 都未接线，向量质量（recall/MRR）未验收。决策见
+[ADR-020](adr/ADR-020-向量索引落库与检索闭环.md)，实测见 `docs/verification.md` 的
+"M8 剩余：向量索引落库与检索闭环（ADR-020）"一节。
 
 媒体格式准入（M9）已按 [ADR-009](adr/ADR-009-媒体格式支持矩阵与拒绝语义.md) 落地：承诺矩阵写成
 数据（容器 → 编码 → 位深 → 色彩 → 采样格式 → 声道），判定输入是**解码前采集的源格式上下文**加上
