@@ -6,7 +6,8 @@ Protobuf/gRPC + FastAPI** 工程，为 SRT/文件接入、感知、时间轴融�
 当前版本 **0.1.0：可运行工程底座**。已实现素材元数据事务写入、不可变 revision、
 来源/模型血缘校验，以及带鉴权的关键词、标签、时间范围查询。媒体侧已接入 GStreamer 真实解码
 （可选 `gstreamer` feature）：解码 → 有界 arena → `BufferDescriptor` → lease 签发/校验/释放 → 音频 5 秒切段，
-并对视频做自适应抽帧（keep/skip 全部带原因），已在授权样本与 6 个公开许可样本上通过回放验收。
+并对视频做自适应抽帧（keep/skip 全部带原因），已在授权样本与 10 个公开许可样本上通过回放验收
+（其中 6 个用于 ADR-009 格式准入矩阵，出处与许可见 `tests/fixtures/media/OPEN-SAMPLES.md`）。
 跨进程数据面（M3）也已落地：`replay --handoff-listen` 把样本留在共享内存里，独立进程按 lease 读取、
 校验摘要并显式释放，容量与 lease 生命周期都有上限（见 ADR-010；消费方目前是验收脚本，不是模型 worker）。
 SRT 实时接入（M4）同样可用：`ingest` 在有限窗口内拉流、解码并测量断流与恢复，重连归解码元素

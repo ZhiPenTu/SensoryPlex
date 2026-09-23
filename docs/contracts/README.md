@@ -191,19 +191,33 @@ reserved，破坏语义的修改进入新的协议 major。当前为开发预览
   （读完即 Release，不消费的条目显式 `discard`），保证 `released+expired+retained == retained_total`。
 
 媒体格式准入契约（ADR-009，**[媒体格式支持矩阵与拒绝语义](../adr/ADR-009-媒体格式支持矩阵与拒绝语义.md)**，
-以下为待实现要求，当前状态见 [实现状态](../implementation-status.md)）：
+**以下语义已实现**：`crates/media/src/capability.rs` 是矩阵与判定的唯一归属，
+`crates/media/src/decode.rs` 负责采集与上报；证据见 [验证记录](../verification.md) 的"M9"一节，
+仍未验证范围见 ADR-009 §10）：
 
 - v1 只承诺 ADR-009 §2 的矩阵：容器 MP4/MOV、MKV/WebM、MPEG-TS；视频 H.264/HEVC/VP8/VP9 的
   8-bit SDR；音频 AAC-LC/Opus/Vorbis/PCM；声道只承诺 mono/stereo。矩阵之外的组合一律显式拒绝。
-- 拒绝码是稳定字符串，必须进入 `blockers`（构建级）或 `drop_reasons` / `failure_reasons`（流级）
-  之一，禁止只写日志；被拒轨道不得产生 `BufferDescriptor`，也不得让计数看起来像源里没有这条轨道。
+  这些行都已有公开授权正样本（`make capability-check` 6 个正样本）。
+  有容器头的音频容器单独命名拒绝（`unsupported_container_ogg` / `unsupported_container_wav` /
+  `unsupported_container_flac`），不与 `unsupported_container_raw_es`（真正没有容器头的裸 ES）混用。
+- 拒绝码是稳定字符串（`unsupported_<维度>_<取值>`，见 ADR-009 §3），进
+  `DecodedDataPlane.rejected_tracks`：每条给出 `track_kind`（`video|audio|other`）、`code`、
+  被观测到的 `detail`、`container` 与本次运行实际选中的 `decoder_element`；命令行同时打
+  `rejected=<条数>`。被拒轨道不进 `blockers`（那是构建级缺失），不产生 `BufferDescriptor`、
+  不产生 track stat，也不得让计数看起来像源里没有这条轨道——被拒的**唯一原因位置**是这个列表。
+  同一流里没被拒的轨道照常解码，全轨被拒的运行仍然 exit 0（拒绝不是运行失败）。
 - 准入依据按轨道关联的源格式上下文与解码后格式；容器、编码 profile、源位深不能从 `decodebin`
-  输出的 raw caps 反推。源信息缺失须在有界等待后显式拒绝，CAPS 变化须重新判定。
+  输出的 raw caps 反推。容器结论取自 typefind（`have-type`，demuxer 的 sink caps 作兜底），
+  轨道源格式取自 demuxer/parser/decoder/capsfilter 的 sink caps，一律按 GStreamer **stream ID**
+  关联（禁止按 pad 顺序或只按 video/audio 类型配对）。源信息缺失即在链头拒绝
+  （`unknown_source_*`）：判不出来就不放行。known 字段被后到的 caps 覆盖即重新判定。
 - 禁止降级成功：`pixel_format=RGBA` 只说明归一化目标，不说明源位深；源侧位深与色彩由
   `bit_depth`、`color_primaries`、`transfer_characteristics`、`matrix_coefficients` 显式表达，
   取不到就按未知表达，不得填默认值。
 - 几何必须显式：`display_rotation_deg` 只承诺 0/90/180/270，SAR 必须可表达；旋转要在归一化阶段
-  真正应用，下游拿到的必须是呈现后的画面。
+  真正应用，下游拿到的必须是呈现后的画面。**v1 尚未实现这一条**：本机实测 `qtdemux` 对
+  `rotate=90` / DisplayMatrix 不暴露旋转信息，因此这两个字段保持**缺省**（绝不填 0 冒充"未旋转"），
+  旋转的采集与应用属于 `docs/TODO.md` 的剩余子项。
 - 帧率模式必须显式（`CONSTANT | VARIABLE | UNKNOWN`）：未知帧率不得按 CFR 处理；v1 不承诺 VFR
   抽帧语义，只承诺能声明它。
 - 字段归属：`common/v1/common.proto` 的 `BufferFormat` 承载 descriptor 的几何与源位深/色彩字段；
@@ -211,6 +225,9 @@ reserved，破坏语义的修改进入新的协议 major。当前为开发预览
   仅修改媒体报告不能补齐插件收到的 `BufferDescriptor.format`；新增字段须保留显式未知语义。
 - 实际选中的解码器元素（如 `vtdec_hw`、`avdec_h264`）属于证据：跨平台结论必须同时给出平台标识与
   解码器元素。`avdec_hevc` 在 macOS 上实测不存在，本机 HEVC 走 VideoToolbox，不得外推到 Linux。
+  `decoder_element` 为空串只表示**本次运行没能归因到解码器**；容器里直存 raw 采样（例如 MOV 里的
+  `pcm_s16le`）没有 parser/decoder，此时的取值是 `demuxer_passthrough`——这是一个确定的答案，
+  不是空串，也不得被读成"用了内置解码器"。该语义写在 `media.proto` 的 `decoder_element=17` 注释里。
 
 `append_material` 是受信 timeline/storage 进程的内部入口；当前无公共写入 API。
 事实写入和 outbox 在同一事务完成。outbox 分发、NATS 消费去重和重试器尚待实现，

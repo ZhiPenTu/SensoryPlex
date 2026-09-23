@@ -668,3 +668,195 @@ retained_total == retained + released_total + expired_total        # 每条保�
 - 未做 worker 的 durable 幂等、插件崩溃后的 lease 回收、沙箱与"无外网"策略的强制执行。
 - `golden_path_verified` 恒为 false；2–5 秒语义可见性未测；小时级长直播未测。
 - 只在本机回环 `macos-aarch64` 验收；`linux-x86_64`、Mac mini / 跨机未验证。
+
+### M9 媒体格式准入：拒绝语义落地与实测（2026-09-23）
+
+**平台：** `macos-aarch64`（GStreamer 1.28.7、FFmpeg 9.0.1）。命令：
+`make capability-check`（**19/19**）、`make live-check`（5/5）、
+`cargo test --offline -p sensoryplex-media --features gstreamer`（**103 passed**，其中
+`crates/media/src/capability.rs` 的矩阵与拒绝码单测 27 条）。
+
+实现位置：`crates/media/src/capability.rs`（承诺矩阵 + `classify_track` + `NO_DECODER_ELEMENT`）、
+`crates/media/src/decode.rs`（源格式采集、按 stream ID 关联、demuxer src pad 探针、链头准入探针、
+被拒 pad 终结、视频链 `gldownload`、拒绝上报）、`tools/verify_capability.py`（验收脚本）。
+Proto 字段归属见 [准入契约](contracts/README.md)；样本出处、许可与 SHA-256 见
+`tests/fixtures/media/OPEN-SAMPLES.md`。
+
+#### 正样本：承诺矩阵内的 6 个登记样本全部未被误拒
+
+容器由 `gst-discoverer-1.0 -v` 读；其余字段来自 Runtime 回放报告：
+
+```sh
+target/release/sensoryplex-runtime replay config/pipelines/file-material.yaml <media> \
+  --report /tmp/r.pb --max-points 40000      # 把整段流跑完，不做截断
+```
+
+```python
+# 解析报告（--offline 不需要额外依赖，直接用生成的 SDK 类型）
+import sys
+
+sys.path.insert(0, "plugins/python/common/src")
+from edge_material_sdk.generated.media.v1 import media_pb2 as m
+
+r = m.ReplayReport()
+r.ParseFromString(open("/tmp/r.pb", "rb").read())
+for t in r.decoded.tracks:  # 被准入的轨道
+    print(
+        t.track_kind,
+        t.source_codec,
+        t.decoder_element,
+        t.source_bit_depth,
+        t.source_chroma_format,
+        repr(t.colorimetry),
+        t.frame_rate_mode,
+        f"{t.declared_frame_rate_num}/{t.declared_frame_rate_den}",
+        t.samples,
+    )
+for x in r.decoded.rejected_tracks:  # 被拒轨道（唯一原因位置）
+    print("REJECTED", x.track_kind, x.code, x.detail, x.container)
+```
+
+| 样本 | 容器 | 源编码（video/audio） | 解码器元素 | 源位深 | 采样格式 | colorimetry | 帧率模式 | descriptors |
+|---|---|---|---|---|---|---|---|---|
+| `video/1.mp4` | `video/quicktime` | `video/x-h265` / `audio/mpeg` | `vtdechw0` / `avdec_aac0` | 8 | `4:2:0` | `bt709` | CONSTANT（声明 30/1） | 1354（video 26 + audio 1321 + 7 段） |
+| `screencast-watchlist.480p.vp9.webm` | `video/webm` | `video/x-vp9` / `audio/x-opus` | `vtdechw0` / `opusdec0` | 8 | `4:2:0` | 未采集（空） | CONSTANT（声明 30/1） | 7892（video 41 + audio 7819 + 32 段） |
+| `sintel-trailer.480p.h264.mp4` | `video/quicktime` | `video/x-h264` / `audio/mpeg` | `vtdechw0` / `avdec_aac0` | 8 | `4:2:0` | 未采集（空） | CONSTANT（声明 24/1） | 2487（video 42 + audio 2434 + 11 段） |
+| `editing-basics-sandboxes.vp8.webm` | `video/webm` | `video/x-vp8` / `audio/x-vorbis` | `vp8dec0` / `vorbisdec0` | 8（推导） | `4:2:0`（推导） | 未采集（空） | **UNKNOWN**（声明 0/0） | 5773（video 21 + audio 5736 + 16 段） |
+| `mpegts-h264-aac.live-recording.ts` | `video/mpegts` | `video/x-h264` / `audio/mpeg` | `vtdechw0` / `avdec_aac0` | 8 | `4:2:0` | `bt601` | CONSTANT（声明 25/1） | 934（video 4 + audio 926 + 4 段） |
+| `conger-conger.h264-pcm.mov` | `video/quicktime` | `video/x-h264` / `audio/x-raw` | `vtdechw0` / `demuxer_passthrough` | 8 | `4:2:0` | 未采集（空） | CONSTANT（声明 30000/1001） | 20（video 9 + audio 9 + 2 段） |
+
+6 条全部 `rejected=0`、`blockers` 为空、`descriptors_built == descriptors_validated`，
+`drop_reasons` 只出现自适应抽帧自己的原因（`no_change_yet` / `rate_limited` /
+`duration_unresolved_at_end`），**没有**准入拒绝码，也没有 `decode_stalled`。
+
+**读表时必须知道的四件事（都不是推测）：**
+
+- **VP8 的 `8` 和 `4:2:0` 是矩阵推导值**：`video/x-vp8` 的 caps 在 GStreamer 1.28.7 里既没有
+  `profile` 也没有 `bit-depth-luma` / `chroma-format`，报告里的位深/采样格式来自
+  `capability.rs` 的 `implied_bit_depth` / `implied_chroma_format`（VP8 只有 Profile 0，
+  8-bit / `4:2:0` 是该 profile 的定义）。证据强度**低于** H.264/HEVC 的真读值。
+- **`editing-basics-sandboxes.vp8.webm` 的帧率是真 UNKNOWN**：2012 年的原始上传没有
+  `DefaultDuration`，`declared_frame_rate=0/0`，报告写 `FRAME_RATE_MODE_UNKNOWN` 而不是补一个恒定值
+  （ffprobe 报的 `r_frame_rate=24/1` 是它自己的换算，不等于容器声明）。它是"帧率未知必须显式表达"
+  的正样本。
+- **容器内 PCM 没有解码器元素**：MOV 直接存 `pcm_s16le`，`decodebin` 只建 `qtdemux`，
+  没有可归因的 parser/decoder，报告写 `demuxer_passthrough`（`capability::NO_DECODER_ELEMENT`，
+  已写进 `media.proto` 的 `decoder_element=17` 注释）。空串的含义仍然是"本次运行没能归因"。
+- `display_rotation_deg` / `applied_rotation_deg` 在 6 条上均**缺省**（v1 不采集也不应用旋转，
+  不填 0 冒充"未旋转"）；`colorimetry` 只在源 caps 给出时存在，不参与准入判定，
+  也不得被反推成"已确认 SDR"。
+
+#### 负样本：13 条拒绝路径，拒绝码逐字等于 ADR-009 §3 命名表
+
+全部由 FFmpeg 现场合成/重封装；它们**只证明拒绝路径**，不是任何格式的可用性证据。
+
+| 负样本（场景名） | 拒绝码 | track_kind | detail | container | 同流中仍解码的轨道 |
+|---|---|---|---|---|---|
+| `ten_bit_source_is_rejected_before_the_8bit_raw_caps` | `unsupported_bit_depth_10bit` | video | `bit-depth-luma=10` | `video/quicktime` | audio |
+| `multichannel_audio_is_rejected_by_measured_channels` | `unsupported_channel_layout_multichannel` | audio | `6` | `audio/x-m4a` | 无 |
+| `avi_container_is_rejected_for_both_tracks` | `unsupported_container_avi`（2 条） | video + audio | `video/x-msvideo` | `video/x-msvideo` | 无 |
+| `raw_elementary_stream_is_not_read_as_an_unknown_container` | `unsupported_container_raw_es` | video | `video/x-h265` | `video/x-h265` | 无 |
+| `non_media_pad_is_counted_instead_of_logged` | `unsupported_media_type_text_x_raw` | other | `text/x-raw` | `video/quicktime` | video + audio |
+| `second_video_track_is_a_track_layout_rejection` | `unsupported_track_layout_multiple_video` | video | `more_than_one_video_track` | `video/quicktime` | video + audio |
+| `chroma_other_than_420_is_rejected` | `unsupported_chroma_format_4_2_2` | video | `4:2:2` | `video/quicktime` | 无 |
+| `mp3_is_not_read_as_aac` | `unsupported_codec_mp3` | audio | `mpegversion=1` | `video/quicktime` | 无 |
+| `h264_10bit_is_rejected_by_profile` | `unsupported_bit_depth_10bit` | video | `bit-depth-luma=10` | `video/quicktime` | 无 |
+| `vp8_in_an_unsupported_container_is_rejected` | `unsupported_container_avi` | video | `video/x-msvideo` | `video/x-msvideo` | 无 |
+| `vorbis_in_ogg_is_rejected_by_container` | `unsupported_container_ogg` | audio | `audio/ogg` | `audio/ogg` | 无 |
+| `mpegts_container_does_not_promise_ac3` | `unsupported_codec_ac3` | audio | `audio/x-ac3` | `video/mpegts` | video |
+| `pcm_outside_a_promised_container_is_rejected` | `unsupported_container_wav` | audio | `audio/x-wav` | `audio/x-wav` | 无 |
+
+每条都满足：命令 exit 0（**显式拒绝不是运行失败**）、命令行 `rejected=` 与报告
+`DecodedDataPlane.rejected_tracks` 条数一致、每条被拒轨道都带 `detail` 与 `container`、
+输出里**不出现** `decode_stalled`；同一条流里没被拒的轨道照常产出 descriptor，全轨被拒时
+`descriptors_validated == 0`。
+
+后三条是本轮新增的**相邻**负样本，各自钉住矩阵里一行的边界：
+
+- **VP8 行**：VP8 落在不承诺的容器（AVI）里仍由**容器**判据挡下，不因为编码被承诺就放行。
+- **Vorbis 行**：Vorbis 的母容器 Ogg 不在矩阵内，容器判据先于编码判据。这条**故意用 FFmpeg 现场
+  编码**（`vorbis` 编码器需 `-strict -2`）而不是把 WebM 里的 Vorbis 重封装进 Ogg：重封装会保留源的
+  pre-skip，首帧 PTS 变成 -0.0005，撞上参考探针"拒绝而不 clamp"的既有策略
+  （`invalid_probe_output: timestamp=-0.000522`，见下文边界）。那是**报告之前**的失败，不是准入拒绝。
+- **MPEG-TS 行**：容器承诺不等于编码承诺——TS 里的 AC-3 必须被**编码**判据挡下，
+  而同一条流里的 H.264 视频轨照常解码。
+- **PCM 行**：矩阵承诺的是"容器里的 PCM"，不是 WAV 这个容器本身；换了容器就不再承诺。
+
+#### 本轮补样本时暴露并修掉的三个**真实缺陷**
+
+**(a) 多视频轨竞态（`crates/media/src/decode.rs`）**
+
+现象：双视频轨场景随机失败——HEVC 报 `pipeline_state_change_failed`，VP9/软件解码报 `decode_stalled`。
+根因是两件事叠加，两处都必须修：
+
+1. **被准入拒绝的 pad 悬空**：此前只 `return`，不链接任何元素，上游解码器拿到 `not-linked`。
+   修法是新增 `terminate_rejected_pad()`，把被拒 pad 接到 `fakesink(sync=false, async=false)`。
+   （该 sink **不指定 `name`**：曾用固定名，第二条被拒轨道报 "not unique in bin"。）
+2. **`vtdec_hw` 偶发按 GLMemory 协商输出**：同一进程里出现第二个 VideoToolbox 解码实例时，
+   `vtdec_hw` 的 src 模板把 `video/x-raw(memory:GLMemory)` 排在首位，而 `videoconvert` 不接受
+   GLMemory。修法是在视频链的 `queue` 与 `videoconvert` 之间插入 `gldownload`（sink 同时接受
+   GLMemory 与系统内存，src 只输出系统内存），元素缺失时退回原链路。
+
+A/B 实测（用临时开关 `SP_NO_GLDOWNLOAD` 分离变量，开关已移除）：单轨从未复现
+（`sintel` ×15、`1.mp4` ×10 全 0 失败）；双轨修复前/后失败次数：
+
+| 样本 | 修复前 | 只加 `gldownload` | 两项都修（现状） |
+|---|---|---|---|
+| `two-video-h264.mp4` | 4/10 | 2/10 | **0/10** |
+| `two-video.mp4`（HEVC） | 6~7/10 | 5/10 | **0/10** |
+| `two-video-vp9.mkv` | 10/10 | 9/10 | **0/10** |
+
+纯 `gst-launch` 的上游 `decodebin` 也能复现（7/12），说明问题在链路接线而不在 Runtime 的报告层。
+`GStreamer-GL-WARNING ... NSApplication` 是无害噪声，不是本问题的原因。
+
+**(b) 容器里直存 raw 采样时源编码采集不到**
+
+现象：`conger-conger.h264-pcm.mov` 的 PCM 轨被拒
+`unknown_source_codec: codec_caps_not_collected`。PCM 没有 parser/decoder，`deep-element-added`
+的 sink caps 探针永远等不到它（`decodebin` 只为它建 `qtdemux`）。修法有两处：
+
+- `install_demux_src_probe()`：给 demuxer 的 **src pad** 挂探针；这些 pad 是**解析时**才创建的，
+  因此必须同时挂到 `element.connect("pad-added", ...)` 上（只 `iterate_src_pads()` 拿不到）。
+- `SourceHive::record_caps()` 增加 `demux_src: bool` 参数与 `container_raw: BTreeSet<String>`，
+  把"没有解码器"钉成显式取值 `demuxer_passthrough`（**不是空串**；空串仍是"本次运行没能归因"）。
+
+**(c) `audio/x-wav` / `audio/x-flac` 被误读成裸 ES**
+
+它们在容器表里本来就有短名（`wav` / `flac`），却先在裸 ES 表里命中，于是报
+`unsupported_container_raw_es` 而不是 `unsupported_container_wav`。修法是把它们从裸 ES 表移出
+（它们**有容器头**），并补 2 条命名断言（`unsupported_container_wav` / `unsupported_container_flac`）。
+
+#### MPEG-TS：文件形态与直播形态都有证据
+
+- **文件形态**（本轮新增）：`mpegts-h264-aac.live-recording.ts`，见上方正样本表，
+  `rejected=0`、H.264 `vtdechw0` / AAC `avdec_aac0`、`colorimetry=bt601`。
+  录制方式（OBS 必须先停，同一条 `live/obs` 路径会冲突）：
+
+  ```sh
+  # 发布端：tools/verify_live.py 的 Publisher 把 screencast-video2commons.480p.vp9.webm
+  # 经 mpegtsmux ! srtsink 直推 srt://127.0.0.1:8890?streamid=publish:live/obs
+  # 录制端（SIGINT 收尾才能得到干净 TS）：
+  gst-launch-1.0 -e srtsrc uri=srt://127.0.0.1:8890?streamid=read:live/obs \
+    ! tsparse ! filesink location=video/samples/mpegts-h264-aac.live-recording.ts
+  ```
+
+  该样本是**本机重编码产物**（VP9/Opus → H.264/AAC），只覆盖文件路径的准入与回放。
+- **直播形态**：`make live-check` 五个场景通过；`steady` 场景下 MPEG-TS over SRT 的 video/audio
+  均未被拒（`samples > 0`、`blockers` 为空）。
+
+#### 边界与仍未验证范围
+
+- **参考探针对负时间戳的策略没变**：WebM 里的 Vorbis 重封装进 Ogg 会保留 pre-skip → 首帧 PTS 为负
+  → `crates/media/src/probe.rs` **故意拒绝**（Runtime 在出报告前以
+  `invalid_probe_output: timestamp=-0.000522` 退出）。这是"拒绝而不 clamp"的既有约定，不是准入拒绝；
+  负样本因此改用现场编码（首帧 PTS=0）。
+- VP8 的位深/采样格式是矩阵推导值；文件形态 MPEG-TS 样本是本机重编码产物——两条都写在
+  ADR-009 §10 与 `OPEN-SAMPLES.md` 的"未覆盖范围"里。
+- 其余未验证范围见 ADR-009 §10：仅 `macos-aarch64`；Linux / Mac mini 未验证；
+  **旋转（几何）**既未采集也未应用；CAPS 变化重判与"相同 raw caps 来自不同源格式"只有单元测试级
+  证据，没有端到端样本；E-AC-3 / DTS / TrueHD 与真实 HDR 素材仍无样本；容器级 VFR 与设备直出仍无样本；
+  `golden_path_verified` 恒为 false。
+- **边界（读报告时必须知道的）**：`DecodedDataPlane.tracks` 对 video/audio 两个分支各留一条统计，
+  被拒轨道或源里没有的轨道写 `samples=0` 且源字段为空；它不是"已准入但信息未知"，
+  **被拒的唯一原因位置是 `rejected_tracks`**。`ReplayReport.blockers` 不列媒体准入项：
+  拒绝是流级事实，不是构建级缺失。

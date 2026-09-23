@@ -85,6 +85,51 @@ message DecodedTrackStat {
   // measured PTS gap to the next sample on the same track. Zero means every handed-off sample
   // carried its own duration; it is never a claim that timing metadata was present.
   uint64 duration_derived_samples = 16;
+  // GStreamer element that actually decoded this track (`vtdec_hw`, `avdec_h264`, ...). The
+  // element is negotiated per host, so "this format works here" cannot be checked without it.
+  // Empty means the run could not attribute a decoder, never "the built-in one".
+  // `demuxer_passthrough` is a settled answer, not an empty one: the container stores raw
+  // samples (PCM in MOV), so there is no parser/decoder element to attribute at all.
+  string decoder_element = 17;
+  // Source format context this track was admitted under (ADR-009), as observed before decoding.
+  // Empty or unset means the value was not collected; it is never a default that hides a
+  // rejection.
+  string source_codec = 18;
+  optional uint32 source_bit_depth = 19;
+  string source_chroma_format = 20;
+  // Container-declared colorimetry string (`bt709`, `bt2020`, ...), verbatim from caps.
+  string colorimetry = 21;
+  // Rotation actually applied during normalization. Unset means "not determined", so a reader
+  // cannot assume the frame is upright.
+  optional uint32 applied_rotation_deg = 22;
+  // CONSTANT | VARIABLE | UNKNOWN, decided from the declared frame rate against the measured
+  // PTS deltas. UNKNOWN must not be treated as constant.
+  FrameRateMode frame_rate_mode = 23;
+  // Frame rate declared by the source caps. Both zero means not declared.
+  uint32 declared_frame_rate_num = 24;
+  uint32 declared_frame_rate_den = 25;
+}
+
+// Whether the source declared a constant frame rate and the decoder agreed.
+enum FrameRateMode {
+  FRAME_RATE_MODE_UNKNOWN = 0;
+  FRAME_RATE_MODE_CONSTANT = 1;
+  FRAME_RATE_MODE_VARIABLE = 2;
+}
+
+// A track that was found in the source and refused admission (ADR-009), with the stable reason.
+// Refused tracks must be listed here: a report that only omits them reads as "the source had no
+// such track", which is the silent behaviour ADR-009 forbids.
+message RejectedTrack {
+  string track_kind = 1; // video | audio | other
+  // Stable code, never free text: unsupported_container_avi, unsupported_bit_depth_10bit, ...
+  string code = 2;
+  // The observed value the code refers to (`video/x-msvideo`, `10`, `6`), sanitized, not media.
+  string detail = 3;
+  // Container caps name when it was collected; empty means unknown.
+  string container = 4;
+  // Decoder element that would have handled this track, when one was negotiated.
+  string decoder_element = 5;
 }
 
 // One audio segment cut from decoded PCM. The range covers exactly the samples it carries,
@@ -172,6 +217,9 @@ message DecodedDataPlane {
   // distinguishes "this run measured the queue and saw no pressure" from "this run had no such
   // queue"; a zero here must never be read as proof that nothing was dropped.
   BackpressureReport backpressure = 15;
+  // Tracks the source contained but ADR-009 refused. They produce no descriptor and no track
+  // stat: this list is the only place they exist, and it is required.
+  repeated RejectedTrack rejected_tracks = 16;
 }
 
 // One bounded queue's water marks. `capacity` and `peak` are always counts of the same unit

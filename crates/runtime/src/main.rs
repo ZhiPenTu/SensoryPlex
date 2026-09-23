@@ -543,7 +543,7 @@ async fn replay(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         (_, None) => report.handoff_state.clone(),
     };
     println!(
-        "replay report written: platform={} anchors={} decoded_items={} dropped={} gaps={} out_of_order={} descriptors={} leases_issued={} leases_released={} segments={} arena_peak_bytes={} sampling_kept={}/{} handoff={} blockers={}",
+        "replay report written: platform={} anchors={} decoded_items={} dropped={} gaps={} out_of_order={} descriptors={} rejected={} leases_issued={} leases_released={} segments={} arena_peak_bytes={} sampling_kept={}/{} handoff={} blockers={}",
         report.platform,
         report.emitted_anchors,
         report.decoded_items,
@@ -551,6 +551,9 @@ async fn replay(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         report.gap_items,
         report.out_of_order_items,
         plane.map_or(0, |plane| plane.descriptors_validated),
+        // 源里有、但被准入拒绝的轨道数。它与 descriptors 分开计：被拒轨道一个描述符都不产生，
+        // 如果只报 descriptors，被拒轨道读起来就像"源里没有这条轨道"。
+        plane.map_or(0, |plane| plane.rejected_tracks.len()),
         plane.map_or(0, |plane| plane.leases_issued),
         plane.map_or(0, |plane| plane.leases_released),
         plane
@@ -730,10 +733,11 @@ async fn ingest(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let plane = report.decoded.as_ref();
     let stats = report.stream.as_ref();
     println!(
-        "live report written: platform={} samples={} descriptors={} leases_issued={} stalls={} stalled_ms={} max_stall_ms={} pts_gap_total={} recovered={} ended_by_deadline={} handoff={} blockers={}",
+        "live report written: platform={} samples={} descriptors={} rejected={} leases_issued={} stalls={} stalled_ms={} max_stall_ms={} pts_gap_total={} recovered={} ended_by_deadline={} handoff={} blockers={}",
         report.platform,
         stats.map_or(0, |stats| stats.samples),
         plane.map_or(0, |plane| plane.descriptors_validated),
+        plane.map_or(0, |plane| plane.rejected_tracks.len()),
         plane.map_or(0, |plane| plane.leases_issued),
         stats.map_or(0, |stats| stats.stalls),
         stats.map_or(0, |stats| stats.stalled_ms),
@@ -914,9 +918,9 @@ fn observed_tracks(plane: &DecodedDataPlane) -> Vec<MediaTrack> {
         .filter(|track| track.last_end_ms >= 0 || track.samples > 0)
         .map(|track| MediaTrack {
             track_kind: track.track_kind.clone(),
-            // 直播路径只观察解码后的 raw caps，容器里的编码名尚未采集；
-            // 留空表示未知，绝不填一个猜出来的编码名。
-            codec: String::new(),
+            // 源编码来自解码前采集的 caps（ADR-009 §4），不是从载荷反推的；
+            // 采集不到时留空表示未知，绝不填一个猜出来的编码名。
+            codec: track.source_codec.clone(),
             width: track.width,
             height: track.height,
             sample_rate: track.sample_rate,
@@ -1256,6 +1260,8 @@ mod tests {
                     width: 854,
                     height: 480,
                     pixel_format: "RGBA".into(),
+                    decoder_element: "vp9dec".into(),
+                    source_codec: "video/x-vp9".into(),
                     ..Default::default()
                 },
                 DecodedTrackStat {
@@ -1275,8 +1281,9 @@ mod tests {
         );
         assert_eq!(tracks[0].track_kind, "video");
         assert!(tracks[0].timing_known);
-        // 尚未采集的字段保持"未知"，不填猜测值。
-        assert_eq!(tracks[0].codec, "");
+        // 编码名只在**采集到**的时候写出来（这里是解码前的 caps 给出的 vp9），
+        // 没采集到的字段仍然保持"未知"，不填猜测值。
+        assert_eq!(tracks[0].codec, "video/x-vp9");
         assert_eq!(tracks[0].average_frame_rate, 0.0);
     }
 

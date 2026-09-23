@@ -68,6 +68,43 @@ message BufferFormat {
   repeated uint32 strides = 4;
   uint32 sample_rate = 5;
   uint32 channels = 6;
+  // Presentation rotation the producer applied to reach this frame. Unset means "not
+  // determined", never "0 degrees": a reader must not treat a missing value as upright.
+  optional uint32 display_rotation_deg = 7;
+  // Sample aspect ratio of the source. Unset means unknown; 1/1 is written explicitly.
+  optional uint32 pixel_aspect_ratio_num = 8;
+  optional uint32 pixel_aspect_ratio_den = 9;
+  // Bits per luma sample of the *source* encoding (ADR-009), not of the normalized payload.
+  // Unset means unknown; it is never filled with 8 to make a 10-bit source look admitted.
+  optional uint32 source_bit_depth = 10;
+  ColorPrimaries color_primaries = 11;
+  TransferCharacteristics transfer_characteristics = 12;
+  MatrixCoefficients matrix_coefficients = 13;
+}
+
+// Color description of the source payload. UNSPECIFIED means unknown, which must not be read
+// as BT.709: ADR-009 rejects HDR transfers, and a default would hide that.
+enum ColorPrimaries {
+  COLOR_PRIMARIES_UNSPECIFIED = 0;
+  COLOR_PRIMARIES_BT709 = 1;
+  COLOR_PRIMARIES_BT601 = 2;
+  COLOR_PRIMARIES_BT2020 = 3;
+}
+
+enum TransferCharacteristics {
+  TRANSFER_CHARACTERISTICS_UNSPECIFIED = 0;
+  TRANSFER_CHARACTERISTICS_BT709 = 1;
+  TRANSFER_CHARACTERISTICS_SRGB = 2;
+  // PQ and HLG are the HDR transfers ADR-009 rejects even at 8 bits.
+  TRANSFER_CHARACTERISTICS_SMPTE2084 = 3;
+  TRANSFER_CHARACTERISTICS_ARIB_STD_B67 = 4;
+}
+
+enum MatrixCoefficients {
+  MATRIX_COEFFICIENTS_UNSPECIFIED = 0;
+  MATRIX_COEFFICIENTS_BT709 = 1;
+  MATRIX_COEFFICIENTS_BT601 = 2;
+  MATRIX_COEFFICIENTS_BT2020_NCL = 3;
 }
 
 message BufferLease {

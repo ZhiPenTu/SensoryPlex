@@ -12,9 +12,18 @@ class MediaSourceKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     MEDIA_SOURCE_KIND_UNSPECIFIED: _ClassVar[MediaSourceKind]
     MEDIA_SOURCE_KIND_FILE: _ClassVar[MediaSourceKind]
     MEDIA_SOURCE_KIND_SRT: _ClassVar[MediaSourceKind]
+
+class FrameRateMode(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    FRAME_RATE_MODE_UNKNOWN: _ClassVar[FrameRateMode]
+    FRAME_RATE_MODE_CONSTANT: _ClassVar[FrameRateMode]
+    FRAME_RATE_MODE_VARIABLE: _ClassVar[FrameRateMode]
 MEDIA_SOURCE_KIND_UNSPECIFIED: MediaSourceKind
 MEDIA_SOURCE_KIND_FILE: MediaSourceKind
 MEDIA_SOURCE_KIND_SRT: MediaSourceKind
+FRAME_RATE_MODE_UNKNOWN: FrameRateMode
+FRAME_RATE_MODE_CONSTANT: FrameRateMode
+FRAME_RATE_MODE_VARIABLE: FrameRateMode
 
 class MediaSourceRef(_message.Message):
     __slots__ = ("stream_id", "source_id", "kind", "uri_secret_ref", "content_hash")
@@ -77,7 +86,7 @@ class TimelineAnchor(_message.Message):
     def __init__(self, anchor_id: _Optional[str] = ..., track_kind: _Optional[str] = ..., time_range: _Optional[_Union[_common_pb2.TimeRange, _Mapping]] = ..., pts_ms: _Optional[int] = ..., keyframe: bool = ...) -> None: ...
 
 class DecodedTrackStat(_message.Message):
-    __slots__ = ("track_kind", "samples", "bytes", "first_pts_ms", "last_end_ms", "width", "height", "pixel_format", "sample_rate", "channels", "audio_format", "dropped_samples", "drop_reasons", "timeline_offset_ms", "overlapping_samples", "duration_derived_samples")
+    __slots__ = ("track_kind", "samples", "bytes", "first_pts_ms", "last_end_ms", "width", "height", "pixel_format", "sample_rate", "channels", "audio_format", "dropped_samples", "drop_reasons", "timeline_offset_ms", "overlapping_samples", "duration_derived_samples", "decoder_element", "source_codec", "source_bit_depth", "source_chroma_format", "colorimetry", "applied_rotation_deg", "frame_rate_mode", "declared_frame_rate_num", "declared_frame_rate_den")
     TRACK_KIND_FIELD_NUMBER: _ClassVar[int]
     SAMPLES_FIELD_NUMBER: _ClassVar[int]
     BYTES_FIELD_NUMBER: _ClassVar[int]
@@ -94,6 +103,15 @@ class DecodedTrackStat(_message.Message):
     TIMELINE_OFFSET_MS_FIELD_NUMBER: _ClassVar[int]
     OVERLAPPING_SAMPLES_FIELD_NUMBER: _ClassVar[int]
     DURATION_DERIVED_SAMPLES_FIELD_NUMBER: _ClassVar[int]
+    DECODER_ELEMENT_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_CODEC_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_BIT_DEPTH_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_CHROMA_FORMAT_FIELD_NUMBER: _ClassVar[int]
+    COLORIMETRY_FIELD_NUMBER: _ClassVar[int]
+    APPLIED_ROTATION_DEG_FIELD_NUMBER: _ClassVar[int]
+    FRAME_RATE_MODE_FIELD_NUMBER: _ClassVar[int]
+    DECLARED_FRAME_RATE_NUM_FIELD_NUMBER: _ClassVar[int]
+    DECLARED_FRAME_RATE_DEN_FIELD_NUMBER: _ClassVar[int]
     track_kind: str
     samples: int
     bytes: int
@@ -110,7 +128,30 @@ class DecodedTrackStat(_message.Message):
     timeline_offset_ms: int
     overlapping_samples: int
     duration_derived_samples: int
-    def __init__(self, track_kind: _Optional[str] = ..., samples: _Optional[int] = ..., bytes: _Optional[int] = ..., first_pts_ms: _Optional[int] = ..., last_end_ms: _Optional[int] = ..., width: _Optional[int] = ..., height: _Optional[int] = ..., pixel_format: _Optional[str] = ..., sample_rate: _Optional[int] = ..., channels: _Optional[int] = ..., audio_format: _Optional[str] = ..., dropped_samples: _Optional[int] = ..., drop_reasons: _Optional[_Iterable[str]] = ..., timeline_offset_ms: _Optional[int] = ..., overlapping_samples: _Optional[int] = ..., duration_derived_samples: _Optional[int] = ...) -> None: ...
+    decoder_element: str
+    source_codec: str
+    source_bit_depth: int
+    source_chroma_format: str
+    colorimetry: str
+    applied_rotation_deg: int
+    frame_rate_mode: FrameRateMode
+    declared_frame_rate_num: int
+    declared_frame_rate_den: int
+    def __init__(self, track_kind: _Optional[str] = ..., samples: _Optional[int] = ..., bytes: _Optional[int] = ..., first_pts_ms: _Optional[int] = ..., last_end_ms: _Optional[int] = ..., width: _Optional[int] = ..., height: _Optional[int] = ..., pixel_format: _Optional[str] = ..., sample_rate: _Optional[int] = ..., channels: _Optional[int] = ..., audio_format: _Optional[str] = ..., dropped_samples: _Optional[int] = ..., drop_reasons: _Optional[_Iterable[str]] = ..., timeline_offset_ms: _Optional[int] = ..., overlapping_samples: _Optional[int] = ..., duration_derived_samples: _Optional[int] = ..., decoder_element: _Optional[str] = ..., source_codec: _Optional[str] = ..., source_bit_depth: _Optional[int] = ..., source_chroma_format: _Optional[str] = ..., colorimetry: _Optional[str] = ..., applied_rotation_deg: _Optional[int] = ..., frame_rate_mode: _Optional[_Union[FrameRateMode, str]] = ..., declared_frame_rate_num: _Optional[int] = ..., declared_frame_rate_den: _Optional[int] = ...) -> None: ...
+
+class RejectedTrack(_message.Message):
+    __slots__ = ("track_kind", "code", "detail", "container", "decoder_element")
+    TRACK_KIND_FIELD_NUMBER: _ClassVar[int]
+    CODE_FIELD_NUMBER: _ClassVar[int]
+    DETAIL_FIELD_NUMBER: _ClassVar[int]
+    CONTAINER_FIELD_NUMBER: _ClassVar[int]
+    DECODER_ELEMENT_FIELD_NUMBER: _ClassVar[int]
+    track_kind: str
+    code: str
+    detail: str
+    container: str
+    decoder_element: str
+    def __init__(self, track_kind: _Optional[str] = ..., code: _Optional[str] = ..., detail: _Optional[str] = ..., container: _Optional[str] = ..., decoder_element: _Optional[str] = ...) -> None: ...
 
 class AudioSegment(_message.Message):
     __slots__ = ("segment_id", "time_range", "sample_rate", "channels", "bytes", "partial")
@@ -189,7 +230,7 @@ class SamplingReport(_message.Message):
     def __init__(self, track_kind: _Optional[str] = ..., min_interval_ms: _Optional[int] = ..., static_hold_ms: _Optional[int] = ..., change_threshold: _Optional[int] = ..., observed: _Optional[int] = ..., kept: _Optional[int] = ..., kept_first_frame: _Optional[int] = ..., kept_content_change: _Optional[int] = ..., kept_static_heartbeat: _Optional[int] = ..., skipped_rate_limited: _Optional[int] = ..., skipped_no_change: _Optional[int] = ..., skipped_non_monotonic: _Optional[int] = ..., skipped_missing_signature: _Optional[int] = ..., max_gap_ms: _Optional[int] = ..., max_keeps_bound: _Optional[int] = ..., max_frame_interval_ms: _Optional[int] = ..., skipped_backpressure_throttled: _Optional[int] = ...) -> None: ...
 
 class DecodedDataPlane(_message.Message):
-    __slots__ = ("arena_id", "arena_capacity_bytes", "arena_peak_bytes", "decoded_bytes", "tracks", "descriptors_built", "descriptors_validated", "descriptor_failures", "failure_reasons", "leases_issued", "leases_released", "evidence_descriptors", "audio_segments", "sampling", "backpressure")
+    __slots__ = ("arena_id", "arena_capacity_bytes", "arena_peak_bytes", "decoded_bytes", "tracks", "descriptors_built", "descriptors_validated", "descriptor_failures", "failure_reasons", "leases_issued", "leases_released", "evidence_descriptors", "audio_segments", "sampling", "backpressure", "rejected_tracks")
     ARENA_ID_FIELD_NUMBER: _ClassVar[int]
     ARENA_CAPACITY_BYTES_FIELD_NUMBER: _ClassVar[int]
     ARENA_PEAK_BYTES_FIELD_NUMBER: _ClassVar[int]
@@ -205,6 +246,7 @@ class DecodedDataPlane(_message.Message):
     AUDIO_SEGMENTS_FIELD_NUMBER: _ClassVar[int]
     SAMPLING_FIELD_NUMBER: _ClassVar[int]
     BACKPRESSURE_FIELD_NUMBER: _ClassVar[int]
+    REJECTED_TRACKS_FIELD_NUMBER: _ClassVar[int]
     arena_id: str
     arena_capacity_bytes: int
     arena_peak_bytes: int
@@ -220,7 +262,8 @@ class DecodedDataPlane(_message.Message):
     audio_segments: AudioSegmentReport
     sampling: _containers.RepeatedCompositeFieldContainer[SamplingReport]
     backpressure: BackpressureReport
-    def __init__(self, arena_id: _Optional[str] = ..., arena_capacity_bytes: _Optional[int] = ..., arena_peak_bytes: _Optional[int] = ..., decoded_bytes: _Optional[int] = ..., tracks: _Optional[_Iterable[_Union[DecodedTrackStat, _Mapping]]] = ..., descriptors_built: _Optional[int] = ..., descriptors_validated: _Optional[int] = ..., descriptor_failures: _Optional[int] = ..., failure_reasons: _Optional[_Iterable[str]] = ..., leases_issued: _Optional[int] = ..., leases_released: _Optional[int] = ..., evidence_descriptors: _Optional[_Iterable[_Union[_common_pb2.BufferDescriptor, _Mapping]]] = ..., audio_segments: _Optional[_Union[AudioSegmentReport, _Mapping]] = ..., sampling: _Optional[_Iterable[_Union[SamplingReport, _Mapping]]] = ..., backpressure: _Optional[_Union[BackpressureReport, _Mapping]] = ...) -> None: ...
+    rejected_tracks: _containers.RepeatedCompositeFieldContainer[RejectedTrack]
+    def __init__(self, arena_id: _Optional[str] = ..., arena_capacity_bytes: _Optional[int] = ..., arena_peak_bytes: _Optional[int] = ..., decoded_bytes: _Optional[int] = ..., tracks: _Optional[_Iterable[_Union[DecodedTrackStat, _Mapping]]] = ..., descriptors_built: _Optional[int] = ..., descriptors_validated: _Optional[int] = ..., descriptor_failures: _Optional[int] = ..., failure_reasons: _Optional[_Iterable[str]] = ..., leases_issued: _Optional[int] = ..., leases_released: _Optional[int] = ..., evidence_descriptors: _Optional[_Iterable[_Union[_common_pb2.BufferDescriptor, _Mapping]]] = ..., audio_segments: _Optional[_Union[AudioSegmentReport, _Mapping]] = ..., sampling: _Optional[_Iterable[_Union[SamplingReport, _Mapping]]] = ..., backpressure: _Optional[_Union[BackpressureReport, _Mapping]] = ..., rejected_tracks: _Optional[_Iterable[_Union[RejectedTrack, _Mapping]]] = ...) -> None: ...
 
 class BackpressureQueue(_message.Message):
     __slots__ = ("name", "unit", "capacity", "current", "peak")

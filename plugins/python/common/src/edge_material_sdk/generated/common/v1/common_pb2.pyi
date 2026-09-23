@@ -17,6 +17,28 @@ class ErrorCode(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     TRANSIENT_BACKEND_FAILURE: _ClassVar[ErrorCode]
     DATA_POLICY_DENIED: _ClassVar[ErrorCode]
     INTERNAL_PLUGIN_ERROR: _ClassVar[ErrorCode]
+
+class ColorPrimaries(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    COLOR_PRIMARIES_UNSPECIFIED: _ClassVar[ColorPrimaries]
+    COLOR_PRIMARIES_BT709: _ClassVar[ColorPrimaries]
+    COLOR_PRIMARIES_BT601: _ClassVar[ColorPrimaries]
+    COLOR_PRIMARIES_BT2020: _ClassVar[ColorPrimaries]
+
+class TransferCharacteristics(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    TRANSFER_CHARACTERISTICS_UNSPECIFIED: _ClassVar[TransferCharacteristics]
+    TRANSFER_CHARACTERISTICS_BT709: _ClassVar[TransferCharacteristics]
+    TRANSFER_CHARACTERISTICS_SRGB: _ClassVar[TransferCharacteristics]
+    TRANSFER_CHARACTERISTICS_SMPTE2084: _ClassVar[TransferCharacteristics]
+    TRANSFER_CHARACTERISTICS_ARIB_STD_B67: _ClassVar[TransferCharacteristics]
+
+class MatrixCoefficients(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    MATRIX_COEFFICIENTS_UNSPECIFIED: _ClassVar[MatrixCoefficients]
+    MATRIX_COEFFICIENTS_BT709: _ClassVar[MatrixCoefficients]
+    MATRIX_COEFFICIENTS_BT601: _ClassVar[MatrixCoefficients]
+    MATRIX_COEFFICIENTS_BT2020_NCL: _ClassVar[MatrixCoefficients]
 ERROR_CODE_UNSPECIFIED: ErrorCode
 INVALID_INPUT: ErrorCode
 UNSUPPORTED_CAPABILITY: ErrorCode
@@ -26,6 +48,19 @@ RESOURCE_EXHAUSTED: ErrorCode
 TRANSIENT_BACKEND_FAILURE: ErrorCode
 DATA_POLICY_DENIED: ErrorCode
 INTERNAL_PLUGIN_ERROR: ErrorCode
+COLOR_PRIMARIES_UNSPECIFIED: ColorPrimaries
+COLOR_PRIMARIES_BT709: ColorPrimaries
+COLOR_PRIMARIES_BT601: ColorPrimaries
+COLOR_PRIMARIES_BT2020: ColorPrimaries
+TRANSFER_CHARACTERISTICS_UNSPECIFIED: TransferCharacteristics
+TRANSFER_CHARACTERISTICS_BT709: TransferCharacteristics
+TRANSFER_CHARACTERISTICS_SRGB: TransferCharacteristics
+TRANSFER_CHARACTERISTICS_SMPTE2084: TransferCharacteristics
+TRANSFER_CHARACTERISTICS_ARIB_STD_B67: TransferCharacteristics
+MATRIX_COEFFICIENTS_UNSPECIFIED: MatrixCoefficients
+MATRIX_COEFFICIENTS_BT709: MatrixCoefficients
+MATRIX_COEFFICIENTS_BT601: MatrixCoefficients
+MATRIX_COEFFICIENTS_BT2020_NCL: MatrixCoefficients
 
 class TimeRange(_message.Message):
     __slots__ = ("start_ms", "end_ms")
@@ -110,20 +145,34 @@ class BufferLocator(_message.Message):
     def __init__(self, handle: _Optional[str] = ..., offset: _Optional[int] = ..., length: _Optional[int] = ...) -> None: ...
 
 class BufferFormat(_message.Message):
-    __slots__ = ("pixel_format", "width", "height", "strides", "sample_rate", "channels")
+    __slots__ = ("pixel_format", "width", "height", "strides", "sample_rate", "channels", "display_rotation_deg", "pixel_aspect_ratio_num", "pixel_aspect_ratio_den", "source_bit_depth", "color_primaries", "transfer_characteristics", "matrix_coefficients")
     PIXEL_FORMAT_FIELD_NUMBER: _ClassVar[int]
     WIDTH_FIELD_NUMBER: _ClassVar[int]
     HEIGHT_FIELD_NUMBER: _ClassVar[int]
     STRIDES_FIELD_NUMBER: _ClassVar[int]
     SAMPLE_RATE_FIELD_NUMBER: _ClassVar[int]
     CHANNELS_FIELD_NUMBER: _ClassVar[int]
+    DISPLAY_ROTATION_DEG_FIELD_NUMBER: _ClassVar[int]
+    PIXEL_ASPECT_RATIO_NUM_FIELD_NUMBER: _ClassVar[int]
+    PIXEL_ASPECT_RATIO_DEN_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_BIT_DEPTH_FIELD_NUMBER: _ClassVar[int]
+    COLOR_PRIMARIES_FIELD_NUMBER: _ClassVar[int]
+    TRANSFER_CHARACTERISTICS_FIELD_NUMBER: _ClassVar[int]
+    MATRIX_COEFFICIENTS_FIELD_NUMBER: _ClassVar[int]
     pixel_format: str
     width: int
     height: int
     strides: _containers.RepeatedScalarFieldContainer[int]
     sample_rate: int
     channels: int
-    def __init__(self, pixel_format: _Optional[str] = ..., width: _Optional[int] = ..., height: _Optional[int] = ..., strides: _Optional[_Iterable[int]] = ..., sample_rate: _Optional[int] = ..., channels: _Optional[int] = ...) -> None: ...
+    display_rotation_deg: int
+    pixel_aspect_ratio_num: int
+    pixel_aspect_ratio_den: int
+    source_bit_depth: int
+    color_primaries: ColorPrimaries
+    transfer_characteristics: TransferCharacteristics
+    matrix_coefficients: MatrixCoefficients
+    def __init__(self, pixel_format: _Optional[str] = ..., width: _Optional[int] = ..., height: _Optional[int] = ..., strides: _Optional[_Iterable[int]] = ..., sample_rate: _Optional[int] = ..., channels: _Optional[int] = ..., display_rotation_deg: _Optional[int] = ..., pixel_aspect_ratio_num: _Optional[int] = ..., pixel_aspect_ratio_den: _Optional[int] = ..., source_bit_depth: _Optional[int] = ..., color_primaries: _Optional[_Union[ColorPrimaries, str]] = ..., transfer_characteristics: _Optional[_Union[TransferCharacteristics, str]] = ..., matrix_coefficients: _Optional[_Union[MatrixCoefficients, str]] = ...) -> None: ...
 
 class BufferLease(_message.Message):
     __slots__ = ("lease_id", "expires_at_unix_ms", "read_only")

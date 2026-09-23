@@ -14,7 +14,7 @@
 | Gateway | Bearer 认证、owner 过滤、素材详情、历史版本、关键词/标签/时间查询 | 外部鉴权、语义检索、短期媒体授权 URL |
 | 存储/硬件 | Rust adapter traits，模型与配置 hash 契约 | NAS/MinIO/Milvus、ONNX/TensorRT 实现 |
 | 直播接入基础设施 | 本机 MediaMTX 1.21.1（独立 Compose，仅回环端口）；SRT 直推（GStreamer `srtsink` 与用户自有 OBS）与 Runtime `ingest` 已打通：稳定窗口、断流恢复、无源失败、实时数据面交接、VideoToolbox 视频五个场景通过，OBS 真实直推亦实测（无 timing 码流的视频时长按 PTS 差分补齐），见 `docs/verification.md` | Mac mini / 跨机部署、SRT 加密与带凭据 publish、`linux-x86_64` 侧验收；服务器上有流不等于语义链路可用 |
-| 媒体与模型 | Pipeline 配置、真实媒体 probe 工具、ffprobe 锚点回放，GStreamer 真实解码 → arena → `BufferDescriptor` → lease 签发/校验/释放 → 音频 5 秒切段，视频自适应抽帧（keep/skip 全部带原因，7 个真实样本通过），跨进程数据面：Runtime 保留字节、独立进程按 lease 读取（3 个样本 × 2 个场景通过，具备有界容量与稳定拒绝码），SRT 实时接入 `ingest`（`make live-check` 五个场景通过），背压与队列可观察：三条有界队列的深度/峰值/容量、按原因与按种类的丢弃、lease 等待时间（`verify_backpressure.py` 4 场景 + OBS 直播实测，见 `docs/verification.md`），以及第一个**端侧模型插件**：本机 ollama `moondream:v2`（VLM），插件经 `LeaseBufferReader` 读真实视频帧产出带锚点/来源/版本/显式置信度语义的 observation，`tools/ai_worker.py` 只发现与调用不读字节，`make model-check` 四进程通过（见 `docs/verification.md` 的"M8"一节与 ADR-012） | ASR/OCR/BGE 插件与 CoreML/Metal（仍 `execution_backend_not_implemented`）；插件**未签名**（`local_native` 形态，签名/SBOM 只有结构预检）；媒体格式准入（ADR-009） |
+| 媒体与模型 | Pipeline 配置、真实媒体 probe 工具、ffprobe 锚点回放，GStreamer 真实解码 → arena → `BufferDescriptor` → lease 签发/校验/释放 → 音频 5 秒切段，视频自适应抽帧（keep/skip 全部带原因，7 个真实样本通过），跨进程数据面：Runtime 保留字节、独立进程按 lease 读取（3 个样本 × 2 个场景通过，具备有界容量与稳定拒绝码），SRT 实时接入 `ingest`（`make live-check` 五个场景通过），背压与队列可观察：三条有界队列的深度/峰值/容量、按原因与按种类的丢弃、lease 等待时间（`verify_backpressure.py` 4 场景 + OBS 直播实测，见 `docs/verification.md`），以及第一个**端侧模型插件**：本机 ollama `moondream:v2`（VLM），插件经 `LeaseBufferReader` 读真实视频帧产出带锚点/来源/版本/显式置信度语义的 observation，`tools/ai_worker.py` 只发现与调用不读字节，`make model-check` 四进程通过（见 `docs/verification.md` 的"M8"一节与 ADR-012），以及**媒体格式准入与显式拒绝**：承诺矩阵写成数据、源格式按 stream ID 关联、被拒轨道带稳定拒绝码进报告（`make capability-check` **19 场景**通过：6 个公开授权正样本 + 13 条拒绝路径，见 `docs/verification.md` 的"M9"一节与 ADR-009） | ASR/OCR/BGE 插件与 CoreML/Metal（仍 `execution_backend_not_implemented`）；插件**未签名**（`local_native` 形态，签名/SBOM 只有结构预检）；旋转的采集与应用（v1 未实现） |
 | 工程 | uv/Cargo 锁文件、Docker、检查命令、CI（ubuntu） | 真视频 Golden Path、macOS CI 与 `launchd` 常驻形态、压测、监控仪表盘 |
 
 下一里程碑：**本地文件 → GStreamer → PTS 正确的 frame/audio descriptor**，先完成
@@ -49,12 +49,24 @@ SRT 实时接入也已落地：`ingest` 在有限窗口内从 SRT 拉流，测�
 模型链路（M8）已接入：本机 ollama 的 `moondream:v2` 通过插件消费真实视频帧，`tools/ai_worker.py`
 只做发现与调用（不读字节），`make model-check` 四进程通过；边界见
 [ADR-012](adr/ADR-012-模型插件与端侧推理边界.md)。仍未实现的是 **ASR/OCR/BGE 与 CoreML/Metal**
-（仍 `execution_backend_not_implemented`）、插件签名验证与媒体格式准入。
+（仍 `execution_backend_not_implemented`）与插件签名验证。
 因此 `golden_path_verified` 恒为 false，不得把本节读作 Golden Path 已完成；
 接入的 VLM 只保证链路语义正确，**不保证描述可用**（模型输出不稳定）。
 抽帧的覆盖率目前只到帧数口径，语义覆盖仍未用模型输出度量。
 共享内存数据面只在本机有意义（且同 UID 进程之间没有逐 buffer 隔离），不是分布式数据面。
 
-媒体格式准入同样未实现（[ADR-009](adr/ADR-009-媒体格式支持矩阵与拒绝语义.md)）：现在没有矩阵判据，
-10-bit HEVC 会被静默降成 8-bit 仍算成功，非音视频 pad 只写日志，5.1 音频原样透传。实测记录见
-`docs/verification.md` 的"媒体格式准入"一节；补齐拒绝语义排在新增任何格式之前（`docs/TODO.md` M9）。
+媒体格式准入（M9）已按 [ADR-009](adr/ADR-009-媒体格式支持矩阵与拒绝语义.md) 落地：承诺矩阵写成
+数据（容器 → 编码 → 位深 → 色彩 → 采样格式 → 声道），判定输入是**解码前采集的源格式上下文**加上
+解码后格式，矩阵之外的组合进 `DecodedDataPlane.rejected_tracks`（稳定拒绝码 + 观测值 + 容器 +
+解码器元素），命令行打 `rejected=`。`make capability-check` **19 场景**通过：**6 个公开授权正样本**
+（HEVC/AAC MP4、VP9/Opus WebM、H.264/AAC MP4、VP8/Vorbis WebM、文件形态 H.264/AAC MPEG-TS、
+H.264 + 容器内 `pcm_s16le` MOV）全部 `rejected=0`，13 条拒绝路径逐字命中命名表（10-bit ×2、4:2:2、
+5.1、MP3、AVI ×2、裸 ES、字幕 pad、双视频轨、OGG、AC-3、WAV）；`make live-check` 5 场景通过
+（MPEG-TS over SRT 未被误拒）。样本出处/许可/SHA-256 登记在
+`tests/fixtures/media/OPEN-SAMPLES.md`。验收同时修掉 5 个真实缺陷（`typefind ! decodebin` 直连时
+容器证据全失效、"源里没有这种轨道"被误报成 `decode_stalled`、被拒 pad 悬空叠加 `vtdec_hw` 的
+GLMemory 协商导致多视频轨竞态、容器内 PCM 的源编码采集不到、WAV/FLAC 被误读成裸 ES），
+细节与仍未验证范围见 `docs/verification.md` 的"M9"一节与 ADR-009 §10。
+**仍未验证的仍然不得声称可用**：VP8 的位深/采样格式是矩阵推导值；文件形态 MPEG-TS 样本是本机
+重编码产物，不代表设备直出；E-AC-3 / DTS / TrueHD 与真实 HDR 素材无样本；旋转（几何）未采集
+也未应用；容器级 VFR 与设备直出无样本；`golden_path_verified` 恒为 false。

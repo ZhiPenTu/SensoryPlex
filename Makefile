@@ -4,7 +4,7 @@ COMPOSE = docker compose --env-file .env -f deploy/compose/docker-compose.poc.ym
 STREAM_COMPOSE = docker compose -f deploy/compose/docker-compose.stream.yml
 
 .PHONY: setup configure proto check test integration format infra up down migrate gateway runtime pipeline-check runtime-smoke gateway-smoke media-replay media-check handoff-check backpressure-check
-.PHONY: stream-up stream-down stream-status stream-logs live-check model-check plugin-artifact
+.PHONY: stream-up stream-down stream-status stream-logs live-check model-check plugin-artifact capability-check
 setup: configure
 	$(UV) sync --frozen
 	$(MAKE) proto
@@ -103,6 +103,13 @@ live-check:
 backpressure-check:
 	$(CARGO) build --locked --release -p sensoryplex-runtime --features "$(MEDIA_FEATURES)"
 	$(UV) run python tools/verify_backpressure.py
+
+# ADR-009 媒体格式准入验收：承诺矩阵内的登记样本不得被误拒，矩阵外必须拿到稳定拒绝码。
+# 负样本由 FFmpeg 现场合成（10-bit / 5.1 / AVI / 裸 ES / 字幕 / 双视频轨 / 4:2:2 / MP3），
+# 只验证拒绝路径，不作任何正样本证据；缺 ffmpeg 或缺编码器即显式失败，不跳过。
+capability-check:
+	$(CARGO) build --locked --release -p sensoryplex-runtime --features "$(MEDIA_FEATURES)"
+	$(UV) run python tools/verify_capability.py
 
 # 跨进程数据面验收：Runtime 保留字节，独立 Python 进程按 lease 读取、校验并释放。
 # 需要真实授权样本，与 media-replay 同一份素材即可。

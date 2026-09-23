@@ -18,7 +18,8 @@
 - [x] Runtime 能力上报与 Apple Silicon 平台口径（ADR-008）
 - [x] 媒体锚点路径：ffprobe 半开区间、重排计数、显式丢弃原因
 - [x] 媒体解码路径：GStreamer 解码 → 有界 arena → `BufferDescriptor` → lease 签发/校验/释放 → 音频 5 秒切段
-      （证据：`video/1.mp4` 与 `video/samples/` 6 个公开许可样本，见 `tests/fixtures/media/OPEN-SAMPLES.md`）
+      （证据：`video/1.mp4` 与 `video/samples/` 的公开许可样本——该轮 6 个 VP9/Opus，现共 10 个，
+      见 `tests/fixtures/media/OPEN-SAMPLES.md`）
 - [x] 视频自适应抽帧（M1）：进入 arena 前判定，keep/skip 全部带原因，保留率随内容自适应
       （证据：`docs/verification.md` "M1 自适应抽帧：接线与真实样本覆盖率"）
 - [x] 跨进程数据面（M3）：Runtime 保留字节 + 独立进程按 lease 读取/校验/释放，容量与 lease 生命周期有上限
@@ -138,20 +139,54 @@
 
 ### M9 格式准入与显式拒绝（ADR-009，新增格式之前必须先做）
 
-- 现状：没有准入判据，实测存在三类静默降级——10-bit HEVC 被降成 8-bit 仍算成功、
-  非音视频 pad 只写日志不进报告、5.1 音频原样透传（证据见 `docs/verification.md`
-  "媒体格式准入"一节）。这三条都违反 AGENTS.md。
-- 目标：按 ADR-009 §4 在 typefind / demux / parser / autoplug 阶段采集源格式，按轨道标识关联；
-  `crates/media/src/capability.rs`（矩阵 + `classify_format`）结合源上下文与解码后格式完成准入，
-  不得仅凭 `pad-added` 的 raw caps 推断源编码或位深；信息缺失须有界等待后显式拒绝，CAPS 变化须重判。
-- 契约：`proto/common/v1/common.proto` 的 `BufferFormat` 补几何（`display_rotation_deg`、SAR）
-  与源位深/色彩（`bit_depth`、primaries、transfer、matrix）字段；`proto/media/v1/media.proto`
-  补源格式、轨道关联、应用的旋转角度、时间基与帧率模式（`CONSTANT|VARIABLE|UNKNOWN`），
-  以及实际解码器元素（`vtdec_hw`、`avdec_h264`）的报告证据；随后运行 `make proto`。
-- 验收：10-bit、多声道、未知 pad 三条拒绝路径各跑出稳定拒绝码（负样本可用 FFmpeg 合成，
-  但只能标注为拒绝路径验证样本）；补充源信息缺失、多轨关联、相同 raw caps 来自不同源格式及
-  CAPS 变化的准入检查；已通过的正样本回放结论不得回退。
-- 注意：本项与 M1–M8 相互独立，但**必须先于**任何"新增支持格式"的动作。
+- 状态：**准入与拒绝已完成并实测**（`make capability-check` 19/19），且 ADR-009 §2 承诺矩阵里
+  原先缺样本的 5 行（H.264、VP8、Vorbis、容器内 PCM、文件形态 MPEG-TS）已于 2026-09-23 补上
+  **真实公开授权回放样本**。剩余工作是矩阵里其余行、旋转与容器级 VFR。
+  证据见 `docs/verification.md` "M9 媒体格式准入"；决策见
+  [ADR-009](adr/ADR-009-媒体格式支持矩阵与拒绝语义.md)；样本见
+  `tests/fixtures/media/OPEN-SAMPLES.md`。
+- 已完成（准入与拒绝）：
+  - `crates/media/src/capability.rs`：把承诺矩阵写成数据，判定顺序为
+    容器 → 编码 → 位深 → 色彩 → 采样格式 → 声道；判定输入是**解码前采集的源格式上下文**
+    加上解码后格式，绝不从归一化后的 `pixel_format` 反推源位深（实测 A 的修法）。
+  - 源格式采集与关联：容器来自 typefind（demuxer sink caps 作为兜底），轨道源格式来自
+    demuxer/parser/decoder/capsfilter 的 sink caps，一律按 GStreamer **stream ID** 关联；
+    禁止按 pad 出现顺序或只按 video/audio 类型配对。
+  - 拒绝上报：准入探针挂在链头 queue 的 sink pad，被判拒的样本在该链上**丢弃**（不是 unlink），
+    拒绝码进 `DecodedDataPlane.rejected_tracks`（`track_kind` + 稳定码 + 观测值 + 容器 +
+    解码器元素），命令行打 `rejected=`；被拒轨道不产生 descriptor，也不产生 track stat。
+  - Proto：`BufferFormat` 补几何与源位深/色彩；`media.proto` 补源格式上下文、`RejectedTrack`、
+    解码器元素、帧率模式（`CONSTANT|VARIABLE|UNKNOWN`）与声明的帧率；`make proto` 已重跑。
+- 已完成（验收）：`make capability-check` **19/19**——6 个登记正样本不得被误拒（并给出源编码、
+  解码器元素、源位深、采样格式、帧率模式或显式 UNKNOWN），13 条拒绝路径逐字命中 ADR-009 §3
+  命名表（10-bit ×2、4:2:2、5.1、MP3、AVI ×2、裸 ES、字幕 pad、双视频轨、OGG、AC-3、WAV）；
+  `make live-check` **5/5**（MPEG-TS over SRT 未被误拒）。负样本全部由 FFmpeg 现场合成/重封装，
+  **只证明拒绝路径**，不是任何格式的可用性证据。
+- 已完成（补样本）：5 行矩阵缺口按 ADR-009 §8 的四件事补齐——
+  `sintel-trailer.480p.h264.mp4`（H.264/AAC，Blender CC BY 3.0）、
+  `editing-basics-sandboxes.vp8.webm`（VP8/Vorbis，Commons CC BY-SA 3.0，容器未声明帧率）、
+  `mpegts-h264-aac.live-recording.ts`（文件形态 MPEG-TS，本机 SRT 直推现场录制）、
+  `conger-conger.h264-pcm.mov`（容器内 `pcm_s16le`，Zenodo CC BY 4.0）。
+  出处、许可、SHA-256 与实测特性登记在 `tests/fixtures/media/OPEN-SAMPLES.md`。
+- 验收暴露并修掉 5 个真实缺陷（细节与 A/B 数据见 `docs/verification.md`）：① `typefind ! decodebin`
+  直连时 `have-type` 从不触发、demuxer sink caps 也未协商，容器结论永远缺失（等于把一切都拒了）；
+  ② 没接上 pad 的空链路被当成活跃轨道，源里只有音频时把"有结论的没有轨道"报成 `decode_stalled`；
+  ③ 被拒 pad 悬空（`not-linked`）+ `vtdec_hw` 偶发 GLMemory 协商 → 双视频轨随机失败；
+  ④ 容器里直存 raw 采样（MOV 的 PCM）的源编码采集不到 → 误报 `unknown_source_codec`；
+  ⑤ `audio/x-wav` / `audio/x-flac` 被误读成裸 ES。
+- 仍未验证（不要当成已完成）：
+  - 只在 `macos-aarch64`（GStreamer 1.28.7）验收；`linux-x86_64` 与 Mac mini 未验证，
+    `vtdechw0` / `avdec_aac0` 等解码器元素不得外推。
+  - 旋转：v1 既未采集也未应用，`display_rotation_deg` / `applied_rotation_deg` 保持缺省；
+    手机竖屏素材的几何正确性未验证。
+  - AV1 仍按**实验项**拒绝（不进 Golden Path）；PQ/HLG 等 HDR 只有合成 10-bit 相邻证据，
+    没有真实 HDR 素材；E-AC-3 / DTS / TrueHD 无实测样本（AC-3 已在 MPEG-TS 里实测）。
+  - **VP8 的位深/采样格式是矩阵推导值**（`video/x-vp8` caps 不含 profile/位深/采样格式），
+    证据强度低于 H.264/HEVC；**文件形态 MPEG-TS 样本是本机重编码产物**，不代表设备直出。
+  - CAPS 变化重判、"相同 raw caps 来自不同源格式"目前只有单元测试级证据，没有端到端样本。
+  - `golden_path_verified` 恒为 false；`ReplayReport.blockers` 不列准入项（拒绝是流级事实）。
+- 剩余子项：矩阵里其余行按 ADR-009 §8 补正样本；旋转的采集与归一化阶段落地；
+  CAPS 变化重判的端到端样本；容器级 VFR 与设备直出样本（见 §2）。
 - 许可检查项：发布产物的 `ffmpeg -version` 不得含 `--enable-gpl` / libx264 / libx265 等 GPL 组件；
   `gst-libav` 受其底层 `libav*` 构建约束（本机为 GPL 构建，见 ADR-009 §5）。
 
