@@ -1678,3 +1678,20 @@ attempts=10 completed=4 failed=0 exhausted=0 retries=6 peak_in_flight=4 max_atte
 - **常驻形态未接线**：worker 仍是**验收脚本形态**（CLI），没有常驻服务、没有跨进程队列节流；
   `MODEL_PARALLELISM` 只约束**单次 worker 进程内**的在飞调用数，不约束"同时起几个 worker"。
 - `golden_path_verified` 恒为 false，本切片不改变这一结论。
+
+#### 远端 CI 与合并（2026-09-24，PR #8）
+
+本切片推成 [PR #8](https://github.com/ZhiPenTu/SensoryPlex/pull/8)（head `f5ef700`），
+远端 workflow `engineering-checks` 在 push 与 PR 各跑一轮，**三个 job 全绿**：
+
+| run | check | check-apple-silicon | check-console |
+| --- | --- | --- | --- |
+| 35915782118 | 3m44s | 3m26s（`macos-15-arm64`） | 1m1s |
+| 35915826468 | 3m35s | 3m13s（`macos-15-arm64`） | 1m5s |
+
+合并由仓库所有者账号 `ZhiPenTu` 执行（本次同样**没有**出现 ADR-019 切片里 PR #4/#5 那种
+"非本人执行的自动合并"），合并提交 `5a7fbd4`，`master` 从 `ef26bfc` 前进到 `5a7fbd4`；
+`git ls-remote origin master` 与本地 HEAD 已核对一致。
+
+本轮**没有**动 `deploy/up.sh`——工作区里它有一处与 ADR-021 无关的既有改动（console 反代 reload），
+保持未提交状态。
