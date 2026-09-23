@@ -14,31 +14,78 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: 单行长度 ≤ 120
+        with:
+          fetch-depth: 0
+      - name: 列出本次 PR 变更文件
+        id: changed
         run: |
-          python3 -c "
-          import pathlib, re, sys
-          bad = []
-          for p in pathlib.Path('.').rglob('*.md'):
-              if any(part.startswith('.git') for part in p.parts): continue
-              for i, line in enumerate(p.read_text().splitlines(), 1):
-                  if len(line) > 120:
-                      bad.append(f'{p}:{i}:{len(line)}')
-          if bad:
-              print('\\n'.join(bad)); sys.exit(1)
-          "
-      - name: 强制 ASCII 文件名（中文文件名不易跨工具流转）
-        run: |
-          if find . -type f -not -path './.git/*' -regex '.*[^[:print:][:space:]].*' | head -20; then
-            echo "检测到非 ASCII 文件名，请改用英文 slug"; exit 1
+          base="${{ github.event.pull_request.base.sha }}"
+          if [ -z "$base" ]; then
+            echo "未取到 base.sha，跳过校验"
+            echo "count=0" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
-      - name: 检查 ADR 标题前缀
+          list="$RUNNER_TEMP/changed-files.txt"
+          # 默认 checkout 在 PR 上下文里指向 refs/pull/<n>/merge（合并提交）。
+          # 使用三点点号 diff 让 git 自动计算 merge-base，过滤出本次 PR 的变更集。
+          git diff --name-only --diff-filter=ACMRT "${base}...HEAD" > "$list" || true
+          count=$(wc -l < "$list" | tr -d ' ')
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "file=$list" >> "$GITHUB_OUTPUT"
+      - name: 单行长度 ≤ 120（仅校验本次 PR 变更的 .md）
+        if: steps.changed.outputs.count > 0
         run: |
-          python3 -c "
-          import pathlib, re, sys
+          python3 - <<'PY'
+          import os, sys
+          with open(os.environ['CHANGED_FILE'], encoding='utf-8') as fh:
+              files = [l.strip() for l in fh if l.strip()]
+          md = [f for f in files if f.endswith(('.md', '.markdown'))]
+          bad = []
+          for p in md:
+              try:
+                  with open(p, encoding='utf-8') as fh:
+                      for i, line in enumerate(fh, 1):
+                          if len(line) > 120:
+                              bad.append(f'{p}:{i}:{len(line)}')
+              except FileNotFoundError:
+                  continue
+          if bad:
+              print('\n'.join(bad)); sys.exit(1)
+          PY
+        env:
+          CHANGED_FILE: ${{ steps.changed.outputs.file }}
+      - name: 强制 ASCII 文件名（中文文件名不易跨工具流转，仅校验本次 PR 变更）
+        if: steps.changed.outputs.count > 0
+        run: |
+          bad="$(while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            printf '%s' "$f" | LC_ALL=C grep -q '[^[:print:][:space:]]' && echo "$f"
+          done < "$CHANGED_FILE")"
+          if [ -n "$bad" ]; then
+            echo "$bad"; echo "检测到非 ASCII 文件名，请改用英文 slug"; exit 1
+          fi
+        env:
+          CHANGED_FILE: ${{ steps.changed.outputs.file }}
+      - name: 检查 ADR 标题前缀（仅校验本次 PR 变更的 ADR）
+        if: steps.changed.outputs.count > 0
+        run: |
+          python3 - <<'PY'
+          import os, re, sys
           pat = re.compile(r'ADR-\d{3}-')
-          for p in pathlib.Path('docs/adr').glob('*.md'):
-              first = p.read_text().lstrip().splitlines()[0]
+          with open(os.environ['CHANGED_FILE'], encoding='utf-8') as fh:
+              files = [l.strip() for l in fh
+                       if l.strip().startswith('docs/adr/') and l.strip().endswith('.md')]
+          bad = []
+          for p in files:
+              try:
+                  with open(p, encoding='utf-8') as fh:
+                      first = fh.read().lstrip().splitlines()[0]
+              except FileNotFoundError:
+                  continue
               if not pat.search(first):
-                  print(p, first); sys.exit(1)
-          "
+                  bad.append(f'{p}: {first}')
+          if bad:
+              print('\n'.join(bad)); sys.exit(1)
+          PY
+        env:
+          CHANGED_FILE: ${{ steps.changed.outputs.file }}
