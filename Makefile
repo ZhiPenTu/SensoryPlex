@@ -166,3 +166,29 @@ asr-check:
 	$(CARGO) build --locked --release -p sensoryplex-runtime --features "$(MEDIA_FEATURES)"
 	$(UV) run python tools/plugin_artifact.py --check plugins/python/processors/asr-whisper-mlx
 	$(UV) run python tools/verify_asr.py --media "$(MEDIA)" $(if $(MODEL),--model "$(MODEL)",) $(if $(MODEL_DIR),--model-dir "$(MODEL_DIR)",)$(if $(LANGUAGE), --language "$(LANGUAGE)",)
+
+# ── 解码路径单测（主机，需 GStreamer 开发文件） ────────────────────────────
+# 容器化改造的 Makefile 里由 CARGO_HOST 提供同一语义；这里给未定义的版本兜底。
+CARGO_HOST ?= $(CARGO)
+
+.PHONY: media-test resident-probe resident-install resident-uninstall resident-status
+
+# 解码路径的单元测试需要 GStreamer 开发文件；没有的主机可加 MEDIA_FEATURES= 显式少跑。
+media-test:
+	$(CARGO_HOST) test --locked -p sensoryplex-media --features "$(MEDIA_FEATURES)"
+
+# ── macOS 常驻形态（必须在本机执行） ──────────────────────────────────────
+# launchd / launchctl / sysctl 只存在于 macOS 宿主，容器里没有；因此本组目标是
+# 明确的"主机例外"，与 configure 同类，不放进容器。
+# 分级依据与验收见 docs/adr/ADR-015 与 docs/runbooks/macos-resident.md。
+resident-probe:
+	uv run python tools/macos_resident.py probe
+
+resident-install:
+	uv run python tools/macos_resident.py install
+
+resident-uninstall:
+	uv run python tools/macos_resident.py uninstall
+
+resident-status:
+	uv run python tools/macos_resident.py status --verify-endpoint

@@ -16,7 +16,7 @@
 | 存储/硬件 | Rust adapter traits，模型与配置 hash 契约 | NAS/MinIO/Milvus、ONNX/TensorRT 实现 |
 | 直播接入基础设施 | 本机 MediaMTX 1.21.1（独立 Compose，仅回环端口）；SRT 直推（GStreamer `srtsink` 与用户自有 OBS）与 Runtime `ingest` 已打通：稳定窗口、断流恢复、无源失败、实时数据面交接、VideoToolbox 视频五个场景通过，OBS 真实直推亦实测（无 timing 码流的视频时长按 PTS 差分补齐），见 `docs/verification.md` | Mac mini / 跨机部署、SRT 加密与带凭据 publish、`linux-x86_64` 侧验收；服务器上有流不等于语义链路可用 |
 | 媒体与模型 | Pipeline 配置、真实媒体 probe 工具、ffprobe 锚点回放，GStreamer 真实解码 → arena → `BufferDescriptor` → lease 签发/校验/释放 → 音频 5 秒切段，视频自适应抽帧（keep/skip 全部带原因，7 个真实样本通过），跨进程数据面：Runtime 保留字节、独立进程按 lease 读取（3 个样本 × 2 个场景通过，具备有界容量与稳定拒绝码），SRT 实时接入 `ingest`（`make live-check` 五个场景通过），背压与队列可观察：三条有界队列的深度/峰值/容量、按原因与按种类的丢弃、lease 等待时间（`verify_backpressure.py` 4 场景 + OBS 直播实测，见 `docs/verification.md`），以及第一个**端侧模型插件**：本机 ollama `moondream:v2`（VLM），插件经 `LeaseBufferReader` 读真实视频帧产出带锚点/来源/版本/显式置信度语义的 observation，`tools/ai_worker.py` 只发现与调用不读字节，`make model-check` 四进程通过（见 `docs/verification.md` 的"M8"一节与 ADR-012），以及**媒体格式准入与显式拒绝**：承诺矩阵写成数据、源格式按 stream ID 关联、被拒轨道带稳定拒绝码进报告（`make capability-check` **19 场景**通过：6 个公开授权正样本 + 13 条拒绝路径，见 `docs/verification.md` 的"M9"一节与 ADR-009），以及第二个**端侧模型插件**（ASR）：本机 MLX Whisper 经 `LeaseBufferReader` 读真实音频段产出带锚点/来源/显式置信度语义的转写 observation，音频样本布局（`sample_format`）与音频段描述符进保留表一并落成契约，`make asr-check` 四进程通过（见 `docs/verification.md` 的"M10"一节与 ADR-014） | OCR/BGE 插件与 CoreML/Metal（仍 `execution_backend_not_implemented`）；ASR 的 Linux 后端（`mlx` 是 Apple Silicon 专属）；插件**未签名**（`local_native` 形态，签名/SBOM 只有结构预检）；旋转的采集与应用（v1 未实现） |
-| 工程 | uv/Cargo 锁文件、Docker、检查命令、CI（ubuntu） | 真视频 Golden Path、macOS CI 与 `launchd` 常驻形态、压测、监控仪表盘 |
+| 工程 | uv/Cargo 锁文件、Docker、检查命令、CI（`check`/`check-console` + **Apple Silicon** `check-apple-silicon`，远端 `macos-15-arm64` 已真实通过）、macOS `launchd` 常驻形态与统一内存分级（`tools/macos_resident.py`，见 ADR-015） | 真视频 Golden Path、Linux NVIDIA 侧 CI、压测、监控仪表盘 |
 
 下一里程碑：**本地文件 → GStreamer → PTS 正确的 frame/audio descriptor**，先完成
 真实样本回放、lease 生命周期和断流测试，再引入实际模型。真实媒体、lease 生命周期、断流测试
@@ -86,3 +86,16 @@ GLMemory 协商导致多视频轨竞态、容器内 PCM 的源编码采集不到
 **仍未验证的仍然不得声称可用**：VP8 的位深/采样格式是矩阵推导值；文件形态 MPEG-TS 样本是本机
 重编码产物，不代表设备直出；E-AC-3 / DTS / TrueHD 与真实 HDR 素材无样本；旋转（几何）未采集
 也未应用；容器级 VFR 与设备直出无样本；`golden_path_verified` 恒为 false。
+
+常驻形态（M5）与 CI（M7）也已落地：`tools/macos_resident.py` 把原生 `sensoryplex-runtime serve`
+交给**用户级 launchd** 常驻，按宿主统一内存分级（`small`/`medium`/`large`/`xlarge`，`medium` 锚定
+今天的默认上限）渲染 plist 与 `resident.env`，档位之外**不吸附**、探测来源（`sysctl`/`env`/`unavailable`）
+显式；`install`/`status --verify-endpoint`/`uninstall` 与 `sensoryplex-media-run` 分级注入上限
+都在本机真机验收（崩溃重启、登录自启、`caffeinate -ims` assertion、分级上限在 `handoff_stats` 中实测）。
+决策见 [ADR-015](adr/ADR-015-macOS常驻形态与统一内存分级.md)，操作见
+[运行手册](runbooks/macos-resident.md)，证据见 `docs/verification.md` 的"M5"一节。
+**仍未验证的仍然不得声称可用**：`queue_capacity` 只被校验、**未被运行时消费**，所以"队列已按分级调整"
+不成立；模型并发只有配置事实；`small` 档与 Mac mini 各档位未实跑；断电重启、休眠唤醒、小时级长稳未验证。
+远端 CI 的 `check-apple-silicon` 早已真实通过（run 35850290513 / 35860979204，`macos-15-arm64`），
+本次新增 `workflow_dispatch`、`uname -m` 硬断言与 `make media-test`，但**加固本身尚未在远端跑过**
+（见 `docs/verification.md` 的"M7"一节）。

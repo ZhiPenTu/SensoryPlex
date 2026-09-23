@@ -66,8 +66,11 @@ make runtime-smoke   # 真实 Rust 进程 + Python 客户端，校验 DescribeCa
 
 - 支持的 memory kind 由 Runtime 上报：Apple Silicon 额外允许零拷贝 `unified_memory`，其余平台只有 `cpu_shared_memory`。
 - `SENSORYPLEX_TOTAL_MEMORY_BYTES` 只在宿主探测不可用（容器、CI）时用于声明容量，不得用于伪造容量。
-- Mac mini 常驻部署：用 `launchd` 托管原生进程，并按统一内存容量设置队列上限与模型量化档位；
-  需显式配置 `pmset`/`caffeinate` 防休眠策略，且 16GB 机型不得默认并行加载 ASR + OCR + Fast VLM。
+- Mac mini 常驻部署：用 `launchd` 托管原生进程，并按统一内存容量设置队列上限与模型量化档位——
+  已落地为 `make resident-probe` / `resident-install` / `resident-status` / `resident-uninstall`
+  （见 [macOS 常驻手册](macos-resident.md) 与 [ADR-015](../adr/ADR-015-macOS常驻形态与统一内存分级.md)）。
+  安装时会渲染 `caffeinate -ims` 防休眠 job，但工具**不修改** `pmset`（需要 root，会持久改变机器行为），
+  只打印需要人工确认的命令；16GB 机型落在 `small` 档，模型并发为 1，不得默认并行加载 ASR + OCR + Fast VLM。
 - 容器化只适用于 `postgres`、`nats` 与无加速依赖的 `gateway`；不要把 `runtime`/媒体/推理放进 Linux 容器后再声明 macOS 加速可用。
 
 真实文件回放（需要显式授权的样本，合成片段只能验证管道，不能作为验收）：

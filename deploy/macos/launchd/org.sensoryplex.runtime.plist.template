@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd 模板：macOS 常驻 Runtime 控制端点（ADR-008 / ADR-015）。
+  占位符由 tools/macos_resident.py 按统一内存分级渲染，手写 plist 会与分级脱钩。
+
+  RunAtLoad 让 job 在登录/引导时启动；KeepAlive.SuccessfulExit=false 让**非正常退出**
+  （含被 kill -9）自动拉起，而正常退出不会被无限重启。
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{{RUNTIME_LABEL}}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{{RUNTIME_BINARY}}</string>
+        <string>serve</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>{{WORKDIR}}</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>SENSORYPLEX_RUNTIME_ADDR</key>
+        <string>{{RUNTIME_ADDR}}</string>
+        <key>SENSORYPLEX_RESIDENT_TIER</key>
+        <string>{{TIER}}</string>
+        <key>SENSORYPLEX_UNIFIED_MEMORY_BYTES</key>
+        <string>{{UNIFIED_MEMORY_BYTES}}</string>
+        <key>SENSORYPLEX_MEMORY_SOURCE</key>
+        <string>{{MEMORY_SOURCE}}</string>
+        <key>SENSORYPLEX_HANDOFF_RETAINED_LIMIT</key>
+        <string>{{HANDOFF_RETAINED_LIMIT}}</string>
+        <key>SENSORYPLEX_HANDOFF_ARENA_BYTES</key>
+        <string>{{HANDOFF_ARENA_BYTES}}</string>
+        <key>RUST_LOG</key>
+        <string>info</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>StandardOutPath</key>
+    <string>{{LOG_DIR}}/runtime.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>{{LOG_DIR}}/runtime.err.log</string>
+</dict>
+</plist>

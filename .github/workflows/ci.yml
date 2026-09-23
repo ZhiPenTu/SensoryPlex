@@ -1,5 +1,9 @@
 name: engineering-checks
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+  # 允许在不制造空提交的前提下重跑：M7 的验收要求"远端真实跑过一次"。
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
@@ -58,6 +62,13 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+      - name: 断言 Apple Silicon（ADR-008）
+        # macos-15 目前是 macos-15-arm64 镜像；如果哪天换成 x86，这里必须先红，
+        # 否则"macOS CI 通过"会悄悄退化成"在 Intel 上通过"。
+        run: |
+          uname -m
+          test "$(uname -m)" = "arm64"
+          sysctl -n hw.memsize
       - uses: astral-sh/setup-uv@v6
         with:
           version: "0.11.6"
@@ -71,4 +82,9 @@ jobs:
       # GStreamer 只用于编译解码路径；这里不跑 media-replay，因为 CI 没有真实授权媒体。
       - run: brew install gstreamer
       - run: make media-check
+      # 解码路径的单元测试（含保留表按种类分配的 A/B 回归）只在带 gstreamer feature 时存在，
+      # 不跑这一步等于回归锁没进 CI。
+      # 刻意写 cargo 而不是 make：CI 只依赖仓库已提交的 Makefile，不依赖正在进行中的
+      # Makefile 容器化改造（同样命令在主机上也可用 `make media-test`）。
+      - run: cargo test --locked -p sensoryplex-media --features gstreamer
       - run: make runtime-smoke

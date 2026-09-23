@@ -39,8 +39,24 @@ make pipeline-check
 make runtime
 make media-replay MEDIA=/absolute/path/to/authorized-sample.mp4
 make handoff-check MEDIA=/absolute/path/to/authorized-sample.mp4
+make media-test
 make stream-up && make live-check
 ```
+
+`make media-test` 只跑解码路径的单元测试（含保留表按种类分配的 A/B 回归），需要 GStreamer 开发文件。
+
+macOS 常驻形态（`launchd`）在主机的**用户级** LaunchAgents 中运行，按统一内存分级设置上限
+（设计见 [ADR-015](docs/adr/ADR-015-macOS常驻形态与统一内存分级.md)，操作见
+[macOS 常驻手册](docs/runbooks/macos-resident.md)）：
+
+```sh
+make resident-probe     # 只读：打印分级与上限
+make resident-install   # 渲染 plist + launchctl bootstrap
+make resident-status    # 两个 job 状态，--verify-endpoint 做一次真实 gRPC 调用
+make resident-uninstall
+```
+
+`launchd`/`launchctl`/`sysctl` 只存在于 macOS 宿主，所以这一组是明确的"主机例外"，不放进容器目标。
 
 `make media-replay` 需要 GStreamer 开发文件；没有的主机可加 `MEDIA_FEATURES=` 退回纯锚点报告
 （解码数据平面保持全零，并在 `blockers` 中声明未实现）。`make handoff-check` 在同一份素材上再跑一次
@@ -76,6 +92,7 @@ services/gateway/       旧 Gateway 导入与启动兼容入口
 db/migrations/          只追加的显式 PostgreSQL 迁移
 config/pipelines/       文件与 SRT 实时接入的 pipeline 配置
 deploy/compose/         本地容器基础设施
+deploy/macos/           macOS launchd 常驻模板与分级包装脚本（ADR-015）
 tests/                  契约测试、真实 PostgreSQL 集成测试、媒体样本说明
 tools/                  配置、代码生成、迁移、测试与真实媒体探测
 ```
@@ -85,6 +102,8 @@ tools/                  配置、代码生成、迁移、测试与真实媒体�
 - [技术选型 ADR 与 V1 实施蓝图](技术选型ADR与V1实施蓝图.md)
 - [开放式插件开发文档](开放式插件开发文档.md)
 - [素材工作台 MVP 工程设计稿（应用准备流程已实现）](docs/design/console-mvp.md)
+- [ADR-015：macOS 常驻形态（launchd）与统一内存分级](docs/adr/ADR-015-macOS常驻形态与统一内存分级.md)
+- [ADR-014：ASR 插件与音频样本布局契约](docs/adr/ADR-014-ASR插件与音频样本布局契约.md)
 - [ADR-013：应用 API 模块化合并与部署边界](docs/adr/ADR-013-应用API模块化合并与部署边界.md)
 - [ADR-009：媒体格式支持矩阵与拒绝语义](docs/adr/ADR-009-媒体格式支持矩阵与拒绝语义.md)
 - [ADR-010：跨进程数据面的安全边界与可见性](docs/adr/ADR-010-跨进程数据面的安全边界.md)

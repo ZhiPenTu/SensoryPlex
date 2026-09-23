@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# 把常驻分级的上限注入 media 作业（ADR-015）。
+#
+# 为什么需要它：`sensoryplex-runtime replay|ingest` 的上限是**命令行参数**，而常驻形态下
+# 这些值由安装时的统一内存分级决定。与其让每个调用方各写一份数字，不如只认 resident.env：
+#   - resident.env 不存在 → 显式失败（不猜默认值，也不退回"看起来能跑"的上限）；
+#   - 调用方自己传了同名上限参数 → 显式失败（不做静默覆盖）；
+#   - 其余参数原样透传。
+#
+# 调用：deploy/macos/bin/sensoryplex-media-run replay <pipeline.yaml> <media> --report <report.pb>
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+RESIDENT_ENV="${SENSORYPLEX_RESIDENT_ENV:-${HOME}/Library/Application Support/SensoryPlex/resident.env}"
+RUNTIME_BINARY="${SENSORYPLEX_RUNTIME_BINARY:-${ROOT}/target/release/sensoryplex-runtime}"
+
+if [[ ! -f "${RESIDENT_ENV}" ]]; then
+    echo "[media-run] 缺少分级文件 ${RESIDENT_ENV}；先运行 tools/macos_resident.py install" >&2
+    exit 1
+fi
+# shellcheck disable=SC1090
+source "${RESIDENT_ENV}"
+
+if [[ ! -x "${RUNTIME_BINARY}" ]]; then
+    echo "[media-run] 找不到可执行的 runtime：${RUNTIME_BINARY}" >&2
+    exit 1
+fi
+
+for argument in "$@"; do
+    case "${argument}" in
+        --handoff-retained-limit|--handoff-arena-bytes)
+            echo "[media-run] ${argument} 由常驻分级决定，不要在调用处覆盖" >&2
+            exit 2
+            ;;
+    esac
+done
+
+echo "[media-run] 分级 ${SENSORYPLEX_RESIDENT_TIER}: retained_limit=${SENSORYPLEX_HANDOFF_RETAINED_LIMIT} arena_bytes=${SENSORYPLEX_HANDOFF_ARENA_BYTES}" >&2
+exec "${RUNTIME_BINARY}" "$@" \
+    --handoff-retained-limit "${SENSORYPLEX_HANDOFF_RETAINED_LIMIT}" \
+    --handoff-arena-bytes "${SENSORYPLEX_HANDOFF_ARENA_BYTES}"

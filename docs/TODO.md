@@ -100,21 +100,47 @@
   "成功但为空"；`replay` 读 SRT 仍必须显式拒绝（`srt_source_requires_ingest_command`）；
   直播没有 anchor 区间，因此 M1 的覆盖率结论不适用于直播。
 
-### M5 macOS 常驻形态（Mac mini）
+### M5 macOS 常驻形态（Mac mini）—— 2026-09-23 落地（ADR-015）
 
-- 现状：只在文档中描述了 `launchd` + `pmset`/`caffeinate` 策略，没有可执行产物。
-- 验收：plist 模板 + 安装/卸载脚本；重启自启、崩溃重启、按统一内存设置队列上限各验证一次。
-- 待输入：Mac mini 目标机型统一内存档位（16/24/32GB），决定默认队列上限与模型量化档。
+- 现状：已有可执行产物 `tools/macos_resident.py`（`probe`/`render`/`install`/`status`/`uninstall`）、
+  `deploy/macos/launchd/*.plist.template`、`deploy/macos/bin/sensoryplex-media-run`，以及
+  `tests/contracts/test_macos_resident_contract.py`（11 项）。分级表、模板与验收证据见
+  [ADR-015](adr/ADR-015-macOS常驻形态与统一内存分级.md)，操作步骤见
+  [运行手册](runbooks/macos-resident.md)。
+- 档位已定（不再"待输入 Mac mini 机型"）：`small` 16–24 GiB / `medium` 24–32 GiB /
+  `large` 32–64 GiB / `xlarge` ≥64 GiB。`medium` **锚定**今天的默认上限（`retained 32` /
+  `arena 64 MiB`），即"不改现有行为"；16 GiB 的 `small` 档模型并发为 1（ADR-008 禁止并行 ASR+OCR+VLM）。
+  档位之外**不吸附**（返回 `unsupported` 并给出原因），探测来源（`sysctl`/`env`/`unavailable`）显式写入 `resident.env`。
+- 验收（本机 macOS 26.5.2 / arm64 / M2 Max / 32 GiB）：
+  - [x] plist 模板 + 安装/卸载脚本：`install` / `uninstall --purge-logs` 真机通过，残留检查干净。
+  - [x] 崩溃重启：`kill -9` 后 `KeepAlive.SuccessfulExit=false` 在 3 秒内拉起新 pid。
+  - [x] 登录/引导自启：`bootout` + `bootstrap`（不 kickstart）后 `RunAtLoad` 自动 running。
+  - [x] 分级上限真实生效：`sensoryplex-media-run` 注入 `retained_limit=64` / `arena=128 MiB`，
+    无消费者场景 `handoff_stats` 实测 `retained_limit=64 retained_kind_limit=32`、backpressure `saturated`。
+  - [x] 防休眠：`caffeinate -ims` 持有 `PreventUserIdleSystemSleep` + `PreventSystemSleep`。
+  - [ ] **未验证**：队列上限按分级生效——`queue_capacity` 当前只被校验、未被运行时消费（ADR-015 §5）；
+    `small` 档（16 GiB）与 Mac mini 各档位未实跑；模型并发只有配置事实，无并发执行样本；
+    断电重启、休眠唤醒、小时级长稳未验证。这些不得当成已完成。
 
 ### M6 linux-x86_64 侧验收
 
 - 现状：所有媒体验收都在 `macos-aarch64` 完成。
 - 验收：同一命令序列（`make check`、`make media-replay`）在 NVIDIA 主线机器上跑通并记录平台标识。
 
-### M7 CI 远端首次执行
+### M7 CI 远端执行 —— 2026-09-23 已验收并加固
 
-- 现状：`.github/workflows/ci.yml` 已包含 `check-apple-silicon`（含 `make media-check`），但从未在远端跑过。
-- 验收：macOS job 在 GitHub Actions 上真实通过一次；未通过前不得声称 macOS CI 可用。
+- 现状（**原记录有误**）：`.github/workflows/ci.yml` 的 `check-apple-silicon` **早已在远端真实通过过**，
+  不是"从未在远端跑过"。M9 的 push（run 35850290513，job 107146096696）11 个 step 全绿；
+  M10 的 push（run 35860979204）三个 job 全绿：`check` 2m50s、`check-console` 58s、
+  `check-apple-silicon` 2m5s（job 107180840473）。远端 runner 实测为 **`macos-15-arm64`**
+  （Image Version 20260907.0337.1、macOS 15.7.9），是真 Apple Silicon，不是 x86 交叉。
+- 本次加固：
+  - [x] `on:` 增加 `workflow_dispatch`，允许在不制造空提交的前提下重跑。
+  - [x] `check-apple-silicon` 增加硬断言 step：`test "$(uname -m)" = "arm64"` 并打印 `hw.memsize`。
+        若镜像哪天变成 x86，"macOS CI 通过"必须先红，而不是悄悄退化成"在 Intel 上通过"。
+  - [x] `make media-check` 之后增加 `make media-test`（解码路径单测，含保留表 A/B 回归；带 feature 才存在）。
+- 仍未验证：加固后的 workflow 尚未在远端跑过一次（等下次 push 或手动 `gh workflow run engineering-checks`）；
+  Windows / Linux NVIDIA 侧没有 CI job。
 
 ### M8 模型插件（ASR/OCR/VLM/BGE）
 
@@ -254,7 +280,7 @@
 - [ ] 摘要与校验：当前每个 descriptor 一次 SHA-256 + 逐字节比对，可改分块哈希 + 抽样校验。
 - [ ] 音频段与 ASR 窗口对齐、静音切分，替代固定 5 秒切段。
 - [ ] 抽帧策略调参（覆盖率/成本曲线），依据 M1 的覆盖率报告。
-- [ ] 模型量化档位与并发上限按统一内存自适应（依赖 M5 的机型档位）。
+- [ ] 模型量化档位与并发上限按统一内存自适应：**分级表已落地**（M5 / ADR-015），但运行时仍不消费 `MODEL_PARALLELISM`/`queue_capacity`，需要 worker 侧按变量限流后再验收。
 
 ## 4. 已知差异与取舍记录
 

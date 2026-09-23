@@ -26,7 +26,7 @@
 以及 anyio BlockingPortal 别名。测试通过，提示未被屏蔽。
 
 未验证范围：真实视频/流处理、AI 推理、GPU/NPU、Milvus 写入与语义检索、素材回跳、
-2–5 秒延迟与连续运行指标。CI 文件已建立，但尚未在远端 GitHub Actions 执行。
+2–5 秒延迟与连续运行指标。CI 文件已建立，但尚未在远端 GitHub Actions 执行（本条为当日状态；远端 CI 已于 2026-09-23 实际通过，见文末 M7 一节）。
 
 复查命令：`make check`、`make integration`、`make runtime-smoke`、
 `make pipeline-check`、运行容器后的 `make gateway-smoke`。
@@ -51,7 +51,7 @@ arm64，M2 Max，32 GB 统一内存）。本次改动只涉及能力上报契约
 
 **未验证范围（不得当作已完成）：**
 
-- macOS CI job（`check-apple-silicon`）尚未在 GitHub Actions 远端执行；本地只在 `macos-aarch64` 上跑过同一条命令序列。
+- macOS CI job（`check-apple-silicon`）当时尚未在 GitHub Actions 远端执行；本地只在 `macos-aarch64` 上跑过同一条命令序列。（已过期：2026-09-23 远端 `macos-15-arm64` runner 上真实通过，见文末 M7 一节。）
 - `gst-inspect-1.0` 报告 2 个 blacklist 文件（`libgstpython.dylib`、`libgstvalidatessim.dylib`）与一条 GLib GIRepository typelib 警告（找不到 `libgobject-2.0.0.dylib`）。SRT 与 VideoToolbox 元素不受影响，但依赖 GObject introspection 的路径需再验证。
 - 没有编写任何 GStreamer pipeline 代码：真实 File/SRT 回放、PTS 正确性、lease 生命周期与断流重连仍属第 2 周交付物，本次未产出任何媒体或模型结果。
 - CoreML/Metal 后端仍为 `execution_backend_not_implemented`，`DescribeCapabilities` 只报告其不存在与原因，不代表能力可用。
@@ -935,12 +935,13 @@ MLX Whisper 产出带锚点/来源/显式置信度语义的转写 observation。
 - `cargo test --offline -p sensoryplex-media --features gstreamer`：**105 passed**（含新增
   `audio_segments_reach_the_cross_process_retained_table` 与 `an_unknown_sample_layout_is_dropped_instead_of_guessed`）。
 - `make check` 通过：`cargo fmt --check`、`clippy -D warnings`、`ruff check`/`ruff format --check`、
-  两个插件的 `plugin_artifact --check`、workspace `cargo test`、契约测试 **78 passed**
-  （新增 `tests/contracts/test_asr_plugin_contract.py` 20 项，覆盖输入准入、未知布局拒绝、
+  两个插件的 `plugin_artifact --check`、workspace `cargo test`、契约测试 **78 passed**。
+  新增的 `tests/contracts/test_asr_plugin_contract.py` 20 项覆盖输入准入、未知布局拒绝、
   下混/重采样、锚点/摘要/置信度语义、稳定 ID、空转写的两种原因、超长文本失败、后端异常不外泄、
   越窗子段必须标记+计数（不夹取、不丢弃）且窗口内**不得**被标记、manifest 摘要与 schema、
   网络白名单与可写路径边界；`tests/contracts/test_media_contract.py`
-  加一条 `sample_format` 显式未知契约）。
+  加一条 `sample_format` 显式未知契约。M10 当时的契约计数为 78；加入 M5 的
+  `test_macos_resident_contract.py` 11 项后当前为 **89 passed**，见文末 M5 一节。
 - `make integration`：11 passed。回归：`make model-check MEDIA=video/1.mp4`（M8）、
   `make handoff-check MEDIA=video/1.mp4`（修口径后 2 场景通过）、`make capability-check`（**19/19**）
   全部通过。
@@ -957,6 +958,75 @@ MLX Whisper 产出带锚点/来源/显式置信度语义的转写 observation。
   多个说话人；长段的窗口边界会切在词中间（窗口 2 的 `Wikipare` 就是被切出来的）。
 - `timeout_s` 之外没有取消语义的端到端验证（插件声明 `cancellation: true`，但本轮没有中途取消的样本）。
 - 插件仍 `local_native` **未签名**；`golden_path_verified` 恒为 false；小时级长直播未测。
+
+### M5 macOS 常驻形态与统一内存分级（2026-09-23）
+
+本节记录 M5：把原生 `sensoryplex-runtime serve` 交给**用户级 launchd** 常驻，并按宿主统一内存
+自动选择队列/保留窗口/arena/模型并发上限。决策与边界见
+[ADR-015](adr/ADR-015-macOS常驻形态与统一内存分级.md)，操作步骤见
+[运行手册](runbooks/macos-resident.md)。运行平台 `macos-aarch64`（macOS 26.5.2，arm64，
+M2 Max，32 GiB 统一内存）。
+
+**分级表**（`tools/macos_resident.py` 的 `TIERS`，半开区间，档位之外不吸附）：
+
+| 档位 | 统一内存 | 媒体队列 | 保留窗口 | 保留 arena | 模型并发 |
+| --- | --- | --- | --- | --- | --- |
+| `small` | 16–24 GiB | 16 | 16 | 32 MiB | 1 |
+| `medium` | 24–32 GiB | 32 | 32 | 64 MiB | 2 |
+| `large` | 32–64 GiB | 64 | 64 | 128 MiB | 3 |
+| `xlarge` | ≥64 GiB | 128 | 128 | 256 MiB | 4 |
+
+`medium` 档**锚定**今天的默认值（`crates/media/src/handoff.rs` 的 `DEFAULT_RETAINED_LIMIT=32`
+与 `DEFAULT_RETAIN_ARENA_BYTES=64 MiB`），即"不改现有行为"；契约测试从**源码**解析这两个常量比对，
+避免表与实现各写一份。
+
+| 验证 | 结果 |
+| --- | --- |
+| `macos_resident.py probe` | 32.0 GiB / `source=sysctl` / 分级 `large`；`retained_limit=64`（单类 32）、arena 128 MiB、模型并发 3、预算 10.7 GiB；两个 pipeline 的 `queue_capacity=32` 报"匹配"并注明该字段只被校验 |
+| 探测来源与非法声明 | `sysctl` 优先；宿主探测失败才接受 `SENSORYPLEX_TOTAL_MEMORY_BYTES`（`source=env`）；非正整数直接 `ValueError`；都不可用是 `unavailable`（**不是 0**） |
+| `install` | 打印 `pmset` 现状 **`sleep 1`** 与人工命令（工具**不**改系统设置）；`org.sensoryplex.runtime` pid=6538 running |
+| `status --verify-endpoint` | runtime / caffeinate 双 running；gRPC `127.0.0.1:50051` 返回 `state=degraded`、`platform=macos-aarch64`、`unified_memory_bytes=34359738368`（与宿主探测一致）、`admitted_memory_kinds=[cpu_shared_memory, unified_memory]`、`unavailable_capabilities=[media_ingestion, model_inference, event_dispatch, semantic_index]` |
+| 环境注入核对 | `launchctl print gui/501/org.sensoryplex.runtime` 的 `environment` 含 `SENSORYPLEX_HANDOFF_ARENA_BYTES=134217728`、`SENSORYPLEX_UNIFIED_MEMORY_BYTES=34359738368`、`RUST_LOG=info` |
+| `pmset -g assertions` | pid 6541 的 `caffeinate -ims` 持有 `PreventUserIdleSystemSleep` + `PreventSystemSleep`（asserting forever） |
+| **崩溃重启** | `kill -9 6538` 后 3 秒 `status` 显示**新 pid 6644** running → `KeepAlive.SuccessfulExit=false` 生效 |
+| **登录/引导自启** | `launchctl bootout` → `launchctl print` 确认 not loaded → `launchctl bootstrap gui/501 …`（**不** kickstart）→ 2 秒后 running **pid=6997** → `RunAtLoad` 生效 |
+| **分级上限注入媒体作业** | `sensoryplex-media-run replay config/pipelines/file-material.yaml video/1.mp4`：打印分级值，报告 `anchors=2237 decoded_items=2239 descriptors=1354 rejected=0 leases 1354/1354 segments=7`；再以 `--handoff-listen 127.0.0.1:64555`（无消费者）跑，`handoff_stats` 实测 `retained_limit=64 retained_kind_limit=32 retained_peak=47`、backpressure `state=saturated`，以 `handoff_consumer_never_connected` 退出（预期） |
+| `uninstall --purge-logs` | 两个 label 已卸、plist 与 `resident.env` 已删、日志已清；残留检查：无 `serve` 进程、无 `caffeinate -ims`、50051 无监听 |
+| 契约测试 | `tests/contracts/test_macos_resident_contract.py` 11 项通过（分级边界不吸附、`medium` 锚定源码常量、探测来源、模板严格渲染、两个 plist 语义、`resident.env` 内容、包装脚本三种语义）；`tests/contracts` 合计 **89 passed** |
+| 静态检查 | `ruff check .` 与 `ruff format --check .` 通过（91 个文件已格式化） |
+
+**仍未验证（不得当作完成）**
+
+- 队列上限按分级生效**未验证**：`queue_capacity` 当前只被校验、未被运行时消费（ADR-015 §5）；
+  模型并发只有配置事实，没有并发执行的端到端样本。
+- 只在本机一台 Apple Silicon 机型验收；Mac mini 各档位与 16 GiB 的 `small` 档未实跑；
+  断电重启、休眠唤醒、小时级长稳均未验证。
+- `resident.env` 未收紧权限；分级值未回写进 `DescribeCapabilities`；`golden_path_verified` 恒为 false。
+
+### M7 Apple Silicon CI 远端执行与加固（2026-09-23）
+
+**先纠正一条过期陈述**：`docs/TODO.md` §M7 原文写 `check-apple-silicon` "从未在远端跑过"，
+这与事实不符。远端早已真实执行并通过：
+
+| Run | 结果 |
+| --- | --- |
+| 35850290513（M9 的 push） | job 107146096696 `conclusion=success`，11 个 step 全绿 |
+| 35860979204（M10 的 push） | 三个 job 全绿：`check` 2m50s、`check-console` 58s、`check-apple-silicon` 2m5s（job 107180840473） |
+
+远端 runner 实测为 **`macos-15-arm64`**（Image Version 20260907.0337.1、macOS 15.7.9、
+24G830），是真 Apple Silicon，不是 x86 交叉编译。
+
+**本次加固**（`.github/workflows/ci.yml`）：
+
+- `on:` 增加 `workflow_dispatch`，允许在不制造空提交的前提下重跑。
+- `check-apple-silicon` 增加硬断言 step：`test "$(uname -m)" = "arm64"` 并打印 `hw.memsize`。
+  若镜像哪天变成 x86，"macOS CI 通过"必须先红，而不是悄悄退化成"在 Intel 上通过"。
+- `make media-check` 之后增加 `make media-test`（解码路径单测，含保留表 A/B 回归；带 `gstreamer`
+  feature 才存在），并把它对应的目标加入 `Makefile`。
+
+**仍未验证**：加固后的 workflow 尚未在远端跑过一次（等下次 push 或手动
+`gh workflow run engineering-checks`）；Windows 与 Linux NVIDIA 侧没有 CI job；
+本节的加固未经远端验证，因此不能声称"加固已在 CI 生效"。
 
 ### Console 应用准备流程（2026-09-23）
 

@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  防休眠：`caffeinate -ims` 只在交流电下阻止系统睡眠（-s），不加 -d，屏幕仍可熄灭。
+  这是 launchd 托管的进程，可用 `pmset -g assertions` 核对断言；修改系统级 `pmset` 需要 root，
+  本仓库不替用户静默修改（见 tools/macos_resident.py 的 pmset 检查）。
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{{CAFFEINATE_LABEL}}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/caffeinate</string>
+        <string>-ims</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>{{LOG_DIR}}/caffeinate.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>{{LOG_DIR}}/caffeinate.err.log</string>
+</dict>
+</plist>
