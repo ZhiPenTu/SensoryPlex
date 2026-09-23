@@ -328,15 +328,26 @@ def verify_scenario(media: Path, scenario: dict, workspace: Path) -> list[str]:
         failures,
     )
 
-    # 数据面必须能对上 replay 报告：保留的样本数 = 视频保留帧 + 音频样本。
+    # 数据面必须能对上 replay 报告。对照的基准是**报告亲手交接过的 descriptor 数**：
+    # 从 M10 起，音频段描述符和逐样本 buffer 一样进保留表，所以"样本数"不再等于
+    # "被 offer 的 buffer 数"，差的就是段数；这个差必须被报告显式解释，不能当成误差抹掉。
     replay = media_pb2.ReplayReport()
     replay.ParseFromString(report_path.read_bytes())
     decoded = replay.decoded
-    handed_off = sum(track.samples for track in decoded.tracks)
+    samples = sum(track.samples for track in decoded.tracks)
+    segments = decoded.audio_segments.segments
+    handed_off = decoded.descriptors_built
+    check(
+        handed_off == samples + segments,
+        f"report descriptor accounting is off: built={handed_off} samples={samples} "
+        f"segments={segments}",
+        failures,
+    )
     check(
         total + rejected == handed_off and offered == handed_off,
         f"data plane offered {offered} (retained {total} + rejected {rejected}) buffers but the "
-        f"report handed off {handed_off} samples",
+        f"report handed off {handed_off} descriptors "
+        f"({samples} samples + {segments} audio segments)",
         failures,
     )
     check(

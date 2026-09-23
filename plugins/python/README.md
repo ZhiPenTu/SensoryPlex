@@ -33,7 +33,11 @@ reader 走真实路径（gRPC Acquire → `shm_open`+`mmap` → 摘要校验 →
 reader 时对 buffer 输入返回 `buffer_reader_not_attached`；非 `cpu_shared_memory` 的
 descriptor 返回 `unsupported_memory_kind:*`；两者都不静默跳过。GPU / unified memory
 映射尚未实现，因此插件**不得**声明这些 kind。完整工作样例见
-`plugins/python/processors/vlm-moondream`，边界见 [ADR-012](../../docs/adr/ADR-012-模型插件与端侧推理边界.md)。
+`plugins/python/processors/vlm-moondream`（VLM，消费 `media.video_frame`）与
+`plugins/python/processors/asr-whisper-mlx`（ASR，消费 `media.audio_segment`：音频字节只按
+descriptor 报出的 `sample_format` 解释，未知布局显式拒绝——既没有默认宽度，也不按 4 字节/样本硬读；子段越窗只标记不夹取），
+边界见 [ADR-012](../../docs/adr/ADR-012-模型插件与端侧推理边界.md) 与
+[ADR-014](../../docs/adr/ADR-014-ASR插件与音频样本布局契约.md)。
 
 Manifest 检查：
 

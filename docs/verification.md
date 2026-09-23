@@ -861,6 +861,103 @@ A/B 实测（用临时开关 `SP_NO_GLDOWNLOAD` 分离变量，开关已移除�
   **被拒的唯一原因位置是 `rejected_tracks`**。`ReplayReport.blockers` 不列媒体准入项：
   拒绝是流级事实，不是构建级缺失。
 
+### M10 模型插件：真实 ASR 端侧接入与音频样本布局契约（2026-09-23）
+
+本节记录 M8 的第一个剩余子项：**流式 ASR**（蓝图第 5 周"音频段 → 文本"）。第二个模型插件
+`plugins/python/processors/asr-whisper-mlx` 消费 Runtime 数据面里的**真实音频段**，用**本机权重**的
+MLX Whisper 产出带锚点/来源/显式置信度语义的转写 observation。决策与边界见
+[ADR-014](adr/ADR-014-ASR插件与音频样本布局契约.md)，契约见 [契约文档](contracts/README.md)
+的"模型插件契约"。
+
+**接入的模型：** Apple Silicon 原生的 `mlx-whisper 0.4.3`（`mlx 0.32.2`）+
+`mlx-community/whisper-large-v3-turbo`，端侧推理、不出网。模型身份**来自即将加载的权重文件本身**：
+`weights.safetensors` 1,613,977,612 字节，`sha256:951ed3fc…`，由验收脚本用
+`huggingface_hub.snapshot_download` 独立复算后与 `provenance.modelArtifactDigest` 比对（不自证）。
+选它的理由：ADR-008 把 Apple Silicon 定为一等目标，`mlx` 有 macOS arm64 轮子；本机实测单段
+5 秒音频推理 0.4–0.8 s。
+
+**验收命令：** `make asr-check MEDIA=video/samples/screencast-video2commons.480p.vp9.webm`
+（四进程：编排 / `runtime replay --handoff-listen` / 插件 / `tools/ai_worker.py`）。
+
+#### 验收暴露并修掉的 5 个真实缺陷（不是"一次就过"）
+
+| # | 现象 | 根因 | 修复 |
+| --- | --- | --- | --- |
+| 1 | worker 报 `no_audio_segment_buffer_to_process`，保留表里只有 `video_frame`/`audio_pcm` | `crates/media/src/decode.rs` 的 `emit_segment()` 只调 `hand_off()`（进程内 arena + lease 自校验），**没有**像每一条 `audio_pcm` 那样调 `handoff.retain_or_reject()`。于是段描述符从来没进跨进程保留表 | `emit_segment()` 对段描述符补上 `retain_or_reject()`（与 `process_sample` 同构）。M8 没暴露它，因为 M8 的验收是用 `audio_pcm` 填满 `retained_by_kind` 的 |
+| 2 | `AssertionError: runtime exited before 'handoff_stats'` | 验收脚本在 `finally` 里先 `producer.kill()`，之后才去读生产者退出时才打印的 `handoff_stats` | 照 M8 的顺序改：先 `plugin.kill()` 让生产者走完"消费者已离开"的空闲收尾，再 `producer.finish()` 并对 `handoff_stats` 对账；同时把 `IDLE_TIMEOUT_MS` 与 `WAIT_TIMEOUT_MS` 的语义分开（前者决定收尾速度，后者要覆盖插件 Start 的冷缓存下载） |
+| 3 | 数据面的 offer 数与解码样本数对不上（`video/1.mp4`：`offered=1354` vs `samples=1347`） | `tools/verify_handoff.py` 的会计口径仍按"样本数"，段描述符进表后两者不再等价（差 7 就是段数） | 对照基准改为**报告亲手交接过的 descriptor 数** `decoded.descriptors_built`，并要求 `descriptors_built == Σtrack.samples + audio_segments.segments`——这个差必须被报告显式解释，不能当成误差抹掉 |
+| 4 | `worker should only note that the segment name exists, never carry it`（恰好两次） | 泄漏检查把**单条 observation 的 payload** 当成了 worker 报告传入，而 `segment_name_hint` 是 worker 自己写的字段，只查 observation 永远查不到 | 改成对 worker 的整份报告查一次（与 M8 相同） |
+| 5 | 第二轮验收被自己的断言拦下：`obs_fae5a997…: sub-segment [940, 29880] leaves its own window [0, 5015]` | 不是脚本 bug，是**模型的真实行为**：Whisper 退化时会给出越出窗口的时间戳（5 秒窗口上给出 29.88 s 的结束时间）。此前的验收断言"子段必须落在窗口内"，等于**假设模型守规矩** | 语义改为**不夹取、不丢弃**：`_segment_payload()` 写 `timing_outside_window` 布尔（`start_ms < 窗口起点 or end_ms > 窗口终点`），`_payload()` 写 `segments_outside_window` 计数；验收改为"越窗必须被标记且计数对得上"，契约测试 `test_out_of_window_sub_segments_are_flagged_not_clamped_or_dropped` 锁死（原值保留 + 文本保留 + observation 锚点仍是源段区间），并补一条"窗口内必须**不**被标记"的反向断言 |
+
+缺陷 1 的修法有**可复现的 A/B**：`crates/media/src/decode.rs` 新增单测
+`audio_segments_reach_the_cross_process_retained_table`，把 `retain_or_reject()` 注释掉即
+`retained_by_kind.get("audio_segment") == None` 必红，恢复即绿。
+
+#### 实测结果（2 个真实音频段，样本 `screencast-video2commons.480p.vp9.webm`）
+
+| 观察项 | 实测值 |
+| --- | --- |
+| 源段锚点（`time_range` = 段半开区间） | `[0,5015)`、`[5015,10015)`，`timing_source=media_pts`（未重新计时） |
+| `content_hash`（= 该段 lease 窗口摘要） | `sha256:9eeb2e0b…`、`sha256:564e5b29…`，与 `source_digest` **逐位相等** |
+| `observation_id` | `obs_fae5a997…`、`obs_5fe411fb…`（由稳定输入派生，唯一） |
+| `artifactDigest`（插件包） | `sha256:f854a08b…`（= 本机复算，`plugin_artifact.py --check` 通过） |
+| `modelArtifactDigest`（权重文件） | `sha256:951ed3fc…`（= 验收脚本独立复算，非配置里的版本号） |
+| `executionBackend` / `modelReleaseId` | `mlx-0.32.2` / `mlx-whisper:mlx-community/whisper-large-v3-turbo@951ed3fc1203` |
+| 置信度语义 | `confidence` 缺省 + `confidence_unavailable_reason=model_does_not_report_calibrated_confidence` |
+| 输入事实（payload） | 窗口 1：`sample_format=F32LE`、`input_sample_rate=48000`、`input_channels=2`、`input_samples=240648`、`whisper_samples=80216`；窗口 2：`input_samples=240000`、`whisper_samples=80000`（16 kHz 单声道） |
+| 子段时间 | `segment_timing=media_pts_window_relative_plus_window_start`（窗口起点 + 模型相对时间）；本轮两个子段 `timing_outside_window=false`、`segments_outside_window=0`——**越窗与否是跑出来的结果，不是常量**（越窗路径见缺陷 5） |
+| 单段端到端耗时 | 1321.1 ms（首个）/ 783.6 ms（插件内 `inference.duration_ms`：1306.9 / 769.0 ms） |
+| 账目（运行中） | `retained_by_kind={audio_pcm:16, audio_segment:4, video_frame:8}`（**段也在表里**） |
+| 账目（收尾） | `retained_total=28 released_total=28 retained=0 expired=0 arena_live_slabs=0` |
+| 消费者归还 | `drain.discarded=26 failures=[]`（不消费的条目显式 `discard`） |
+| 运行时报告 | `descriptors_built=1012`、`rejected_tracks=0`、`audio_segments.segments=4`，`blockers=max_points_truncated,decode_truncated` |
+| 背压（同轮） | `state=saturated`、`retained_table 28/32`、`retained_kind 16/16`、`arena_peak=20915328 B`、`dropped_total=984`（全部 `handoff_kind_quota_full` / kind `audio_pcm`）、`sampling_throttled_samples=600`（`throttle_factor=4`）——段只占 4 条，单一种类 16 条上限由 `audio_pcm` 触顶 |
+| 报告自证布局 | ReplayReport 断言 `audio_segments.listed[].sample_format == "F32LE"` 且音频轨 `audio_format == "F32LE"` |
+| 字节不外泄 | worker 报告、插件 stdout/stderr 中无媒体名/路径/`srt://`/段名（脚本断言） |
+
+**转写文本（原样，不作质量证据）：** 本表是**修复越窗后的那一轮**（即上表 evidence 对应的运行）。
+
+- 窗口 1（`[0,5015)`）：`Dobri den.`，`compression_ratio=0.556`、`temperature=0.2`、
+  `avg_logprob=-0.818`，语言检测 `no`——5 秒里只吐了一句问候，其余语音没被转出来。
+- 窗口 2（`[5015,10015)`）：`A představuji vám videotutoriál na téma jak nahrát video do Wikipare.`
+  （捷克语），`compression_ratio=0.949`、`temperature=0.0`、`avg_logprob=-0.210`，语言检测 `cs`。
+
+**同一素材、同一命令换一轮跑，结果可以不同**：本缺陷 5 记录的那一轮，窗口 1 是 Whisper 的**重复退化**
+（`Rik for at man prist for at man prist …`，`compression_ratio=22.2`、`temperature=1.0`、语言 `no`），
+时间戳还越出了窗口。所以这四段文本**不能**当质量证据：它们同时说明**语言检测与文本质量必须由消费者
+自己判断**。同一插件在 `language=en` 固定的另一段 5 秒窗口上曾给出
+`I will show you a tutorial on how to record video in Wikipedia.`，自动模式下同一素材会逐窗口给出不同语言。
+本插件因此**原样带出** `avg_logprob` / `no_speech_prob` / `compression_ratio` / `temperature`
+四个解码诊断，并明确它们**不是**校准置信度——下游要用重复率筛掉退化段，只能靠这些量。
+
+#### 测试与静态检查
+
+- `cargo test --offline -p sensoryplex-media --features gstreamer`：**105 passed**（含新增
+  `audio_segments_reach_the_cross_process_retained_table` 与 `an_unknown_sample_layout_is_dropped_instead_of_guessed`）。
+- `make check` 通过：`cargo fmt --check`、`clippy -D warnings`、`ruff check`/`ruff format --check`、
+  两个插件的 `plugin_artifact --check`、workspace `cargo test`、契约测试 **78 passed**
+  （新增 `tests/contracts/test_asr_plugin_contract.py` 20 项，覆盖输入准入、未知布局拒绝、
+  下混/重采样、锚点/摘要/置信度语义、稳定 ID、空转写的两种原因、超长文本失败、后端异常不外泄、
+  越窗子段必须标记+计数（不夹取、不丢弃）且窗口内**不得**被标记、manifest 摘要与 schema、
+  网络白名单与可写路径边界；`tests/contracts/test_media_contract.py`
+  加一条 `sample_format` 显式未知契约）。
+- `make integration`：11 passed。回归：`make model-check MEDIA=video/1.mp4`（M8）、
+  `make handoff-check MEDIA=video/1.mp4`（修口径后 2 场景通过）、`make capability-check`（**19/19**）
+  全部通过。
+
+#### 仍未验证（不得当作完成）
+
+- 只有两个模型（VLM + ASR）；**OCR 与 BGE 未接入**；CoreML / Metal 仍 `execution_backend_not_implemented`。
+- 只在本机 `macos-aarch64` 验收；`linux-x86_64` 与 **Mac mini / 跨机未验证**——ASR 后端的
+  `mlx` 是 Apple Silicon 专属，Linux 侧需要另选后端（ADR-014 §7）。
+- 转写**质量**未验收：本节只证明链路语义（锚点、摘要、来源、账目、显式未知）正确，
+  不证明转写可用；上面窗口 1 的重复退化就是反例。没有 WER/CER 度量，也没有多人对话与
+  中英混说样本（见 `docs/TODO.md` §2）。
+- 段是固定 5 秒切分（`segment_ms`），**没有按静音切分、没有与说话人对齐**，因此一个段可能横跨
+  多个说话人；长段的窗口边界会切在词中间（窗口 2 的 `Wikipare` 就是被切出来的）。
+- `timeout_s` 之外没有取消语义的端到端验证（插件声明 `cancellation: true`，但本轮没有中途取消的样本）。
+- 插件仍 `local_native` **未签名**；`golden_path_verified` 恒为 false；小时级长直播未测。
+
 ### Console 应用准备流程（2026-09-23）
 
 本轮新增 `apps/console` 与 `services/api`，Gateway 保留兼容导入入口。验收范围是脱离 Runtime

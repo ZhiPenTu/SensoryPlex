@@ -1,5 +1,6 @@
 """media source 与 replay report 消息的契约校验。"""
 
+from edge_material_sdk.generated.common.v1 import common_pb2
 from edge_material_sdk.generated.media.v1 import media_pb2
 
 
@@ -145,3 +146,38 @@ def test_decoded_plane_round_trips_descriptor_evidence():
     assert evidence.locator.handle == parsed.decoded.arena_id
     assert evidence.lease.read_only is True
     assert not parsed.golden_path_verified
+
+
+def test_audio_sample_layout_is_explicit_and_defaults_to_unknown():
+    """音频样本布局是跨进程契约的一部分，缺省为空只表示"未知"。
+
+    段描述符要进数据面、插件的输入要按它解释字节，所以这里既不能有默认布局，
+    也不能靠"4 字节/样本"这种猜测把未知布局读成已知布局。
+    """
+    assert common_pb2.BufferFormat().sample_format == ""
+    assert media_pb2.AudioSegment().sample_format == ""
+    assert media_pb2.DecodedTrackStat().audio_format == ""
+
+    descriptor = common_pb2.BufferDescriptor(
+        buffer_id="seg-0123456789ab-00000001",
+        kind="audio_segment",
+        memory_kind="cpu_shared_memory",
+        stream_id="stream-0123456789ab",
+        format=common_pb2.BufferFormat(sample_rate=48_000, channels=2, sample_format="F32LE"),
+        content_hash="sha256:" + "0" * 64,
+    )
+    descriptor.time_range.start_ms = 0
+    descriptor.time_range.end_ms = 5_000
+    segment = media_pb2.AudioSegment(
+        segment_id=descriptor.buffer_id,
+        sample_rate=48_000,
+        channels=2,
+        bytes=960_000,
+        partial=False,
+        sample_format="F32LE",
+    )
+
+    parsed = common_pb2.BufferDescriptor.FromString(descriptor.SerializeToString())
+    assert parsed.format.sample_format == "F32LE"
+    assert parsed.format.sample_rate == 48_000 and parsed.format.channels == 2
+    assert media_pb2.AudioSegment.FromString(segment.SerializeToString()).sample_format == "F32LE"

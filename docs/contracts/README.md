@@ -52,6 +52,10 @@ reserved，破坏语义的修改进入新的协议 major。当前为开发预览
   使 descriptor 时间轴与 ffprobe 锚点同处呈现时间轴。
 - `overlapping_samples` 统计区间重复上一段的 buffer：载荷真实，因此保留，但必须计数；
   锚点路径对同一现象按 `collapsed_interval` 丢弃并计入 `dropped_items`，两处计数不可相加。
+- 音频**样本布局**是契约的一部分：`BufferFormat.sample_format` 与 `AudioSegment.sample_format`
+  缺省为空串只表示**未知**，读者不得假设宽度或字节序（按猜的宽度解释字节会静默改变下游模型看到的内容）。
+  解码链只承认 `F32LE`（`crates/media/src/segment.rs` 的 `AUDIO_SAMPLE_FORMAT`，与链上 capsfilter 同源），
+  其它布局在切段前被显式记账丢弃（`audio_unsupported_sample_format`），既不猜宽度也不按 4 字节/样本硬读。
 - `descriptors_built == Σtrack.samples + audio_segments.segments`，`descriptors_validated` 必须等于
   `descriptors_built`，`descriptor_failures` 非零时必须给出 `failure_reasons`。
 - `leases_issued == descriptors_built`，`leases_released == leases_issued`；未释放即泄漏，属于契约缺陷。
@@ -128,7 +132,10 @@ reserved，破坏语义的修改进入新的协议 major。当前为开发预览
 - `List` / `Stats` 返回 `HandoffStats`，其中两条恒等式必须成立，消费者与验收脚本各算一遍：
   `retained_total = retained + released_total + expired_total`（每条保留的 buffer 都有归宿）、
   `offered_total = retained_total + retain_rejections`（每个保留请求都有结果）。
-- `offered_total` 必须等于本次解码交接的样本数（`Σtrack.samples`）：数据面与报告的计数对不上即为缺陷。
+- `offered_total` 必须等于本次解码**亲手交接**的 descriptor 数
+  （`descriptors_built == Σtrack.samples + audio_segments.segments`）：数据面与报告的计数对不上即为缺陷。
+  逐样本 buffer 与音频**段**描述符都进同一张保留表（M10），因此"样本数"不再等于"被 offer 的 buffer 数"，
+  这个差必须被报告解释，不能当成误差抹掉。
 - 保留表上限 `<= 4096`、lease TTL 限定 `[50, 60000] ms`、单条 buffer 区间不超过 60 s，越界一律拒绝，
   不做夹取；写侧容量拒绝是稳定字符串，只有三种原因：`handoff_backlog_full`（保留表满）、
   `handoff_kind_quota_full`（单一 buffer 种类到配额）、`arena_capacity_exceeded`（共享段满）。
@@ -170,8 +177,10 @@ reserved，破坏语义的修改进入新的协议 major。当前为开发预览
   **没有计数出口**，不在本报告内，不能据此宣称"全链路队列都可观察"。
 
 模型插件契约（`runtime/v1/plugin.proto` + `docs/contracts/plugin.schema.json`，
-工作样例见 `plugins/python/processors/vlm-moondream`，设计决策见
-[ADR-012](../adr/ADR-012-模型插件与端侧推理边界.md)）：
+工作样例见 `plugins/python/processors/vlm-moondream`（VLM）与
+`plugins/python/processors/asr-whisper-mlx`（ASR），设计决策见
+[ADR-012](../adr/ADR-012-模型插件与端侧推理边界.md) 与
+[ADR-014](../adr/ADR-014-ASR插件与音频样本布局契约.md)）：
 
 - 模型身份来自**模型服务实测**（`GET /api/tags` 的 `digest`），不是插件写死的版本号；
   条目缺失或摘要不可用即拒绝启动（`model_not_available` / `model_artifact_digest_unavailable`）。
@@ -189,6 +198,21 @@ reserved，破坏语义的修改进入新的协议 major。当前为开发预览
   `buffer_reader_not_attached`，非该 kind 返回 `unsupported_memory_kind:*`，均不静默跳过。
 - 帧字节不进日志/控制消息/返回 payload；消费方必须为每条保留给出归宿
   （读完即 Release，不消费的条目显式 `discard`），保证 `released+expired+retained == retained_total`。
+- **本地权重类插件的模型身份**来自**即将加载的权重文件本身**（逐块 SHA-256），不是配置里的版本号：
+  必须真读一次容器头（safetensors / npz）并校验 `config.json` 的维度字段能被加载器读入，
+  摘要算得出但加载器读不了同样拒绝启动（ADR-014 §4）。验收脚本必须**独立复算**一遍摘要，
+  不得调用插件代码自证。
+- **解码诊断量不是校准置信度**：`avg_logprob` / `no_speech_prob` / `compression_ratio` /
+  `temperature` 原样进 payload（缺项写 `null`），`confidence` 仍然留空 + 写明原因；
+  下游不得把诊断量当概率用（ADR-014 §5）。
+- 音频类插件的 `payload` 必须写明子段时间的换算方式
+  （`segment_timing=media_pts_window_relative_plus_window_start`）与输入事实
+  （`sample_format` / `input_sample_rate` / `input_channels` / `input_samples` / `whisper_samples`）；
+  空转写不是失败，但必须带 `empty_transcript_reason` 说明是哪一种空。
+- **越窗的子段时间戳不得被夹取或丢弃**：模型可能给出越出窗口的时间（Whisper 退化时实测到
+  5 秒窗口上的 `[940, 29880]`），必须逐子段标记 `timing_outside_window` 并给出
+  `segments_outside_window` 计数，observation 的锚点仍是**源段区间**；夹取会让越界时序看起来
+  像测得值（ADR-014 §6）。
 
 媒体格式准入契约（ADR-009，**[媒体格式支持矩阵与拒绝语义](../adr/ADR-009-媒体格式支持矩阵与拒绝语义.md)**，
 **以下语义已实现**：`crates/media/src/capability.rs` 是矩阵与判定的唯一归属，

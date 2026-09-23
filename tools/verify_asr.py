@@ -254,14 +254,37 @@ def verify_payload_facts(payload: dict, frame: dict, failures: list[str], label:
         failures,
     )
     start, end = source
+    # 模型会给越窗时间戳（Whisper 幻觉时实测到 5 秒窗口上的 [940, 29880]）。契约要求的是
+    # **不静默**：越窗的子段必须被显式标记并计数，而不是被夹取成合法区间，也不是悄悄丢掉。
+    flagged = 0
     for segment in payload.get("segments", []):
         segment_start = int(segment.get("start_ms", 0))
         segment_end = int(segment.get("end_ms", 0))
+        exact_within = start <= segment_start <= segment_end <= end
+        slack_within = (
+            start - SEGMENT_SLACK_MS <= segment_start <= segment_end <= end + SEGMENT_SLACK_MS
+        )
+        if segment.get("timing_outside_window"):
+            flagged += 1
+            check(
+                not exact_within,
+                f"{label}: sub-segment {[segment_start, segment_end]} is flagged as outside "
+                f"but lies inside its window {source}",
+                failures,
+            )
+            continue
         check(
-            start - SEGMENT_SLACK_MS <= segment_start <= segment_end <= end + SEGMENT_SLACK_MS,
-            f"{label}: sub-segment {[segment_start, segment_end]} leaves its own window {source}",
+            slack_within,
+            f"{label}: sub-segment {[segment_start, segment_end]} leaves its own window {source} "
+            "without being flagged",
             failures,
         )
+    check(
+        int(payload.get("segments_outside_window", 0)) == flagged,
+        f"{label}: out-of-window count {payload.get('segments_outside_window')} does not match the "
+        f"{flagged} flagged sub-segment(s)",
+        failures,
+    )
     # 解码诊断不是置信度：必须原样带出，且不能冒充 `confidence`。
     for segment in payload.get("segments", []):
         check("avg_logprob" in segment, f"{label}: decode diagnostics were dropped", failures)

@@ -190,6 +190,22 @@ target/release/sensoryplex-runtime replay config/pipelines/file-material.yaml \
 **边界：** 这批样本只证明**准入与回放**（拒绝码、源上下文、解码器元素、计数自洽），
 **没有**跑过任何模型，也不改变 `golden_path_verified` 恒为 false 的事实。
 
+## M10 ASR 用到的语音样本（2026-09-23）
+
+`make asr-check` 需要**有语音**的样本（静音样本上"文本为空"是正确结果，不能用来证明转写可用）。
+本轮用的是已登记样本：
+
+- `screencast-video2commons.480p.vp9.webm`（CC BY-SA 4.0, Juandev，552 s）：验收取前两个音频段
+  （`[0,5015)`、`[5015,10015)`）。实测转写：窗口 1 是 Whisper 的重复退化
+  （`compression_ratio=22.2`、`temperature=1.0`），窗口 2 是正常句子（`compression_ratio=0.949`）——
+  同一素材上两种结果并存，正好说明**质量必须由诊断量判断**，见 ADR-014 §5。
+- `officehours-panel.480p.vp9.webm`（CC BY-SA 4.0, LWyatt (WMF)，2232 s）：多人对话，含连续语音，
+  可用于 ASR 的通用场景（但**不是**说话人分离样本）。
+- `video/1.mp4`（用户提供的授权样本）：M8 的 VLM 验收样本，同样含语音，可作 ASR 的补充输入。
+
+**这些样本都不含参考文本**，因此 ASR 只能验收**链路语义**（锚点、摘要、来源、账目），
+给不出 WER/CER；带参考文本的授权样本记在 `docs/TODO.md` §2。
+
 ## 未覆盖范围（不得当作已完成）
 
 - **断流重连**：文件样本无法覆盖，必须走 SRT。已用 `screencast-video2commons`（552 s）经

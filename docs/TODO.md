@@ -118,9 +118,10 @@
 
 ### M8 模型插件（ASR/OCR/VLM/BGE）
 
-- 状态：**进行中**——第一个真实端侧模型（VLM）已接入并通过验收；ASR/OCR/BGE 与 CoreML/Metal 仍未做。
-  证据见 `docs/verification.md` "M8 模型插件：真实 VLM 端侧接入与观察语义"；设计决策见
-  [ADR-012](adr/ADR-012-模型插件与端侧推理边界.md)。
+- 状态：**进行中**——两个真实端侧模型（**VLM**、**ASR**）已接入并通过验收；OCR/BGE 与 CoreML/Metal 仍未做。
+  证据见 `docs/verification.md` 的 "M8 模型插件：真实 VLM 端侧接入与观察语义" 与
+  "M10 模型插件：真实 ASR 端侧接入与音频样本布局契约"；设计决策见
+  [ADR-012](adr/ADR-012-模型插件与端侧推理边界.md) 与 [ADR-014](adr/ADR-014-ASR插件与音频样本布局契约.md)。
 - 已完成（VLM）：`plugins/python/processors/vlm-moondream` 消费 Runtime 数据面里的真实视频帧
   （经 `LeaseBufferReader` 读字节，非文件名），调用**本机** ollama 的 `moondream:v2` 产出
   `observation.vision.scene_description`：锚点等于源帧半开区间（`timing_source=media_pts`）、
@@ -135,7 +136,14 @@
   `golden_path_verified` 恒为 false；只在本机回环 `macos-aarch64` 验收，`linux-x86_64` 与 Mac mini / 跨机未验证。
 - 仍未验证（模型质量）：`moondream:v2` 输出**不稳定**，同一帧两次推理可能不同，本轮实测到一次退化输出。
   本项只保证**链路语义**正确，不保证**描述可用**。
-- 剩余子项：ASR（音频段 → 文本）、OCR、BGE（向量），以及按机型档位选择模型（依赖 M5）。
+- 已完成（ASR，2026-09-23）：第二个模型插件 `plugins/python/processors/asr-whisper-mlx` 消费数据面里的
+  真实音频段，用本机 MLX Whisper 产出带锚点/来源/显式置信度语义的转写 observation；
+  `make asr-check MEDIA=video/samples/screencast-video2commons.480p.vp9.webm` 四进程通过。
+  本轮为此把**音频样本布局**（`sample_format`）与**段描述符进保留表**落成契约，
+  暴露并修掉 5 个真实缺陷（含一个产品缺陷：段从未进跨进程数据面；以及"子段必定落在窗口内"这个
+  错误假设——Whisper 退化会给出越窗时间戳）。详见 §M10 与
+  [ADR-014](adr/ADR-014-ASR插件与音频样本布局契约.md)。
+- 剩余子项：OCR、BGE（向量），以及按机型档位选择模型（依赖 M5）。
 
 ### M9 格式准入与显式拒绝（ADR-009，新增格式之前必须先做）
 
@@ -190,6 +198,37 @@
 - 许可检查项：发布产物的 `ffmpeg -version` 不得含 `--enable-gpl` / libx264 / libx265 等 GPL 组件；
   `gst-libav` 受其底层 `libav*` 构建约束（本机为 GPL 构建，见 ADR-009 §5）。
 
+### M10 ASR 插件与音频样本布局契约（ADR-014，2026-09-23 落地）
+
+- 状态：**ASR 链路已完成并实测**；转写**质量**与 Linux/Mac mini 路径未验收。
+  证据见 `docs/verification.md` 的"M10"一节；决策见
+  [ADR-014](adr/ADR-014-ASR插件与音频样本布局契约.md)；契约见
+  [契约文档](contracts/README.md) 的"模型插件契约"。
+- 已完成：
+  - 契约：`common/v1/common.proto` 的 `BufferFormat` 与 `media/v1/media.proto` 的 `AudioSegment`
+    各补 `string sample_format`（空串 = 未知，读者不得假设宽度或字节序）。
+  - Rust：`crates/media/src/segment.rs` 的 `AUDIO_SAMPLE_FORMAT` 与链上 capsfilter 同源；
+    未知布局显式记账丢弃（`audio_unsupported_sample_format`），不猜宽度；`emit_segment()` 补齐
+    `retain_or_reject()`，**音频段描述符从此进跨进程保留表**（此前只在报告里存在）。
+  - 插件：`plugins/python/processors/asr-whisper-mlx/`——本机 `mlx-whisper` 0.4.3 +
+    `mlx-community/whisper-large-v3-turbo`；模型身份 = 实际加载的**权重文件** SHA-256（现场复算 +
+    容器头探测 + `config.json` 维度校验）；`confidence` 显式缺省并写原因，`avg_logprob` /
+    `no_speech_prob` / `compression_ratio` / `temperature` 原样带出且**不**冒充置信度；
+    子段 = 窗口起点 + 模型相对时间，换算方式写进 payload；越窗时间戳**不夹取、不丢弃**，
+    逐子段标记 `timing_outside_window` 并给 `segments_outside_window` 计数。
+  - 工具：`tools/verify_asr.py`（四进程验收 + 独立复算权重摘要）、`tools/ai_worker.py`
+    （`--input-kind` / `--plugin-config`）、`make asr-check`；`tools/verify_handoff.py` 的会计基准
+    改为 `descriptors_built == Σtrack.samples + audio_segments.segments`。
+- 仍未验证（不要当成已完成）：
+  - 只在本机 `macos-aarch64` 验收；`linux-x86_64` 与 Mac mini / 跨机未验证——`mlx` 是 Apple Silicon
+    专属，Linux 侧需要另选后端与另一轮验收。
+  - 转写质量未验收（无 WER/CER；实测到一次重复退化，只能靠 `compression_ratio` 等诊断量筛）。
+  - 段是固定 5 秒切分，没有静音切分与说话人对齐（多人对话样本见 §2）；窗口边界会切在词中间。
+  - 段受 ADR-011 的单一种类上限约束（默认 32 条表 → 单类 16 段 = 80 秒音频），长直播必须提高
+    `retained_limit` 或持续领取，否则表现为 `handoff_kind_quota_full`。
+  - 没有取消 / 超时 / 崩溃后 lease 回收的端到端样本；插件仍 `local_native` 未签名。
+- 剩余子项：OCR、BGE；ASR 的 Linux 后端与质量度量（WER/CER + 静音切分）。
+
 ## 2. 待补样本（用户后续提供，先按现有样本推进）
 
 - [x] 断流重连样本（最小覆盖）：登记在册的 552 秒授权长样本经 GStreamer `srtsink` 直推 SRT，
@@ -204,6 +243,10 @@
 - [ ] 设备直出样本：现有样本均为 FFmpeg/Commons 转码产物（`encoder=Lavf58.20.100` 或 vp9 转码），
       不代表采集端直出行为。
 - [ ] 多人对话专用样本：用于 ASR 说话人分离；现有 `officehours-panel` 只是通用会议录制。
+- [x] ASR 语音样本（最小覆盖）：已登记样本里含语音的那几个（`screencast-video2commons`、
+      `officehours-panel` 等）已作为 M10 验收的真实音频段来源，见 `make asr-check`。
+- [ ] ASR 质量度量样本：需要带**参考文本**的授权样本（目前没有），否则只能验收链路语义，
+      给不出 WER/CER；重复退化段目前只能靠 `compression_ratio` 之类诊断量筛掉。
 
 ## 3. 优化项（基座与模块完成后再做）
 

@@ -423,13 +423,20 @@ class WhisperAsrPlugin(ProcessorPlugin):
     def _payload(self, read, transcript: dict) -> dict:
         window_start_ms = int(read.time_range.start_ms)
         window_end_ms = int(read.time_range.end_ms)
+        segments = [
+            self._segment_payload(window_start_ms, window_end_ms, segment)
+            for segment in transcript["segments"]
+        ]
         payload = {
             "text": transcript["text"],
             "language": transcript["language"],
-            "segments": [
-                self._segment_payload(window_start_ms, segment)
-                for segment in transcript["segments"]
-            ],
+            "segments": segments,
+            # 模型可以在幻觉时给出**越窗**的时间戳：实测 5 秒窗口上出现过 [940, 29880]。
+            # 这是模型的输出事实，所以既不夹取也不丢弃——保留原值并显式计数，
+            # 让消费者能据此丢掉这段的时序，而不是拿到一个看起来合法的区间。
+            "segments_outside_window": sum(
+                1 for segment in segments if segment["timing_outside_window"]
+            ),
             "segments_omitted": transcript["segments_omitted"],
             "input": dict(transcript["input"], window_ms=window_end_ms - window_start_ms),
             "inference": {
@@ -453,16 +460,20 @@ class WhisperAsrPlugin(ProcessorPlugin):
         return payload
 
     @staticmethod
-    def _segment_payload(window_start_ms: int, segment: dict) -> dict:
+    def _segment_payload(window_start_ms: int, window_end_ms: int, segment: dict) -> dict:
         """模型给的相对时间只用来切分子段；缺哪个字段就写 null，不填 0 冒充测得值。"""
 
         def optional(name: str):
             value = segment.get(name)
             return None if value is None else float(value)
 
+        start_ms = window_start_ms + int(round(float(segment.get("start", 0.0)) * 1000))
+        end_ms = window_start_ms + int(round(float(segment.get("end", 0.0)) * 1000))
         return {
-            "start_ms": window_start_ms + int(round(float(segment.get("start", 0.0)) * 1000)),
-            "end_ms": window_start_ms + int(round(float(segment.get("end", 0.0)) * 1000)),
+            "start_ms": start_ms,
+            "end_ms": end_ms,
+            # 越窗不是"算错了"，是模型报告的时间可能超出它实际拿到的音频：标记而不是夹取。
+            "timing_outside_window": start_ms < window_start_ms or end_ms > window_end_ms,
             "text": str(segment.get("text", "")).strip(),
             # 解码诊断：原样带出，明确不是校准置信度。
             "avg_logprob": optional("avg_logprob"),

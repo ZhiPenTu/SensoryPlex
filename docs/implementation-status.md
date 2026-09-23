@@ -15,7 +15,7 @@
 | Console / Platform API | 独立 React / TS / Vite 工程、统一模块化 API、会话/CSRF/RBAC、真实上传与 Range 回看、插件配置版本、方案/任务草稿、作用域凭据、账户/角色管理与审计；运行手册见 `docs/runbooks/console.md` | Runtime 媒体准入、安装与生命周期、方案发布、任务执行及素材来源映射；当前不是完整业务 Golden Path |
 | 存储/硬件 | Rust adapter traits，模型与配置 hash 契约 | NAS/MinIO/Milvus、ONNX/TensorRT 实现 |
 | 直播接入基础设施 | 本机 MediaMTX 1.21.1（独立 Compose，仅回环端口）；SRT 直推（GStreamer `srtsink` 与用户自有 OBS）与 Runtime `ingest` 已打通：稳定窗口、断流恢复、无源失败、实时数据面交接、VideoToolbox 视频五个场景通过，OBS 真实直推亦实测（无 timing 码流的视频时长按 PTS 差分补齐），见 `docs/verification.md` | Mac mini / 跨机部署、SRT 加密与带凭据 publish、`linux-x86_64` 侧验收；服务器上有流不等于语义链路可用 |
-| 媒体与模型 | Pipeline 配置、真实媒体 probe 工具、ffprobe 锚点回放，GStreamer 真实解码 → arena → `BufferDescriptor` → lease 签发/校验/释放 → 音频 5 秒切段，视频自适应抽帧（keep/skip 全部带原因，7 个真实样本通过），跨进程数据面：Runtime 保留字节、独立进程按 lease 读取（3 个样本 × 2 个场景通过，具备有界容量与稳定拒绝码），SRT 实时接入 `ingest`（`make live-check` 五个场景通过），背压与队列可观察：三条有界队列的深度/峰值/容量、按原因与按种类的丢弃、lease 等待时间（`verify_backpressure.py` 4 场景 + OBS 直播实测，见 `docs/verification.md`），以及第一个**端侧模型插件**：本机 ollama `moondream:v2`（VLM），插件经 `LeaseBufferReader` 读真实视频帧产出带锚点/来源/版本/显式置信度语义的 observation，`tools/ai_worker.py` 只发现与调用不读字节，`make model-check` 四进程通过（见 `docs/verification.md` 的"M8"一节与 ADR-012），以及**媒体格式准入与显式拒绝**：承诺矩阵写成数据、源格式按 stream ID 关联、被拒轨道带稳定拒绝码进报告（`make capability-check` **19 场景**通过：6 个公开授权正样本 + 13 条拒绝路径，见 `docs/verification.md` 的"M9"一节与 ADR-009） | ASR/OCR/BGE 插件与 CoreML/Metal（仍 `execution_backend_not_implemented`）；插件**未签名**（`local_native` 形态，签名/SBOM 只有结构预检）；旋转的采集与应用（v1 未实现） |
+| 媒体与模型 | Pipeline 配置、真实媒体 probe 工具、ffprobe 锚点回放，GStreamer 真实解码 → arena → `BufferDescriptor` → lease 签发/校验/释放 → 音频 5 秒切段，视频自适应抽帧（keep/skip 全部带原因，7 个真实样本通过），跨进程数据面：Runtime 保留字节、独立进程按 lease 读取（3 个样本 × 2 个场景通过，具备有界容量与稳定拒绝码），SRT 实时接入 `ingest`（`make live-check` 五个场景通过），背压与队列可观察：三条有界队列的深度/峰值/容量、按原因与按种类的丢弃、lease 等待时间（`verify_backpressure.py` 4 场景 + OBS 直播实测，见 `docs/verification.md`），以及第一个**端侧模型插件**：本机 ollama `moondream:v2`（VLM），插件经 `LeaseBufferReader` 读真实视频帧产出带锚点/来源/版本/显式置信度语义的 observation，`tools/ai_worker.py` 只发现与调用不读字节，`make model-check` 四进程通过（见 `docs/verification.md` 的"M8"一节与 ADR-012），以及**媒体格式准入与显式拒绝**：承诺矩阵写成数据、源格式按 stream ID 关联、被拒轨道带稳定拒绝码进报告（`make capability-check` **19 场景**通过：6 个公开授权正样本 + 13 条拒绝路径，见 `docs/verification.md` 的"M9"一节与 ADR-009），以及第二个**端侧模型插件**（ASR）：本机 MLX Whisper 经 `LeaseBufferReader` 读真实音频段产出带锚点/来源/显式置信度语义的转写 observation，音频样本布局（`sample_format`）与音频段描述符进保留表一并落成契约，`make asr-check` 四进程通过（见 `docs/verification.md` 的"M10"一节与 ADR-014） | OCR/BGE 插件与 CoreML/Metal（仍 `execution_backend_not_implemented`）；ASR 的 Linux 后端（`mlx` 是 Apple Silicon 专属）；插件**未签名**（`local_native` 形态，签名/SBOM 只有结构预检）；旋转的采集与应用（v1 未实现） |
 | 工程 | uv/Cargo 锁文件、Docker、检查命令、CI（ubuntu） | 真视频 Golden Path、macOS CI 与 `launchd` 常驻形态、压测、监控仪表盘 |
 
 下一里程碑：**本地文件 → GStreamer → PTS 正确的 frame/audio descriptor**，先完成
@@ -49,12 +49,27 @@ SRT 实时接入也已落地：`ingest` 在有限窗口内从 SRT 拉流，测�
 
 模型链路（M8）已接入：本机 ollama 的 `moondream:v2` 通过插件消费真实视频帧，`tools/ai_worker.py`
 只做发现与调用（不读字节），`make model-check` 四进程通过；边界见
-[ADR-012](adr/ADR-012-模型插件与端侧推理边界.md)。仍未实现的是 **ASR/OCR/BGE 与 CoreML/Metal**
+[ADR-012](adr/ADR-012-模型插件与端侧推理边界.md)。仍未实现的是 **OCR/BGE 与 CoreML/Metal**
 （仍 `execution_backend_not_implemented`）与插件签名验证。
 因此 `golden_path_verified` 恒为 false，不得把本节读作 Golden Path 已完成；
 接入的 VLM 只保证链路语义正确，**不保证描述可用**（模型输出不稳定）。
 抽帧的覆盖率目前只到帧数口径，语义覆盖仍未用模型输出度量。
 共享内存数据面只在本机有意义（且同 UID 进程之间没有逐 buffer 隔离），不是分布式数据面。
+
+ASR 链路（M10）也已落地：第二个模型插件 `plugins/python/processors/asr-whisper-mlx` 消费数据面里的
+**真实音频段**，用本机 **MLX Whisper**（`mlx-whisper 0.4.3` + `mlx-community/whisper-large-v3-turbo`）
+产出转写 observation，`make asr-check MEDIA=video/samples/screencast-video2commons.480p.vp9.webm`
+四进程通过：段锚点等于源段半开区间（`[0,5015)`、`[5015,10015)`）、`contentHash` 等于段 lease 窗口摘要、
+`modelArtifactDigest` 等于脚本**独立复算**的权重摘要（1,613,977,612 B，`sha256:951ed3fc…`）、
+`confidence` 显式缺省并写原因、子段 = 窗口起点 + 模型相对时间（越窗的子段时间戳**不夹取、不丢弃**：逐子段标记 `timing_outside_window` 并计数）。为此把**音频样本布局**写进契约
+（`BufferFormat.sample_format` / `AudioSegment.sample_format`，空串只表示未知，解码链只承认 `F32LE`，
+其它布局显式记账丢弃）并修掉一个真实产品缺陷：**音频段描述符此前从未进跨进程保留表**
+（`emit_segment()` 只做了进程内 `hand_off()`），插件因此永远读不到段。决策与 A/B 证据见
+[ADR-014](adr/ADR-014-ASR插件与音频样本布局契约.md) 与 `docs/verification.md` 的"M10"一节。
+**仍未验证的仍然不得声称可用**：转写**质量**未验收（无 WER/CER，实测到一次重复退化，
+只能靠 `compression_ratio` 等诊断量筛）；段是固定 5 秒切分（无静音切分、无说话人对齐）；
+只在本机 `macos-aarch64` 验收，`mlx` 为 Apple Silicon 专属，Linux/Mac mini 路径需另选后端；
+段受单一种类上限约束（默认 32 条表 → 16 段 = 80 秒音频）。
 
 媒体格式准入（M9）已按 [ADR-009](adr/ADR-009-媒体格式支持矩阵与拒绝语义.md) 落地：承诺矩阵写成
 数据（容器 → 编码 → 位深 → 色彩 → 采样格式 → 声道），判定输入是**解码前采集的源格式上下文**加上
