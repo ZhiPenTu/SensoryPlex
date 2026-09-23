@@ -6,3 +6,5 @@ publish.workspace = true
 
 [dependencies]
 sensoryplex-sdk.workspace = true
+prost.workspace = true
+prost-types.workspace = true

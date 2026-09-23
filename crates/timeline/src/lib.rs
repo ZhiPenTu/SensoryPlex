@@ -1,4 +1,10 @@
-//! 校验已经观察到的事实；不得合成模型结果或置信度。
+//! 有界、确定性的 Timeline 聚合与事实校验；不得合成模型结果或置信度。
+#![doc = include_str!("../README.md")]
+mod fusion;
+pub use fusion::{
+    FusionEngine, FusionInput, FusionLimits, FusionOutcome, FusionPolicy, FusionReport,
+    FusionRequest, MaterialScope,
+};
 use sensoryplex_sdk::{
     material::MaterialUnit, validate_digest, validate_observation, validate_range, ContractError,
 };
