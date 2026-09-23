@@ -1,5 +1,39 @@
 # 务必按照高性能框架底层级项目规范进行开发
 
+# 开发流程统一通过 GitHub PR（禁止直推 master）
+
+所有新增或修订工作一律按下方流程执行，避免直接向 `master` 推送、避免在主 worktree
+里"边改边交"：
+
+1. 在 `~/.codex/worktrees/<branch>/SensoryPlex` 创建独立 worktree，目录名与分支名
+   一致；分支命名沿用 `codex/<topic>-<verb>` 风格（例如 `codex/timeline-fusion`、
+   `codex/material-review`），保持 Codex 工作前缀以便溯源。
+2. 在 worktree 里编辑、提交（建议一提交只承载一个原子改动），并 `git push -u
+   origin codex/<branch>` 把分支推上 origin。
+3. 在 GitHub 上以 `codex/<branch>` → `master` 为方向打开 **Pull Request**（标题用
+   `<commit-style>: <简述>`，正文链接任务/ADR）；如已有同主题 PR，复用而非新建。
+4. 通过必要的检查（`make check` / `make integration` / 媒体 E2E 等）后，由评审人
+   squash 或 merge。**只有 PR 合入后才允许把改动带到 master worktree**。
+5. PR 合入后，从 GitHub 重新 `git pull --ff-only` 同步 master worktree，再继续下
+   一项工作。
+
+规则要点：
+
+- `master` 是被保护分支，所有面向 master 的推送必须经 PR；CI/热修复例外需经维护者
+  另行批准并留下 ADR 备注，否则视为违规。
+- 主 worktree（`/Users/tuzhipeng/Documents/SensoryPlex`）只在合并窗口打开：拉新分支、
+  处理冲突、做最终验证；不在其中叠加未提交改动。
+- worktree 在分支合并后即可清理：`git worktree remove
+  ~/.codex/worktrees/<branch>/SensoryPlex`，再 `git branch -d codex/<branch>` 与
+  `git push origin --delete codex/<branch>`。
+- 评审人暂为作者自查（单人维护期）；一旦有协作者加入，启用 `CODEOWNERS` 与
+  分支保护把"评审后合并"提升为强制。
+- 本节为 ADR-018 的事实层；变更请走 ADR 而非直接改 AGENTS.md。
+
+- 平台限制：私有免费仓库不能启用 branch protection / repository rulesets
+  （需 GitHub Pro 或公开）。在升级前，流程守门靠 CODEOWNERS 自动指派评审 +
+  docs-pr-gate workflow + 作者自查，**禁止用 force push / rebase master**。
+
 # 开发验证一律使用容器
 
 - 任何开发期验证（lint / test / integration / proto / plugin artifact / console build
