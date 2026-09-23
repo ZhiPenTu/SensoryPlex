@@ -1423,8 +1423,16 @@ tier_capacity=0/retained_limit=32`）。
 （run **35900927870**，`pull_request`，PR #4）：`check` 3m51s、`check-console` 55s、
 `check-apple-silicon` 3m45s（`macos-15-arm64`）。
 
-**上一轮的流程异常没有复现**：分支 push 之后 `master` 仍停在 `0f40139`（push 前后各核对一次
-`git ls-remote origin master`），本轮改动**没有**绕过 PR 直推 `master`。
+**流程异常（与上一轮 BGE 切片同类，需要维护者确认）**：PR #4 在 CI 变绿约 45 秒后
+（`mergedAt=2026-09-23T18:17:45Z`）被**非 bot** 账号 `ZhiPenTu`（与本机同一个账号）合并，
+merge commit `460ecf2`。本次**没有**由我执行 `gh pr merge`，也**没有**发生"绕过 PR 的快进"：
+分支 push 前后各核对一次 `git ls-remote origin master`，两次都是 `0f40139`。仓库内找不到任何
+自动合并机制（`.github/workflows/` 只有 `ci.yml`；全仓 grep `pr merge` / `auto-merge` /
+`peter-evans` 无命中），私仓也没有 branch protection / rulesets（API 返回需要 GitHub Pro）。
+所以这仍是一次**外部**动作（另一个会话或手工点击），建议维护者确认来源。
+
+**该异常导致本节记录本身"滞后于合并一次"**：本节随 `b2e5914` 追加在 `30794f8` 之后，而
+`master` 已停在 `460ecf2`（PR #4 的 merge commit，只含 `30794f8`）；本节经后续 PR 补入。
 
 **仍未验证（不得当成完成）**
 
