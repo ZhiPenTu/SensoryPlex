@@ -1561,6 +1561,29 @@ emb_1953e314…|failed|milvus://material_text_bge_small_zh_v1_5_d512_v1/emb_1953
 （`embedding_record_ready_is_confirmed` / `embedding_record_ready_has_no_error` /
 `embedding_record_failed_has_reason` 的约束名都能被 `CheckViolation` 逐个对上）。
 
+#### 远端 CI 与合并（2026-09-24，PR #6）
+
+本切片推成 [PR #6](https://github.com/ZhiPenTu/SensoryPlex/pull/6)（head `76d6b47`），
+远端 workflow `engineering-checks` 在 push 与 PR 各跑一轮，**三个 job 全绿**：
+
+| run | check | check-apple-silicon | check-console |
+| --- | --- | --- | --- |
+| 35908250264 | 3m13s | 2m13s（`macos-15-arm64`） | 1m4s |
+| 35908283472 | 3m16s | 3m36s（`macos-15-arm64`） | 1m35s |
+
+合并由仓库所有者账号 `ZhiPenTu` 执行（**本次没有**出现 ADR-019 切片里 PR #4/#5 那种
+"非本人执行的自动合并"），合并提交 `88557d2`，`master` 从 `644bb8d` 前进到 `88557d2`。
+
+提交前在同一棵树上复跑：`make index-check`（10.4s，11 个场景）、容器内
+`tests/contracts/test_index_worker_contract.py`（43 passed）与
+`tests/integration/test_index_records.py`（7 passed，容器 DSN）。
+
+另有一条**运行迁移时必须知道的环境事实**（本轮真的踩到）：`migrate` 服务复用 gateway 镜像，
+`db/migrations` 是 `COPY` 进镜像的而不是 bind mount，所以**新增迁移文件后不重建镜像，
+`make migrate` 会读到旧镜像里的迁移集合、什么都不应用并以 0 退出**。本轮 `0003` 就是这么
+"跑过了但没生效"，直到 `docker compose ... build gateway` 之后同一条命令才输出
+`Applied 0003_embedding_index`。已写进 `docs/runbooks/development.md`。
+
 #### 仍未验证（不得当成完成）
 
 - **常驻消费未接线**：没有 NATS/outbox 轮询把上游观测喂给 index-worker，本轮只有显式 CLI 调用，
