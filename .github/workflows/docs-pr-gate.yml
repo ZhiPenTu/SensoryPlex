@@ -1,0 +1,44 @@
+name: docs-pr-gate
+on:
+  pull_request:
+    paths:
+      - "AGENTS.md"
+      - "README.md"
+      - "docs/**"
+      - ".github/**"
+      - "docs/adr/**"
+permissions:
+  contents: read
+jobs:
+  guards:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 单行长度 ≤ 120
+        run: |
+          python3 -c "
+          import pathlib, re, sys
+          bad = []
+          for p in pathlib.Path('.').rglob('*.md'):
+              if any(part.startswith('.git') for part in p.parts): continue
+              for i, line in enumerate(p.read_text().splitlines(), 1):
+                  if len(line) > 120:
+                      bad.append(f'{p}:{i}:{len(line)}')
+          if bad:
+              print('\\n'.join(bad)); sys.exit(1)
+          "
+      - name: 强制 ASCII 文件名（中文文件名不易跨工具流转）
+        run: |
+          if find . -type f -not -path './.git/*' -regex '.*[^[:print:][:space:]].*' | head -20; then
+            echo "检测到非 ASCII 文件名，请改用英文 slug"; exit 1
+          fi
+      - name: 检查 ADR 标题前缀
+        run: |
+          python3 -c "
+          import pathlib, re, sys
+          pat = re.compile(r'ADR-\d{3}-')
+          for p in pathlib.Path('docs/adr').glob('*.md'):
+              first = p.read_text().lstrip().splitlines()[0]
+              if not pat.search(first):
+                  print(p, first); sys.exit(1)
+          "

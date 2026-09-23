@@ -1,0 +1,7 @@
+# 默认所有变更需仓库所有者评审
+* @ZhiPenTu
+
+# 关键领域预留更严门槛，等 ADR 生效后再细化
+# /crates/timeline/  @ZhiPenTu
+# /proto/             @ZhiPenTu
+# /deploy/            @ZhiPenTu
