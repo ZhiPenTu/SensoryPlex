@@ -29,6 +29,15 @@ const messages: Record<string, string> = {
     token_scope_exceeds_grant: '凭据权限不能超出你的业务权限。',
     storage_unavailable: '文件存储暂时不可用。',
     blob_unavailable: '原文件暂不可读取。',
+    material_not_found: '素材或指定版本不存在，或当前账户无权访问。',
+    material_source_not_found: '找不到可访问的原片来源。',
+    material_source_unmapped: '原片尚未关联。需要先由媒体目录登记该来源与上传文件的对应关系。',
+    material_source_mismatch: '来源摘要与原片不一致，已停止回看。',
+    material_source_time_invalid: '来源时间区间与原片时长不一致，已停止定位。',
+    upload_incomplete: '原片尚未完整上传。',
+    invalid_time_range: '时间范围无效，结束时间需要晚于开始时间。',
+    invalid_confidence: '最低置信度需要在 0 到 1 之间。',
+    semantic_index_not_configured: '语义检索尚未接入。',
 };
 
 export class RequestError extends Error {

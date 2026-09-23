@@ -4,6 +4,12 @@
 目标平台包含 `macos-aarch64`（Apple Silicon，含 Mac mini 端侧部署）与 `linux-x86_64`（NVIDIA 性能主线），
 见 ADR-008 与蓝图 §1.3。
 
+2026-09-24 并行状态：**M8 整体仍在研发中**；Timeline 核心在独立分支
+`codex/timeline-fusion`（`bdb00ef`），尚未合并。真实媒体端到端联调与语义冲突识别
+仍是明确未完成项，见 `docs/TODO.md` 的“当前并行工作与明确未完成项”。
+素材查询与回看体验单独在 `codex/material-review` 推进；它沿用现有入库事实，
+不意味着媒体准入、自动来源映射或模型到素材链路已经完成。
+
 | 范围 | 当前实现 | 下一步 |
 | --- | --- | --- |
 | Rust Core | 6 crate workspace、Proto、配置校验、有界队列、descriptor 校验 | Pipeline 生命周期、调度、进程与 lease 实际管理 |

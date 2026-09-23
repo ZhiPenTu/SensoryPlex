@@ -2,6 +2,7 @@
 
 import hashlib
 import os
+import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -14,6 +15,7 @@ from fastapi.responses import FileResponse
 from psycopg.rows import dict_row
 
 from ..contracts import audit, fail, identifier, one, out, parse, rows, text_field
+from ..infrastructure.materials import get_material
 
 TYPES = {"video/mp4", "video/webm"}
 
@@ -31,8 +33,71 @@ def record(row):
     }
 
 
+def stored_path(root, item):
+    """只解析平台保存的摘要地址；不读取目录记录中的任意路径或远程 URL。"""
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", item["sha256"] or ""):
+        fail(503, "blob_unavailable")
+    target = root / item["sha256"][7:]
+    if target.is_symlink() or not target.is_file() or target.stat().st_size != item["size_bytes"]:
+        fail(503, "blob_unavailable")
+    return target
+
+
 def register(app, pool, auth, settings, upload_pool):
     root = settings.blob_root.resolve()
+
+    @app.get(
+        "/v1/materials/{key}/sources/{asset_id}",
+        dependencies=[Depends(auth.require("materials:read"))],
+    )
+    def material_source(
+        key: str,
+        asset_id: str,
+        revision: int = Query(..., ge=1, le=2147483647),
+        p: Annotated[object, Depends(auth.require("assets:read"))] = None,
+    ):
+        """解析指定 revision 的原片；upload:// 仅表示从流零点开始的完整文件。"""
+        with pool.connection() as conn:
+            material = get_material(conn, p.name, key, revision)
+            if material is None:
+                fail(404, "material_not_found")
+            refs = [r for r in material.source_refs if r.asset_id == asset_id]
+            if not refs:
+                fail(404, "material_source_not_found")
+            asset = one(
+                conn,
+                "SELECT a.*,s.type AS source_type FROM media_asset a "
+                "JOIN stream_session stream ON stream.stream_id=a.stream_id "
+                "JOIN media_source s ON s.source_id=stream.source_id "
+                "WHERE a.asset_id=%s AND a.stream_id=%s AND s.owner=%s",
+                (asset_id, material.stream_id, p.name),
+            )
+            if not asset or any(r.content_hash != asset["sha256"] for r in refs):
+                fail(409, "material_source_mismatch")
+            # 该命名空间是目录的显式声明，不按相同文件名或摘要猜测来源关系。
+            match = re.fullmatch(r"upload://(asset_[0-9a-f]{32})", asset["object_uri"])
+            if asset["source_type"] != "file" or not match:
+                fail(409, "material_source_unmapped")
+            if asset["duration_ms"] <= 0 or any(
+                r.time_range.start_ms < 0
+                or r.time_range.end_ms <= r.time_range.start_ms
+                or r.time_range.end_ms > asset["duration_ms"]
+                for r in refs
+            ):
+                fail(409, "material_source_time_invalid")
+            item = one(
+                conn,
+                "SELECT * FROM console_upload WHERE id=%s AND owner=%s",
+                (match[1], p.name),
+            )
+            if not item:
+                fail(404, "material_source_not_found")
+            if item["sha256"] != asset["sha256"]:
+                fail(409, "material_source_mismatch")
+            if item["state"] != "awaiting_admission":
+                fail(409, "upload_incomplete")
+            stored_path(root, item)
+        return out(record(item), pb.Upload)
 
     @app.post("/v1/uploads", status_code=201)
     def create(
@@ -202,13 +267,7 @@ def register(app, pool, auth, settings, upload_pool):
             fail(404, "asset_not_found")
         if item["state"] != "awaiting_admission":
             fail(409, "upload_incomplete")
-        target = root / item["sha256"].removeprefix("sha256:")
-        if (
-            target.is_symlink()
-            or not target.is_file()
-            or target.stat().st_size != item["size_bytes"]
-        ):
-            fail(503, "blob_unavailable")
+        target = stored_path(root, item)
         return FileResponse(
             target,
             media_type=item["content_type"],
