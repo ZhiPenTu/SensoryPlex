@@ -1340,6 +1340,23 @@ VLM 走 ollama），`metal` 不作为后端引入。
 - `uv run pytest tests/contracts -q`：**154 passed**（含 BGE 42）。
 - `uv run ruff format --check .` / `uv run ruff check .`：全仓通过。
 
+#### 远端 CI（2026-09-24，两轮都全绿）
+
+本切片两个提交（`a9a1a66` 容器验收修复、`a970569` BGE 插件）在远端各跑了一轮完整
+`engineering-checks`，**三个 job 全绿**：
+
+- run **35896034916**（`codex/embed-bge-onnx`，push，17:30:09Z）；
+- run **35896037193**（`master`，push，17:30:10Z）：`check` 3m19s、`check-console` 59s、
+  `check-apple-silicon` 3m36s（`macos-15-arm64`，含 `uname -m` 硬断言与解码路径单测）。
+
+**流程异常（需要维护者确认）**：`master` 上这次更新**没有经过 Pull Request**。
+`gh pr create` 当时返回 `No commits between master and codex/embed-bge-onnx`——即分支 push
+之后（1 秒内）`master` 已被快进到同一个提交，push 事件的操作者是同一个账号。本机
+`git` 侧没有任何 hooks / `remote.origin.push` refspec 能产生这种行为（已核对
+`.git/config`、`core.hooksPath`、全局配置），所以这是一次**外部**动作，不是本切片主动
+直推 `master`；无论来源如何都不符合新近起草的 `AGENTS.md`"禁止直推 master"约定，
+建议维护者查一下是不是有脚本/其它会话在自动快进 `codex/*` → `master`。
+
 #### 仍未验证（不得当作完成）
 
 - 向量**质量**：没有检索/排序基准（召回、MRR），没有中文长文本、跨语言或领域文本评测；
