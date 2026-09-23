@@ -94,6 +94,16 @@ make resident-uninstall
 
 `launchd`/`launchctl`/`sysctl` 只存在于 macOS 宿主，所以这一组是明确的"主机例外"，不放进容器目标。
 
+分级表里的**模型并发**那一半由模型 worker 消费（[ADR-021](docs/adr/ADR-021-模型worker按分级并发上限限流.md)）：
+`tools/ai_worker.py` 按 `--model-parallelism` / `SENSORYPLEX_MODEL_PARALLELISM` 与运行时转述的分级上限
+做准入与在飞调用限流（坏值、来源冲突与越界在连插件之前 exit 2，**不夹取**），报告里的
+`model_concurrency` 记实测 `peak_in_flight` 与重试账目——可重试拒绝（`concurrency_limit` /
+`deadline_expired`）不再让输入静默消失：
+
+```sh
+make parallelism-check MEDIA="/abs/a.webm /abs/b.webm" INPUTS=4
+```
+
 `make media-replay` 需要 GStreamer 开发文件；没有的主机可加 `MEDIA_FEATURES=` 退回纯锚点报告
 （解码数据平面保持全零，并在 `blockers` 中声明未实现）。`make handoff-check` 在同一份素材上再跑一次
 跨进程数据面验收：Runtime 保留字节，独立 Python 进程按 lease 读取、校验摘要并释放，
@@ -138,6 +148,7 @@ tools/                  配置、代码生成、迁移、测试与真实媒体�
 - [技术选型 ADR 与 V1 实施蓝图](技术选型ADR与V1实施蓝图.md)
 - [开放式插件开发文档](开放式插件开发文档.md)
 - [素材工作台 MVP 工程设计稿（应用准备流程已实现）](docs/design/console-mvp.md)
+- [ADR-021：模型 worker 按分级并发上限限流（准入、重试与账目）](docs/adr/ADR-021-模型worker按分级并发上限限流.md)
 - [ADR-019：运行时消费分级队列上限（准入，而不是改写）](docs/adr/ADR-019-运行时消费分级队列上限.md)
 - [ADR-015：macOS 常驻形态（launchd）与统一内存分级](docs/adr/ADR-015-macOS常驻形态与统一内存分级.md)
 - [ADR-014：ASR 插件与音频样本布局契约](docs/adr/ADR-014-ASR插件与音频样本布局契约.md)

@@ -18,6 +18,12 @@
   向量落库与检索闭环也已落地（Lite 形态，见 §M8），剩余的是运行时加速后端能力上报、
   网关侧语义检索接线（`mode=semantic` 仍 501）、以及按机型选模型（明细见 §M8）。
   分项测试通过不等于整个 M8 或 Golden Path 完成，具体进展按其验收证据更新。
+- [x] **分级模型并发上限已接线（ADR-021）**：`tools/ai_worker.py` 按 `SENSORYPLEX_MODEL_PARALLELISM` /
+  运行时转述的分级上限做准入与在飞调用限流，坏值、flag/env 冲突与越界在连插件之前 exit 2；
+  可重试拒绝不再静默消失（有上限重试 + 退避 + 每轮刷新 deadline，预算用尽落 `retry_exhausted:<原因>`）。
+  4 个真实授权样本实测 `limit=4 source=flag peak_in_flight=4 retries=6`，插件侧 `concurrency_limit`
+  真实发生并被重试吸收，4/4 全产出且无输入消失。证据见 `docs/verification.md` 的
+  "M8 剩余：模型 worker 按分级并发上限限流（ADR-021）"。
 - [ ] **真实媒体端到端**：Runtime → Timeline → metadata writer/outbox → 查询与回看尚未联调验收。
   Timeline 融合核心已在独立分支 `codex/timeline-fusion` 提交 `bdb00ef`，尚未合并主线。
 - [ ] **语义冲突识别与消解**：当前融合核心只保留显式冲突标记；不推断自然语言矛盾。
@@ -133,8 +139,13 @@
   - [x] 队列上限按分级生效：运行时按 `SENSORYPLEX_MEDIA_QUEUE_CAPACITY` 对 pipeline 声明值与真实保留
     窗口做准入，越界即失败（**不写报告**）并记入 `ReplayReport.media_queue` / `LiveIngestReport.media_queue`
     （[ADR-019](adr/ADR-019-运行时消费分级队列上限.md)；真机覆盖未注入 / `small` 拒绝 / `medium` 拒绝 / `large` 准入）。
-  - [ ] **未验证**：`small` 档（16 GiB）与 Mac mini 各档位未实跑；模型并发只有配置事实（`MODEL_PARALLELISM`
-    没有任何 worker 限流），无并发执行样本；断电重启、休眠唤醒、小时级长稳未验证。这些不得当成已完成。
+  - [x] 模型并发上限被模型 worker 消费：`tools/ai_worker.py` 按 `MODEL_PARALLELISM` / 运行时转述的分级
+    上限做准入与在飞调用限流，越界与坏值在连插件之前 exit 2，报告 `model_concurrency` 记 `peak_in_flight`
+    与重试账目（[ADR-021](adr/ADR-021-模型worker按分级并发上限限流.md)；真机 4 样本实测见
+    `docs/verification.md` 的"M8 剩余：模型 worker 按分级并发上限限流（ADR-021）"）。
+  - [ ] **未验证**：`small` 档（16 GiB）与 Mac mini 各档位未实跑；高帧率下的背压样本、`retry_exhausted`
+    的真实插件路径未跑；`MODEL_PARALLELISM` 只约束**单次 worker 进程内**的在飞调用数，不约束"同时起几个
+    worker"；断电重启、休眠唤醒、小时级长稳未验证。这些不得当成已完成。
 
 ### M6 linux-x86_64 侧验收
 
@@ -352,7 +363,7 @@
 - [ ] 摘要与校验：当前每个 descriptor 一次 SHA-256 + 逐字节比对，可改分块哈希 + 抽样校验。
 - [ ] 音频段与 ASR 窗口对齐、静音切分，替代固定 5 秒切段。
 - [ ] 抽帧策略调参（覆盖率/成本曲线），依据 M1 的覆盖率报告。
-- [ ] 模型量化档位与并发上限按统一内存自适应：**分级表已落地**（M5 / ADR-015），`queue_capacity` 已由运行时消费（M8 / ADR-019，越界即失败）；仍缺 worker 侧按 `MODEL_PARALLELISM` 限流，之后再验收并发上限。
+- [ ] 模型量化档位与并发上限按统一内存自适应：**分级表已落地**（M5 / ADR-015），`queue_capacity` 已由运行时消费（M8 / ADR-019，越界即失败），模型并发已由模型 worker 消费（M8 / ADR-021，准入 + 在飞调用限流）；仍缺的是"按机型自动选模型与量化档位"，以及高帧率下的并发上限实测。
 
 ## 4. 已知差异与取舍记录
 

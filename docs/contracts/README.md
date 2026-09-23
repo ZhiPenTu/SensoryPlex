@@ -288,6 +288,33 @@ reserved，破坏语义的修改进入新的协议 major。当前为开发预览
   因此 edge 是"单写进程"；`deploy/compose/docker-compose.vector.yml` 的服务端拓扑因本机 Docker Hub
   不可达**未验收**，不得据此声称服务端可用。
 
+模型 worker 并发上限契约（ADR-021，**[模型 worker 按分级并发上限限流](../adr/ADR-021-模型worker按分级并发上限限流.md)**，
+**以下语义已实现并实测**；`tools/ai_worker.py`，证据见 [验证记录](../verification.md) 的
+"M8 剩余：模型 worker 按分级并发上限限流（ADR-021）"一节）：
+
+- 报告字段是 `model_concurrency`（**不是** `model_parallelism`）：前者是这一次运行的**执行账目**，
+  后者是常驻分级注入的**预算声明**。两者混成一个名字就等于把"声称"和"实测"混掉。
+- 单位是**并发在飞的插件调用数**；`peak_in_flight` 是**实测峰值**，`limit == 1` 与串行语义完全一致，
+  因此未注入（`not_injected` / `limit=1` / `source=none`）时默认行为不变。
+- `source` 写明上限来自哪里：`flag`（`--model-parallelism`）、`env`（`SENSORYPLEX_MODEL_PARALLELISM`）
+  或 `runtime`（`DescribeCapabilities.residency.model_parallelism`）。**不做"两个来源谁大用谁"这类推断。**
+- `tier` / `tier_capacity` 在没接运行时时写成 `not_checked` / `null`——`null` 而不是 0，
+  因为 0 在 `ResidencyLimits` 里已经被"未声明"占用，报告里不该再借它表示未知。
+- 稳定原因码（顶层与逐条都只用这些码，不解析异常文本）：`invalid_resident_limit`
+  （空串 / `0` / 非整数 / 非 UTF-8）、`model_parallelism_conflict`（flag 与 env 都在且不相等）、
+  `model_parallelism_exceeds_tier_cap`（请求值超这一档上限，**不夹取**）、
+  `runtime_capabilities_unavailable:<CODE>`（`--runtime` 给出的端点拿不到答案）、
+  `invalid_max_attempts` / `invalid_retry_backoff_ms`、`empty_plugin_result`、
+  `plugin_process_failed:<CODE>`、`retry_exhausted:<原因>`。
+- **越界与坏值在连插件之前就失败**（exit 2），报告里只有 `{"state": "rejected", "reason": "..."}`，
+  且一条输入都不会跑：报告里**不可能**出现"被夹到上限的成功"。
+- **可重试拒绝不再是终态**：插件的 `concurrency_limit` / `deadline_expired` / `processing_timeout`
+  按 `--max-attempts`（默认 3，含首次调用）重试，指数退避封顶 1s，**每轮刷新 deadline**；
+  预算用尽才落 `retry_exhausted:<原因>`。`throttle_events` 按原因码分开计数——把它们合成一个数字
+  就把"自己撞上插件闸门"与"时间预算不够"抹成同一件事。
+- Rust 侧 `ResidentLimits.model_parallelism` 只**转述**（`serve` 不跑模型）；消费方是 worker 进程。
+  两边的解析必须给出**逐字相同**的原因串（Python 侧刻意不用裸 `int()`，见该 ADR §3）。
+
 `append_material` 是受信 timeline/storage 进程的内部入口；当前无公共写入 API。
 事实写入和 outbox 在同一事务完成。outbox 分发、NATS 消费去重和重试器尚待实现，
 因此不能把“已写 outbox”解释为“已发布 NATS”或“可语义检索”。

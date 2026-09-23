@@ -194,6 +194,34 @@ uv run --frozen python -m sensoryplex_index_worker.cli --uri /tmp/vector.db insp
 契约与稳定原因码见 [契约说明](../contracts/README.md) 的"向量索引落库契约"一节，
 决策与实测见 [ADR-020](../adr/ADR-020-向量索引落库与检索闭环.md)。
 
+## 模型 worker 并发上限（ADR-021）
+
+分级表里的"模型并发"由**模型 worker** 消费，不由常驻的 `serve` 消费（`serve` 只把它转述给
+`DescribeCapabilities`，见 [ADR-019](../adr/ADR-019-运行时消费分级队列上限.md) §4）。
+`tools/ai_worker.py` 报告里的 `model_concurrency` 是**执行账目**：`limit`、`source`
+（`flag` / `env` / `runtime` / `none`）、`peak_in_flight`、`retries`、`throttle_events`。
+坏值、来源冲突与越界都在**连插件之前** exit 2，一条输入都不跑，**不夹取**。
+
+```sh
+# 主机一键验收（真实 replay → 真实 OCR → worker，多样本）。HF 权重与 CoreML 只在主机上，
+# 因此与 resident-* / *-check 同类，是明确的"主机例外"，不进容器目标。
+make parallelism-check MEDIA="/abs/a.webm /abs/b.webm" INPUTS=4
+```
+
+手工调用 worker 时要自己带上插件 SDK 的 `PYTHONPATH`（`tools/ai_worker.py` 不替调用方拼路径）；
+给出 `--runtime` 时上限的权威就是运行时，拿不到答案即 `runtime_capabilities_unavailable:<CODE>`：
+
+```sh
+PYTHONPATH=plugins/python/common/src uv run --frozen python tools/ai_worker.py \
+  --plugin 127.0.0.1:50052 --observations upstream-observations.json \
+  --runtime 127.0.0.1:50051 --report ai-worker.json
+
+uv run --frozen python -m pytest tests/contracts/test_model_limits.py -q    # 32 项，纯判定不启模型
+```
+
+契约与稳定原因码见 [契约说明](../contracts/README.md) 的"模型 worker 并发上限契约"一节，
+决策与实测见 [ADR-021](../adr/ADR-021-模型worker按分级并发上限限流.md)。
+
 ## 可选向量基础设施（服务端拓扑，未验收）
 
 `deploy/compose/docker-compose.vector.yml` 包含 etcd、MinIO 和 Milvus，镜像锁定 digest，
