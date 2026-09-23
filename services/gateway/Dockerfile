@@ -6,7 +6,7 @@ COPY pyproject.toml uv.lock ./
 COPY plugins/python plugins/python
 COPY services/api services/api
 COPY services/gateway services/gateway
-RUN --mount=type=cache,id=sensoryplex-uv,target=/root/.cache/uv uv sync --frozen --no-dev --no-editable --package sensoryplex-gateway
+RUN --mount=type=cache,id=sensoryplex-uv,target=/root/.cache/uv uv sync --frozen --group dev --no-editable --package sensoryplex-gateway
 COPY tools/migrate.py tools/migrate.py
 COPY db/migrations db/migrations
 RUN groupadd --gid 10001 sensoryplex && useradd --uid 10001 --gid 10001 --no-create-home sensoryplex

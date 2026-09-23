@@ -43,17 +43,92 @@ services:
       SENSORYPLEX_DATABASE_URL: postgresql://sensoryplex:${POSTGRES_PASSWORD}@postgres:5432/sensoryplex
       SENSORYPLEX_API_TOKEN: ${SENSORYPLEX_API_TOKEN:?Run make configure}
       SENSORYPLEX_PRINCIPAL: ${SENSORYPLEX_PRINCIPAL:-local-developer}
+      PYTHONPATH: /workspace
+    working_dir: /workspace
+    volumes:
+      - type: bind
+        source: ${REPO_ROOT:-../../}
+        target: /workspace
     ports: ["127.0.0.1:${GATEWAY_PORT:-8090}:8090"]
     depends_on:
       migrate: {condition: service_completed_successfully}
-    read_only: true
-    tmpfs: ["/tmp"]
-    cap_drop: ["ALL"]
-    security_opt: ["no-new-privileges:true"]
+    # 注意：api/gateway 服务用 bind mount 把仓库根挂到 /workspace，供 make check / make test /
+    # make integration 等开发验证在容器内使用本机源码；不再使用 read_only 根与 cap_drop ALL，
+    # 因为开发验证需要写入 .data/.logs/tmp 等路径。
     healthcheck:
       test: ["CMD", "/app/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/v1/health', timeout=3)"]
       interval: 10s
       timeout: 5s
+      retries: 6
+    restart: unless-stopped
+
+  # 业务/管理/认证 FastAPI 服务：与 gateway 共用同一份 schema 与凭据，
+  # 同时独立对外暴露 /livez /v1/health /v1/capabilities 与 /v1 /auth /admin 全量端点。
+  api:
+    build:
+      context: ../..
+      dockerfile: services/api/Dockerfile
+    image: sensoryplex-api:0.1.0
+    environment:
+      SENSORYPLEX_DATABASE_URL: postgresql://sensoryplex:${POSTGRES_PASSWORD}@postgres:5432/sensoryplex
+      SENSORYPLEX_API_TOKEN: ${SENSORYPLEX_API_TOKEN:?Run make configure}
+      SENSORYPLEX_PRINCIPAL: ${SENSORYPLEX_PRINCIPAL:-local-developer}
+      PYTHONPATH: /workspace
+      # 授权样本挂载点，media-* / handoff-check / model-check / asr-check 在容器内读取。
+      HOST_MEDIA_DIR: /host-media
+    working_dir: /workspace
+    volumes:
+      - type: bind
+        source: ${REPO_ROOT:-../../}
+        target: /workspace
+      # 把授权样本目录（默认仓库外 ~/Movies 或 MEDIA_DIR 指向的目录）以只读方式挂进容器；
+      # Makefile 里用 /host-media/<filename> 让容器内脚本访问。绝对路径由 .env 的 MEDIA_DIR 控制。
+      - type: bind
+        source: ${MEDIA_DIR:-/tmp}
+        target: /host-media
+        read_only: true
+    ports: ["127.0.0.1:${API_PORT:-8091}:8091"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "/app/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8091/v1/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    restart: unless-stopped
+
+  # 独立前端 web 容器：nginx 静态托管 apps/console/dist 并把 /v1 /auth /admin 反代到 api:8091，
+  # 与 api 服务解耦，避免 SPA 资源把 API 进程拖垮。端口见 CONSOLE_PORT（默认 5173）。
+  console:
+    build:
+      context: ../..
+      dockerfile: apps/console/Dockerfile
+    image: sensoryplex-console:0.1.0
+    working_dir: /workspace/apps/console
+    volumes:
+      - type: bind
+        source: ${REPO_ROOT:-../../}
+        target: /workspace
+    depends_on:
+      api: {condition: service_healthy}
+    ports: ["127.0.0.1:${CONSOLE_PORT:-5173}:5173"]
+    # nginx master 需要 chown 临时目录到 nginx 用户 (uid=101)，保留 CAP_CHOWN；
+    # 同时卸掉 NET_RAW/SYS_ADMIN/SYS_PTRACE/ALL 之外的其它 cap，降低被滥用面。
+    cap_drop:
+      - NET_RAW
+      - SYS_ADMIN
+      - SYS_PTRACE
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETUID
+      - SETGID
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:5173/"]
+      interval: 10s
+      timeout: 3s
       retries: 6
     restart: unless-stopped
 

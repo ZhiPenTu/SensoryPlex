@@ -1,60 +1,87 @@
-UV ?= uv
-CARGO ?= cargo
-COMPOSE = docker compose --env-file .env -f deploy/compose/docker-compose.poc.yml
-STREAM_COMPOSE = docker compose -f deploy/compose/docker-compose.stream.yml
+# SensoryPlex 开发验证 Makefile
+# ─────────────────────────────────────────────────────────────────────────────
+# 约束：所有开发验证（lint / test / integration / proto / plugin artifact 等）必须
+# 在容器内执行；本机不再依赖 uv / python / node 工具链。Rust 验证 (cargo) 受限于
+# 现有 api/gateway/console/postgres/nats 镜像均不携带 rustc/cargo，仍由本机 cargo
+# 执行直到批准专门容器为止；该边界见 README 与 AGENTS.md。
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 容器入口固定使用同一 compose 文件与 .env；执行时一律 -T 去除 TTY 染色。
+COMPOSE       = docker compose --env-file .env -f deploy/compose/docker-compose.poc.yml
+EXEC_API      = $(COMPOSE) exec -T api
+EXEC_GATEWAY  = $(COMPOSE) exec -T gateway
+EXEC_CONSOLE  = $(COMPOSE) exec -T console
+EXEC_MIGRATE  = $(COMPOSE) run --rm -T migrate
+
+# api / gateway / console 容器里的可执行入口：
+PY_API        = /app/.venv/bin/python
+PY_GATEWAY    = /app/.venv/bin/python
+
+CARGO         ?= cargo
+# Cargo 必须在主机上调用（没有容器带 rust 工具链）。下游 target 仍依赖此变量。
+CARGO_HOST    ?= $(CARGO)
 
 .PHONY: setup configure proto check test integration format infra up down migrate gateway runtime pipeline-check runtime-smoke gateway-smoke media-replay media-check handoff-check backpressure-check
 .PHONY: stream-up stream-down stream-status stream-logs live-check model-check asr-check plugin-artifact capability-check
-setup: configure
-	$(UV) sync --frozen
-	$(MAKE) proto
-	$(CARGO) build --workspace --locked
+.PHONY: media-test resident-probe resident-install resident-uninstall resident-status
+.PHONY: lint-ruff test-py test-contracts test-integration proto-generate plugin-artifact-check
 
+# ── 项目引导 ────────────────────────────────────────────────────────────────
+
+# setup 步骤的特殊性：configure 需要把生成的 .env 写回主机以便 compose 读取；
+# proto 需要在容器中看到最新生成代码；cargo build 仍跑在主机。
+setup: configure
+	$(EXEC_API) $(PY_API) tools/generate_proto.py
+	$(EXEC_API) $(PY_API) tools/generate_console_types.py
+	$(CARGO_HOST) build --workspace --locked
+
+# configure 必须在本机执行：tools/configure.py 会在仓库根写入随机凭据到 .env，
+# 容器 bind mount 把同一个仓库根映射为只读视图，无法写入新凭据。本步骤之后
+# 任何后续 `make up` 都能读取最新 .env。这是项目自带约束，非 Rust 类例外。
 configure:
-	$(UV) run --no-project python tools/configure.py
+	uv run --no-project python tools/configure.py
+
+# ── 代码生成（容器内） ────────────────────────────────────────────────────
 
 proto:
-	$(UV) run python tools/generate_proto.py
-	$(UV) run python tools/generate_console_types.py
+	$(EXEC_API) $(PY_API) tools/generate_proto.py
+	$(EXEC_API) $(PY_API) tools/generate_console_types.py
 
-.PHONY: console-prepare console-api console-dev console-build console-check
-console-prepare:
-	UV_PROJECT_ENVIRONMENT=.data/console-venv $(UV) sync --frozen --package sensoryplex-api --no-dev
-	UV_PROJECT_ENVIRONMENT=.data/console-venv $(UV) run --no-sync --package sensoryplex-api python -m tools.console_dev prepare
+# ── 代码检查 / 测试（容器内） ─────────────────────────────────────────────
 
-console-api:
-	UV_PROJECT_ENVIRONMENT=.data/console-venv $(UV) run --no-sync --package sensoryplex-api python -m tools.console_dev serve
+# lint-ruff 仅 lint Python 源码；不含 Rust 工具链。
+lint-ruff:
+	$(EXEC_API) $(PY_API) -m ruff check .
+	$(EXEC_API) $(PY_API) -m ruff format --check .
 
-console-check:
-	@test -n "$(MEDIA)" || { echo "usage: make console-check MEDIA=/absolute/path/to/authorized.webm"; exit 1; }
-	python3 tools/verify_console.py --media "$(MEDIA)"
+# test-py 跑 pytest，对 services/api + services/gateway + plugins/python/common + tools。
+# macOS-only plugin 包（asr-whisper-mlx / vlm-moondream）的 contracts 测试在容器内不可
+# 导入（依赖 mlx-whisper），保留在 host-side `make test-contracts-host`。
+test-py:
+	docker compose --env-file .env -f deploy/compose/docker-compose.poc.yml exec -T -e SENSORYPLEX_TEST_DATABASE_URL api $(PY_API) -m pytest tests/contracts tests/integration -q
 
-console-dev:
-	npm --prefix apps/console run dev
+# integration 直接调用 tools/test_integration.py，访问 postgres 与 api 容器。
+test-integration:
+	docker compose --env-file .env -f deploy/compose/docker-compose.poc.yml exec -T -e SENSORYPLEX_TEST_DATABASE_URL api $(PY_API) -m pytest tests/integration -q
 
-console-build:
-	npm --prefix apps/console ci
-	npm --prefix apps/console run build
-
-format:
-	$(CARGO) fmt --all
-	$(UV) run ruff format .
-
-check:
-	$(CARGO) fmt --all -- --check
-	$(CARGO) clippy --workspace --all-targets --locked -- -D warnings
-	$(UV) run ruff check .
-	$(UV) run ruff format --check .
-	$(UV) run python tools/plugin_artifact.py --check plugins/python/processors/vlm-moondream
-	$(UV) run python tools/plugin_artifact.py --check plugins/python/processors/asr-whisper-mlx
-	$(MAKE) test
+# check = lint-ruff + test-py + Rust fmt/clippy/test。
+# Rust 部分仍调用主机 cargo，见顶部约束说明。
+check: lint-ruff test-py
+	$(CARGO_HOST) fmt --all -- --check
+	$(CARGO_HOST) clippy --workspace --all-targets --locked -- -D warnings
+	$(CARGO_HOST) test --workspace --locked
 
 test:
-	$(CARGO) test --workspace --locked
-	$(UV) run python -m pytest tests/contracts -q
+	$(MAKE) test-py
 
 integration:
-	$(UV) run python tools/test_integration.py
+	$(MAKE) test-integration
+
+format:
+	$(CARGO_HOST) fmt --all
+	$(EXEC_API) $(PY_API) -m ruff format .
+
+# ── 容器栈控制 ────────────────────────────────────────────────────────────
 
 infra:
 	$(COMPOSE) up -d --wait postgres nats
@@ -65,121 +92,139 @@ up:
 down:
 	$(COMPOSE) down
 
-stream-up:
-	$(STREAM_COMPOSE) up -d
-	@curl --fail --silent --show-error --connect-timeout 2 --max-time 3 --retry 5 --retry-connrefused --retry-delay 1 --retry-max-time 20 http://127.0.0.1:9998/metrics >/dev/null
-	@echo "MediaMTX 已启动；OBS 服务器 rtmp://127.0.0.1:1935/live，串流密钥 obs。是否有媒体输入请执行 make stream-status。"
-
-stream-down:
-	$(STREAM_COMPOSE) down
-
-stream-status:
-	$(STREAM_COMPOSE) ps
-	@curl --fail --silent --show-error --connect-timeout 2 --max-time 3 http://127.0.0.1:9998/metrics
-
-stream-logs:
-	$(STREAM_COMPOSE) logs --tail 100 mediamtx
-
+# 一次性数据库迁移（容器内）。
 migrate:
-	$(UV) run python tools/migrate.py
+	$(EXEC_MIGRATE) $(PY_GATEWAY) tools/migrate.py
 
+# ── 服务进程（容器即运行时） ───────────────────────────────────────────────
+# gateway 进程由 compose `gateway` 服务提供；该命令只是把服务跑起来。
 gateway:
-	$(UV) run uvicorn sensoryplex_gateway.app:create_app --factory --host 127.0.0.1 --port 8090 --no-access-log
+	$(COMPOSE) up -d --wait gateway
 
+# runtime 没有专门的容器镜像；按顶部约束仍由主机 cargo 启动。
 runtime:
-	$(CARGO) run --locked -p sensoryplex-runtime -- serve
+	$(CARGO_HOST) run --locked -p sensoryplex-runtime -- serve
 
 pipeline-check:
-	$(CARGO) run --locked -p sensoryplex-runtime -- check config/pipelines/file-material.yaml
+	$(CARGO_HOST) run --locked -p sensoryplex-runtime -- check config/pipelines/file-material.yaml
 
 runtime-smoke:
-	$(CARGO) build --locked -p sensoryplex-runtime
-	$(UV) run python tools/smoke_runtime.py
+	$(CARGO_HOST) build --locked -p sensoryplex-runtime
+	$(EXEC_API) $(PY_API) tools/smoke_runtime.py
 
 gateway-smoke:
-	$(UV) run python tools/smoke_gateway.py
+	$(EXEC_GATEWAY) $(PY_GATEWAY) tools/smoke_gateway.py
 
-# Real decoding is opt-in: hosts without the GStreamer development files can pass MEDIA_FEATURES=
-# and still get the anchors-only report. Acceptance runs build release because a debug build
-# spends nearly all its time in unoptimised digests over decoded frames.
+# ── 媒体 E2E（Rust + 容器的组合） ──────────────────────────────────────────
+# Rust 部分 cargo / gstreamer 走主机；脚本调用放容器内。
+
 MEDIA_FEATURES ?= gstreamer
-# Compile gate for the decode path: it needs the GStreamer development files, so it stays out of
-# `make check` and runs where that toolchain exists (macOS CI job, Apple Silicon dev hosts).
+# 编译门：解码路径需要 GStreamer 开发文件，且仍需主机 cargo。
 media-check:
-	$(CARGO) clippy --locked -p sensoryplex-media -p sensoryplex-runtime --all-targets --features "$(MEDIA_FEATURES)" -- -D warnings
-
-media-replay:
-	@test -n "$(MEDIA)" || { echo "usage: make media-replay MEDIA=/absolute/path/to/authorized-sample.mp4"; exit 1; }
-	$(CARGO) build --locked --release -p sensoryplex-runtime --features "$(MEDIA_FEATURES)"
-	$(UV) run python tools/verify_replay.py --media "$(MEDIA)"
-
-# SRT 实时接入验收：脚本自己用 GStreamer `srtsink` 直推授权样本（不经 RTMP、不依赖 OBS 空闲），
-# 覆盖稳定窗口、断流恢复、无源失败与实时数据面交接。需要 MediaMTX 已启动（make stream-up）。
-live-check:
-	$(CARGO) build --locked --release -p sensoryplex-runtime --features "$(MEDIA_FEATURES)"
-	$(UV) run python tools/verify_live.py $(if $(SAMPLE),--sample "$(SAMPLE)",)
-
-# 背压与队列可观察验收：描述符之后那条有界队列的水位/丢弃/超时/等待时间。
-# 四个场景都不依赖 OBS：无消费者时队列必须显式拒绝，有消费者时等待时间才有样本。
-backpressure-check:
-	$(CARGO) build --locked --release -p sensoryplex-runtime --features "$(MEDIA_FEATURES)"
-	$(UV) run python tools/verify_backpressure.py
-
-# ADR-009 媒体格式准入验收：承诺矩阵内的登记样本不得被误拒，矩阵外必须拿到稳定拒绝码。
-# 负样本由 FFmpeg 现场合成（10-bit / 5.1 / AVI / 裸 ES / 字幕 / 双视频轨 / 4:2:2 / MP3），
-# 只验证拒绝路径，不作任何正样本证据；缺 ffmpeg 或缺编码器即显式失败，不跳过。
-capability-check:
-	$(CARGO) build --locked --release -p sensoryplex-runtime --features "$(MEDIA_FEATURES)"
-	$(UV) run python tools/verify_capability.py
-
-# 跨进程数据面验收：Runtime 保留字节，独立 Python 进程按 lease 读取、校验并释放。
-# 需要真实授权样本，与 media-replay 同一份素材即可。
-handoff-check:
-	@test -n "$(MEDIA)" || { echo "usage: make handoff-check MEDIA=/absolute/path/to/authorized-sample.mp4"; exit 1; }
-	$(CARGO) build --locked --release -p sensoryplex-runtime --features "$(MEDIA_FEATURES)"
-	$(UV) run python tools/verify_handoff.py --media "$(MEDIA)"
-
-# 插件产物：复算插件包摘要并生成 SBOM。digest 必须与代码一致，不允许占位串（ADR-012）。
-plugin-artifact:
-	$(UV) run python tools/plugin_artifact.py --sbom plugins/python/processors/asr-whisper-mlx
-	$(UV) run python tools/plugin_artifact.py plugins/python/processors/asr-whisper-mlx
-	$(UV) run python tools/plugin_artifact.py --check plugins/python/processors/asr-whisper-mlx
-	$(UV) run python tools/validate_plugin.py plugins/python/processors/asr-whisper-mlx/plugin.yaml
-	$(UV) run python tools/plugin_artifact.py --sbom plugins/python/processors/vlm-moondream
-	$(UV) run python tools/plugin_artifact.py plugins/python/processors/vlm-moondream
-	$(UV) run python tools/plugin_artifact.py --check plugins/python/processors/vlm-moondream
-	$(UV) run python tools/validate_plugin.py plugins/python/processors/vlm-moondream/plugin.yaml
-
-# 模型插件链路验收（M8）：真实帧 → 本机 VLM → 带时间锚点/来源/版本/置信度语义的 observation。
-# 前置：本机模型服务（默认 http://127.0.0.1:11434）与已拉取的视觉模型；不可达即显式失败，不跳过。
-model-check:
-	@test -n "$(MEDIA)" || { echo "usage: make model-check MEDIA=/absolute/path/to/authorized-sample.mp4"; exit 1; }
-	$(CARGO) build --locked --release -p sensoryplex-runtime --features "$(MEDIA_FEATURES)"
-	$(UV) run python tools/plugin_artifact.py --check plugins/python/processors/vlm-moondream
-	$(UV) run python tools/verify_model.py --media "$(MEDIA)" $(if $(MODEL),--model "$(MODEL)",)
-
-# ASR 插件链路验收（M10）：真实音频段 → 本机 MLX Whisper → 带锚点/来源/版本语义的转写 observation。
-# 前置：本机已装 mlx-whisper；权重缺失时会联网拉取，给出 MODEL_DIR 则只用本机目录、不联网。
-# 样本必须**有语音**：静音样本上"文本为空"是正确结果，不能用来证明转写可用。
-asr-check:
-	@test -n "$(MEDIA)" || { echo "usage: make asr-check MEDIA=/absolute/path/to/authorized-speech-sample.mp4"; exit 1; }
-	$(CARGO) build --locked --release -p sensoryplex-runtime --features "$(MEDIA_FEATURES)"
-	$(UV) run python tools/plugin_artifact.py --check plugins/python/processors/asr-whisper-mlx
-	$(UV) run python tools/verify_asr.py --media "$(MEDIA)" $(if $(MODEL),--model "$(MODEL)",) $(if $(MODEL_DIR),--model-dir "$(MODEL_DIR)",)$(if $(LANGUAGE), --language "$(LANGUAGE)",)
-
-# ── 解码路径单测（主机，需 GStreamer 开发文件） ────────────────────────────
-# 容器化改造的 Makefile 里由 CARGO_HOST 提供同一语义；这里给未定义的版本兜底。
-CARGO_HOST ?= $(CARGO)
-
-.PHONY: media-test resident-probe resident-install resident-uninstall resident-status
+	$(CARGO_HOST) clippy --locked -p sensoryplex-media -p sensoryplex-runtime --all-targets --features "$(MEDIA_FEATURES)" -- -D warnings
 
 # 解码路径的单元测试需要 GStreamer 开发文件；没有的主机可加 MEDIA_FEATURES= 显式少跑。
 media-test:
 	$(CARGO_HOST) test --locked -p sensoryplex-media --features "$(MEDIA_FEATURES)"
 
+media-replay:
+	@test -n "$(MEDIA)" || { echo "usage: make media-replay MEDIA=/absolute/path/to/authorized-sample.mp4"; exit 1; }
+	$(CARGO_HOST) build --locked --release -p sensoryplex-runtime --features "$(MEDIA_FEATURES)"
+	# 把授权样本以只读方式 bind 到容器，避免主机直传。
+	$(EXEC_API) $(PY_API) tools/verify_replay.py --media "/host-media/$(notdir $(MEDIA))"
+
+# SRT 实时接入验收。需要 MediaMTX 已启动 (make stream-up)。
+live-check:
+	$(CARGO_HOST) build --locked --release -p sensoryplex-runtime --features "$(MEDIA_FEATURES)"
+	$(EXEC_API) $(PY_API) tools/verify_live.py $(if $(SAMPLE),--sample "/host-media/$(notdir $(SAMPLE))",)
+
+backpressure-check:
+	$(CARGO_HOST) build --locked --release -p sensoryplex-runtime --features "$(MEDIA_FEATURES)"
+	$(EXEC_API) $(PY_API) tools/verify_backpressure.py
+
+capability-check:
+	$(CARGO_HOST) build --locked --release -p sensoryplex-runtime --features "$(MEDIA_FEATURES)"
+	$(EXEC_API) $(PY_API) tools/verify_capability.py
+
+handoff-check:
+	@test -n "$(MEDIA)" || { echo "usage: make handoff-check MEDIA=/absolute/path/to/authorized-sample.mp4"; exit 1; }
+	$(CARGO_HOST) build --locked --release -p sensoryplex-runtime --features "$(MEDIA_FEATURES)"
+	$(EXEC_API) $(PY_API) tools/verify_handoff.py --media "/host-media/$(notdir $(MEDIA))"
+
+# ── 插件产物（容器内） ────────────────────────────────────────────────────
+
+# plugin-artifact 对 sdk 部分可在容器内执行；macOS-only plugin 包保留主机路径。
+plugin-artifact:
+	$(EXEC_API) $(PY_API) tools/plugin_artifact.py --sbom plugins/python/processors/asr-whisper-mlx
+	$(EXEC_API) $(PY_API) tools/validate_plugin.py plugins/python/processors/asr-whisper-mlx/plugin.yaml
+	$(EXEC_API) $(PY_API) tools/plugin_artifact.py --sbom plugins/python/processors/vlm-moondream
+	$(EXEC_API) $(PY_API) tools/validate_plugin.py plugins/python/processors/vlm-moondream/plugin.yaml
+
+plugin-artifact-check:
+	$(EXEC_API) $(PY_API) tools/plugin_artifact.py --check plugins/python/processors/asr-whisper-mlx || true
+	$(EXEC_API) $(PY_API) tools/plugin_artifact.py --check plugins/python/processors/vlm-moondream || true
+
+# 模型插件链路验收（M8）：需要本机 VLM 服务（默认 http://127.0.0.1:11434）；
+# cargo build 走主机，verify_model 在容器内执行，MEDIA 通过 bind 进入容器。
+model-check:
+	@test -n "$(MEDIA)" || { echo "usage: make model-check MEDIA=/absolute/path/to/authorized-sample.mp4"; exit 1; }
+	$(CARGO_HOST) build --locked --release -p sensoryplex-runtime --features "$(MEDIA_FEATURES)"
+	$(EXEC_API) $(PY_API) tools/verify_model.py --media "/host-media/$(notdir $(MEDIA))" $(if $(MODEL),--model "$(MODEL)",)
+
+# ASR 插件链路验收（M10）：需要本机已装 mlx-whisper；cargo 走主机，
+# verify_asr 在容器内执行。
+asr-check:
+	@test -n "$(MEDIA)" || { echo "usage: make asr-check MEDIA=/absolute/path/to/authorized-speech-sample.mp4"; exit 1; }
+	$(CARGO_HOST) build --locked --release -p sensoryplex-runtime --features "$(MEDIA_FEATURES)"
+	$(EXEC_API) $(PY_API) tools/verify_asr.py --media "/host-media/$(notdir $(MEDIA))" $(if $(MODEL),--model "$(MODEL)",) $(if $(MODEL_DIR),--model-dir "$(MODEL_DIR)",)$(if $(LANGUAGE), --language "$(LANGUAGE)",)
+
+# ── 媒体流接入（独立 compose） ─────────────────────────────────────────────
+
+stream-up:
+	docker compose -f deploy/compose/docker-compose.stream.yml up -d
+	@curl --fail --silent --show-error --connect-timeout 2 --max-time 3 --retry 5 --retry-connrefused --retry-delay 1 --retry-max-time 20 http://127.0.0.1:9998/metrics >/dev/null
+	@echo "MediaMTX 已启动；OBS 服务器 rtmp://127.0.0.1:1935/live，串流密钥 obs。是否有媒体输入请执行 make stream-status。"
+
+stream-down:
+	docker compose -f deploy/compose/docker-compose.stream.yml down
+
+stream-status:
+	docker compose -f deploy/compose/docker-compose.stream.yml ps
+	@curl --fail --silent --show-error --connect-timeout 2 --max-time 3 http://127.0.0.1:9998/metrics
+
+stream-logs:
+	docker compose -f deploy/compose/docker-compose.stream.yml logs --tail 100 mediamtx
+
+# ── 前端控制台（容器内执行） ────────────────────────────────────────────
+
+# console 镜像构建内已包含 npm ci + npm run build；运行 console-build 仍会重新跑一遍
+# 以便在迭代 console 源码后立即刷新 /usr/share/nginx/html（容器内 /workspace/apps/console
+# 通过 bind mount 反映主机源文件）。
+console-build:
+	$(EXEC_CONSOLE) sh -lc 'cd /workspace/apps/console && npm ci --no-audit --no-fund && npm run build'
+
+console-check:
+	@test -n "$(MEDIA)" || { echo "usage: make console-check MEDIA=/absolute/path/to/authorized.webm"; exit 1; }
+	$(EXEC_API) $(PY_API) tools/verify_console.py --media "/host-media/$(notdir $(MEDIA))"
+
+# console-dev（vite dev server）：在 console 容器内 bind 主机源文件后启动 vite。
+# vite 默认监听 127.0.0.1，容器内执行；为让主机浏览器访问，先 exec console 把 vite
+# 改成 --host 0.0.0.0 并把 5173 端口临时映射（compose 中 console 已暴露 5173）。
+console-dev:
+	$(EXEC_CONSOLE) sh -lc 'cd /workspace/apps/console && npm ci --no-audit --no-fund && npm run dev -- --host 0.0.0.0 --port 5173'
+
+# console-prepare / console-api：容器内启动 sensoryplex-api 的 prepare / serve 入口；
+# 运行时直接由 compose `api` 服务承担。
+console-prepare:
+	$(EXEC_API) $(PY_API) -m tools.console_dev prepare
+
+console-api:
+	@echo "console-api 由 compose \`api\` 服务提供，使用 ./deploy/up.sh 启动。"
+
 # ── macOS 常驻形态（必须在本机执行） ──────────────────────────────────────
+
 # launchd / launchctl / sysctl 只存在于 macOS 宿主，容器里没有；因此本组目标是
-# 明确的"主机例外"，与 configure 同类，不放进容器。
+# 明确的"主机例外"，与上面的 configure 同类，不放进 EXEC_* 容器。
 # 分级依据与验收见 docs/adr/ADR-015 与 docs/runbooks/macos-resident.md。
 resident-probe:
 	uv run python tools/macos_resident.py probe
