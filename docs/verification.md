@@ -2,6 +2,8 @@
 
 本记录对应 0.1.0 工程底座，不代表完整 V1 媒体/模型链路验收。
 
+最新素材查询与回看验收见 [2026-09-24 专项记录](verification-material-review.md)。
+
 | 验证 | 结果 |
 | --- | --- |
 | Rust workspace build/test | 6 个 crate 编译成功，4 项测试通过 |

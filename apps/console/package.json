@@ -8,7 +8,8 @@
     "build": "tsc -b && vite build",
     "typecheck": "tsc --noEmit",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "test:materials": "tsc --target ES2022 --module ES2022 --moduleResolution Bundler --skipLibCheck --outDir .data/material-tests src/features/material-utils.ts && node --test tests/material-utils.test.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.90.0",
