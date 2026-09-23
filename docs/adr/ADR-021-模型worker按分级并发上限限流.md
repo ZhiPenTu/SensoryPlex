@@ -93,7 +93,7 @@ worker 把"这次想要几路"和"这一档允许几路"分开：
 | `tests/contracts/test_model_limits.py` | **新增** 32 项：纯判定 + 契约形状替身（`ScriptedPlugin`、用 barrier 验跨线程峰值），不启真实模型 |
 | `tools/verify_model_parallelism.py` | **新增** 真实验收脚本：多样本上游（真实 replay → 真实 OCR → worker），真起 `sensoryplex-runtime serve` 做运行时对账 |
 | `Makefile` | 新增 `parallelism-check`（主机执行：HF 权重、CoreML EP 只存在于 macOS 主机，与 `*-check` 同类例外） |
-| `crates/runtime/src/lib.rs` | **只改注释**：`Rust 行为不变`，把"当前没有任何 worker 读它"改为指向本 ADR；Rust 侧仍是"转述" |
+| `crates/runtime/src/lib.rs` | **只改注释**（Rust 行为不变）：把"当前没有任何 worker 读它"改为指向本 ADR；Rust 侧仍然是转述，不参与判定 |
 
 ## 6. 验收证据（真机 M2 Max / 32 GiB / macOS，4 个真实授权样本）
 
