@@ -1,0 +1,61 @@
+apiVersion: edge.material.plugin/v1
+kind: ProcessorPlugin
+metadata:
+  name: org.sensoryplex.asr-whisper-mlx
+  version: 0.1.0
+  displayName: 语音转写（本机 MLX Whisper）
+  vendor: SensoryPlex
+  license: Apache-2.0
+  description: 读取 Runtime 数据面里的真实音频段，用本机 MLX Whisper 权重产出带时间锚点与来源的转写 observation。
+spec:
+  sdk:
+    runtime: ">=0.1.0 <0.2.0"
+    protocol: v1
+  entrypoint:
+    transport: grpc
+    command:
+      - uv
+      - run
+      - --frozen
+      - python
+      - -m
+      - edge_material_plugin_asr_whisper_mlx
+    port: 50072
+  capabilities:
+    consumes:
+      - media.audio_segment
+    produces:
+      - observation.asr_segment
+    acceptsMemoryKinds:
+      - cpu_shared_memory
+    ordering: per_stream
+    supports:
+      batch: false
+      cancellation: true
+      retry: idempotent
+  resources:
+    cpu: "2"
+    memory: 4Gi
+    maxConcurrency: 1
+    maxBatchSize: 1
+    defaultDeadlineMs: 180000
+  config:
+    schema: config.schema.json
+    secretRefs: []
+  security:
+    network: allowlist
+    allowedHosts:
+      - huggingface.co
+      - cdn-lfs.huggingface.co
+      - cdn-lfs-us-1.hf.co
+    dataEgress: local_only
+    filesystem:
+      readOnly: true
+      writablePaths:
+        - ~/.cache/huggingface
+  artifacts:
+    form: local_native
+    image: local:plugins/python/processors/asr-whisper-mlx
+    digest: sha256:4bfaa5fb91cf96a8ab4710419d558edf581ba4171481083a3eb526afb99ef763
+    sbom: sbom.cdx.json
+    signatureUnavailableReason: local_native_plugin_is_not_signed_in_v1

@@ -860,3 +860,48 @@ A/B 实测（用临时开关 `SP_NO_GLDOWNLOAD` 分离变量，开关已移除�
   被拒轨道或源里没有的轨道写 `samples=0` 且源字段为空；它不是"已准入但信息未知"，
   **被拒的唯一原因位置是 `rejected_tracks`**。`ReplayReport.blockers` 不列媒体准入项：
   拒绝是流级事实，不是构建级缺失。
+
+### Console 应用准备流程（2026-09-23）
+
+本轮新增 `apps/console` 与 `services/api`，Gateway 保留兼容导入入口。验收范围是脱离 Runtime
+执行服务也能工作的应用功能；不将上传或草稿持久化当作媒体准入、AI 处理或 Golden Path 成功。
+
+- `make proto`：新增 Console 消息生成通过；再次从 descriptor 生成 TypeScript，与已有生成文件一致。
+- `npm --prefix apps/console run build` 与 `format:check`：通过；主入口 gzip 约 104.5 KiB。
+- Ruff 对本次 API、兼容 Gateway、工具及测试的检查与格式检查：通过。
+- Python 契约测试：57 passed；真实 PostgreSQL 集成测试：10 passed（含 7 个 Console 场景）。
+  覆盖会话/CSRF/Origin、角色与 owner、文件摘要/Range/重启/取消、配置版本/方案引用、凭据撤销、
+  登录限流、账户停用/权限调整/密码重设后的会话与 token 失效。Starlette TestClient 有 2 条弃用警告。
+- `tools/verify_console.py`：使用 `agent-browser@0.38.1` 跑通 6 组真实浏览器检查：
+  登录；按 Schema 保存插件配置和方案；上传/摘要比对/播放；任务草稿刷新与执行禁用；
+  凭据创建/隐藏/撤销；只读菜单、直达路由拒绝、跨 owner 不可见、390×844 导航与无横向溢出。
+  浏览器未报告运行时异常。自动化结束关闭测试浏览器。
+- 浏览器样本为登记的 public-domain `sasebo-basketball.480p.vp9.webm`，
+  SHA-256 `89eed55b7ed4e991f2c7d536de2aa777cf52542147a4eb3b76a583f1c89073e9`。
+  真实播放和 seek 已观察到，仍标记 `awaiting_admission`；没有触发 Runtime。
+- `make console-prepare` 独立安装 28 个 API 依赖到 `.data/console-venv`，未安装模型包；
+  `make console-api` 使用该环境启动，通过浏览器登录页、持久配置/文件/草稿读取及授权 Range 检查。
+- 自动化产物保存在 Git 忽略的 `.data/console-preview/ui-d3995b3e/`，包括 `result.json`、
+  `playback.png`、`jobs.png`、`mobile.png`，不含密码和令牌快照。此前手工验收截图也位于预览目录。
+- 独立预览 schema 数据对账：2 份配置、2 份方案、2 份上传、2 份任务草稿、21 条审计；
+  `material_unit=0`、`processing_job=0`。这些是本次真实页面操作，不是业务成功 fixture。
+
+本轮全仓 `make check` **未通过**：最后一次在现有媒体工作区的 `crates/media/src/decode.rs:2463`
+遇到多余闭合括号，停在 `cargo fmt`。早些时候 Rust clippy / 109 项测试通过的结果不能代表
+后续并行修改的最终状态；本轮没有改动这些媒体实现。当前应用验证不等于全仓验收。
+Docker 构建尝试在拉取 Node 基础镜像时遇到配置镜像站 `docker.1panel.live` EOF，未完成构建，
+不能宣称容器部署通过。当前已验证的是宿主机同源 API + SPA 运行路径。
+
+尚未验收或尚未实现：Runtime 安装/启停/卸载、方案发布、任务执行/恢复、模型结果持久化接线、
+素材原片定位、语义索引、MCP/对外 gRPC、容器运行、远程部署、负载压测及崩溃孤儿 Blob 自动回收。
+运行方式与资源限制见 [Console 手册](runbooks/console.md)。
+
+#### 登录页演示账号填入（2026-09-23）
+
+新增“填入演示账号”按钮，仅显式配置了独立演示凭据的预览环境启用；普通 API 默认返回
+`enabled=false`。预览 prepare 创建 `demo`，不暴露 `admin` 的随机密码。停用演示账号或
+修改密码后，服务端不再返回演示凭据。Proto 已重新生成。
+
+前端构建、Ruff、Prettier 与 11 项 PostgreSQL 集成测试通过。真实浏览器点击后验证用户名为
+`demo`、密码已填入且仍在登录页；再点击登录成功进入视频库并显示“演示用户”，无运行时异常。
+截图：`.data/console-preview/demo-login.png`。

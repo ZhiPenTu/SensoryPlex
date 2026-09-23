@@ -4,7 +4,7 @@ COMPOSE = docker compose --env-file .env -f deploy/compose/docker-compose.poc.ym
 STREAM_COMPOSE = docker compose -f deploy/compose/docker-compose.stream.yml
 
 .PHONY: setup configure proto check test integration format infra up down migrate gateway runtime pipeline-check runtime-smoke gateway-smoke media-replay media-check handoff-check backpressure-check
-.PHONY: stream-up stream-down stream-status stream-logs live-check model-check plugin-artifact capability-check
+.PHONY: stream-up stream-down stream-status stream-logs live-check model-check asr-check plugin-artifact capability-check
 setup: configure
 	$(UV) sync --frozen
 	$(MAKE) proto
@@ -15,6 +15,26 @@ configure:
 
 proto:
 	$(UV) run python tools/generate_proto.py
+	$(UV) run python tools/generate_console_types.py
+
+.PHONY: console-prepare console-api console-dev console-build console-check
+console-prepare:
+	UV_PROJECT_ENVIRONMENT=.data/console-venv $(UV) sync --frozen --package sensoryplex-api --no-dev
+	UV_PROJECT_ENVIRONMENT=.data/console-venv $(UV) run --no-sync --package sensoryplex-api python -m tools.console_dev prepare
+
+console-api:
+	UV_PROJECT_ENVIRONMENT=.data/console-venv $(UV) run --no-sync --package sensoryplex-api python -m tools.console_dev serve
+
+console-check:
+	@test -n "$(MEDIA)" || { echo "usage: make console-check MEDIA=/absolute/path/to/authorized.webm"; exit 1; }
+	python3 tools/verify_console.py --media "$(MEDIA)"
+
+console-dev:
+	npm --prefix apps/console run dev
+
+console-build:
+	npm --prefix apps/console ci
+	npm --prefix apps/console run build
 
 format:
 	$(CARGO) fmt --all
@@ -26,6 +46,7 @@ check:
 	$(UV) run ruff check .
 	$(UV) run ruff format --check .
 	$(UV) run python tools/plugin_artifact.py --check plugins/python/processors/vlm-moondream
+	$(UV) run python tools/plugin_artifact.py --check plugins/python/processors/asr-whisper-mlx
 	$(MAKE) test
 
 test:
@@ -120,6 +141,10 @@ handoff-check:
 
 # 插件产物：复算插件包摘要并生成 SBOM。digest 必须与代码一致，不允许占位串（ADR-012）。
 plugin-artifact:
+	$(UV) run python tools/plugin_artifact.py --sbom plugins/python/processors/asr-whisper-mlx
+	$(UV) run python tools/plugin_artifact.py plugins/python/processors/asr-whisper-mlx
+	$(UV) run python tools/plugin_artifact.py --check plugins/python/processors/asr-whisper-mlx
+	$(UV) run python tools/validate_plugin.py plugins/python/processors/asr-whisper-mlx/plugin.yaml
 	$(UV) run python tools/plugin_artifact.py --sbom plugins/python/processors/vlm-moondream
 	$(UV) run python tools/plugin_artifact.py plugins/python/processors/vlm-moondream
 	$(UV) run python tools/plugin_artifact.py --check plugins/python/processors/vlm-moondream
@@ -132,3 +157,12 @@ model-check:
 	$(CARGO) build --locked --release -p sensoryplex-runtime --features "$(MEDIA_FEATURES)"
 	$(UV) run python tools/plugin_artifact.py --check plugins/python/processors/vlm-moondream
 	$(UV) run python tools/verify_model.py --media "$(MEDIA)" $(if $(MODEL),--model "$(MODEL)",)
+
+# ASR 插件链路验收（M10）：真实音频段 → 本机 MLX Whisper → 带锚点/来源/版本语义的转写 observation。
+# 前置：本机已装 mlx-whisper；权重缺失时会联网拉取，给出 MODEL_DIR 则只用本机目录、不联网。
+# 样本必须**有语音**：静音样本上"文本为空"是正确结果，不能用来证明转写可用。
+asr-check:
+	@test -n "$(MEDIA)" || { echo "usage: make asr-check MEDIA=/absolute/path/to/authorized-speech-sample.mp4"; exit 1; }
+	$(CARGO) build --locked --release -p sensoryplex-runtime --features "$(MEDIA_FEATURES)"
+	$(UV) run python tools/plugin_artifact.py --check plugins/python/processors/asr-whisper-mlx
+	$(UV) run python tools/verify_asr.py --media "$(MEDIA)" $(if $(MODEL),--model "$(MODEL)",) $(if $(MODEL_DIR),--model-dir "$(MODEL_DIR)",)$(if $(LANGUAGE), --language "$(LANGUAGE)",)

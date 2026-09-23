@@ -15,9 +15,14 @@ target/
 dist/
 build/
 .data/
+node_modules/
+playwright-report/
+test-results/
 .logs/
 tests/fixtures/media/*
 !tests/fixtures/media/README.md
 !tests/fixtures/media/*.md
 # 本地真实媒体样本：只用于本地回放，不入库
 video/
+
+*.tsbuildinfo

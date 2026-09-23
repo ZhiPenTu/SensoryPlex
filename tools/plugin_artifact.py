@@ -21,6 +21,7 @@ import yaml
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 # 已知的本地常驻插件包（路径 → 提供 digest/sbom 的模块）。
 KNOWN_PLUGINS = {
+    "plugins/python/processors/asr-whisper-mlx": "edge_material_plugin_asr_whisper_mlx.artifact",
     "plugins/python/processors/vlm-moondream": "edge_material_plugin_vlm_moondream.artifact",
 }
 

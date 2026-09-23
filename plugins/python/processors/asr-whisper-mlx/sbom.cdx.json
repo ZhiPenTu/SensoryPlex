@@ -1,0 +1,51 @@
+{
+  "bomFormat": "CycloneDX",
+  "components": [
+    {
+      "name": "edge-material-sdk",
+      "type": "library",
+      "version": "unspecified"
+    },
+    {
+      "name": "grpcio>=1.71,<1.72",
+      "type": "library",
+      "version": "unspecified"
+    },
+    {
+      "name": "mlx-whisper>=0.4,<0.5",
+      "type": "library",
+      "version": "unspecified"
+    },
+    {
+      "name": "numpy>=2",
+      "type": "library",
+      "version": "unspecified"
+    },
+    {
+      "name": "scipy>=1.11",
+      "type": "library",
+      "version": "unspecified"
+    }
+  ],
+  "metadata": {
+    "component": {
+      "name": "edge-material-plugin-asr-whisper-mlx",
+      "properties": [
+        {
+          "name": "sensoryplex:package_digest",
+          "value": "sha256:4bfaa5fb91cf96a8ab4710419d558edf581ba4171481083a3eb526afb99ef763"
+        }
+      ],
+      "type": "application",
+      "version": "0.1.0"
+    },
+    "tools": [
+      {
+        "name": "sensoryplex-plugin-artifact",
+        "version": "0.1.0"
+      }
+    ]
+  },
+  "specVersion": "1.5",
+  "version": 1
+}

@@ -9,3 +9,6 @@ __pycache__
 .pytest_cache
 .ruff_cache
 tests/fixtures/media
+**/node_modules
+**/dist
+video

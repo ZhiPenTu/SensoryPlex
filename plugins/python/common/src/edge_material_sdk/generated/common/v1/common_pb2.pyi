@@ -145,7 +145,7 @@ class BufferLocator(_message.Message):
     def __init__(self, handle: _Optional[str] = ..., offset: _Optional[int] = ..., length: _Optional[int] = ...) -> None: ...
 
 class BufferFormat(_message.Message):
-    __slots__ = ("pixel_format", "width", "height", "strides", "sample_rate", "channels", "display_rotation_deg", "pixel_aspect_ratio_num", "pixel_aspect_ratio_den", "source_bit_depth", "color_primaries", "transfer_characteristics", "matrix_coefficients")
+    __slots__ = ("pixel_format", "width", "height", "strides", "sample_rate", "channels", "display_rotation_deg", "pixel_aspect_ratio_num", "pixel_aspect_ratio_den", "source_bit_depth", "color_primaries", "transfer_characteristics", "matrix_coefficients", "sample_format")
     PIXEL_FORMAT_FIELD_NUMBER: _ClassVar[int]
     WIDTH_FIELD_NUMBER: _ClassVar[int]
     HEIGHT_FIELD_NUMBER: _ClassVar[int]
@@ -159,6 +159,7 @@ class BufferFormat(_message.Message):
     COLOR_PRIMARIES_FIELD_NUMBER: _ClassVar[int]
     TRANSFER_CHARACTERISTICS_FIELD_NUMBER: _ClassVar[int]
     MATRIX_COEFFICIENTS_FIELD_NUMBER: _ClassVar[int]
+    SAMPLE_FORMAT_FIELD_NUMBER: _ClassVar[int]
     pixel_format: str
     width: int
     height: int
@@ -172,7 +173,8 @@ class BufferFormat(_message.Message):
     color_primaries: ColorPrimaries
     transfer_characteristics: TransferCharacteristics
     matrix_coefficients: MatrixCoefficients
-    def __init__(self, pixel_format: _Optional[str] = ..., width: _Optional[int] = ..., height: _Optional[int] = ..., strides: _Optional[_Iterable[int]] = ..., sample_rate: _Optional[int] = ..., channels: _Optional[int] = ..., display_rotation_deg: _Optional[int] = ..., pixel_aspect_ratio_num: _Optional[int] = ..., pixel_aspect_ratio_den: _Optional[int] = ..., source_bit_depth: _Optional[int] = ..., color_primaries: _Optional[_Union[ColorPrimaries, str]] = ..., transfer_characteristics: _Optional[_Union[TransferCharacteristics, str]] = ..., matrix_coefficients: _Optional[_Union[MatrixCoefficients, str]] = ...) -> None: ...
+    sample_format: str
+    def __init__(self, pixel_format: _Optional[str] = ..., width: _Optional[int] = ..., height: _Optional[int] = ..., strides: _Optional[_Iterable[int]] = ..., sample_rate: _Optional[int] = ..., channels: _Optional[int] = ..., display_rotation_deg: _Optional[int] = ..., pixel_aspect_ratio_num: _Optional[int] = ..., pixel_aspect_ratio_den: _Optional[int] = ..., source_bit_depth: _Optional[int] = ..., color_primaries: _Optional[_Union[ColorPrimaries, str]] = ..., transfer_characteristics: _Optional[_Union[TransferCharacteristics, str]] = ..., matrix_coefficients: _Optional[_Union[MatrixCoefficients, str]] = ..., sample_format: _Optional[str] = ...) -> None: ...
 
 class BufferLease(_message.Message):
     __slots__ = ("lease_id", "expires_at_unix_ms", "read_only")

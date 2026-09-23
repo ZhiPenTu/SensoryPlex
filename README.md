@@ -49,13 +49,30 @@ make stream-up && make live-check
 `srtsink` 把授权样本直推 SRT（不经 RTMP 转封装、不占用 OBS 会话），再跑四个场景
 （稳定窗口、断流恢复、无源失败、实时数据面交接）。
 
+## 素材工作台
+
+已提供独立前端 `apps/console` 和模块化后端 `services/api`，可登录、上传与预览视频、
+保存插件配置和处理方案、创建任务草稿、查询真实素材、管理业务凭据和查看审计。
+安装执行器、媒体准入与任务执行仍待接入，界面明确显示不可用；不会生成演示模型结果。
+
+```sh
+make console-build
+make console-prepare
+make console-api
+```
+
+访问 <http://127.0.0.1:8091>；账户 `admin`，随机密码位于 `.data/console-preview/admin-password`。
+预览使用独立 schema，不修改旧 Gateway 数据。开发与部署细节见 [Console 运行手册](docs/runbooks/console.md)。
+
 ## 工程结构
 
 ```text
 proto/                  common / material / runtime / gateway 的版本化契约
 crates/                 runtime、media、timeline、storage、execution、sdk
 plugins/python/common/  edge_material_sdk 与生成的 Python 消息
-services/gateway/       FastAPI 与 PostgreSQL 元数据适配器
+apps/console/           React + TypeScript + Vite 素材工作台
+services/api/           模块化 Business / Admin / Identity API
+services/gateway/       旧 Gateway 导入与启动兼容入口
 db/migrations/          只追加的显式 PostgreSQL 迁移
 config/pipelines/       文件与 SRT 实时接入的 pipeline 配置
 deploy/compose/         本地容器基础设施
@@ -67,6 +84,8 @@ tools/                  配置、代码生成、迁移、测试与真实媒体�
 
 - [技术选型 ADR 与 V1 实施蓝图](技术选型ADR与V1实施蓝图.md)
 - [开放式插件开发文档](开放式插件开发文档.md)
+- [素材工作台 MVP 工程设计稿（应用准备流程已实现）](docs/design/console-mvp.md)
+- [ADR-013：应用 API 模块化合并与部署边界](docs/adr/ADR-013-应用API模块化合并与部署边界.md)
 - [ADR-009：媒体格式支持矩阵与拒绝语义](docs/adr/ADR-009-媒体格式支持矩阵与拒绝语义.md)
 - [ADR-010：跨进程数据面的安全边界与可见性](docs/adr/ADR-010-跨进程数据面的安全边界.md)
 - [实现状态与后续阶段](docs/implementation-status.md)

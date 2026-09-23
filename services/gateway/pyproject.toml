@@ -4,12 +4,11 @@ version = "0.1.0"
 description = "Authenticated metadata query gateway for SensoryPlex"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-  "edge-material-sdk", "fastapi>=0.115,<1", "uvicorn>=0.34,<1",
-  "pydantic-settings>=2.8,<3", "psycopg[binary,pool]>=3.2,<4",
+  "sensoryplex-api",
 ]
 
 [tool.uv.sources]
-edge-material-sdk = { workspace = true }
+sensoryplex-api = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

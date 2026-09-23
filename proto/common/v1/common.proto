@@ -80,6 +80,10 @@ message BufferFormat {
   ColorPrimaries color_primaries = 11;
   TransferCharacteristics transfer_characteristics = 12;
   MatrixCoefficients matrix_coefficients = 13;
+  // Interleaved sample layout of the decoded audio payload (`F32LE`, ...). Empty means unknown:
+  // a reader must not assume a layout, because interpreting samples with the wrong width
+  // silently changes what a downstream model transcribes.
+  string sample_format = 14;
 }
 
 // Color description of the source payload. UNSPECIFIED means unknown, which must not be read

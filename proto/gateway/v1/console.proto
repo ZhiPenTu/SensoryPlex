@@ -1,0 +1,64 @@
+syntax = "proto3";
+package edge.material.gateway.v1;
+
+import "google/protobuf/struct.proto";
+
+// Console metadata contracts. Execution readiness is never implied by a saved draft.
+message LoginRequest { string username = 1; string password = 2; }
+// Explicit demo deployments only; never returns a real administrator credential.
+message DemoAccount { bool enabled = 1; string username = 2; string password = 3; }
+message Identity {
+  string principal = 1;
+  string display_name = 2;
+  repeated string roles = 3;
+  repeated string permissions = 4;
+  string csrf_token = 5;
+}
+message ApiError { string detail = 1; string reason_code = 2; string trace_id = 3; bool retryable = 4; }
+message Capability { string name = 1; bool available = 2; string reason = 3; }
+message ConsoleStatus { repeated Capability capabilities = 1; string schema_version = 2; }
+message CreateUpload { string filename = 1; uint64 size_bytes = 2; string content_type = 3; }
+message Upload {
+  string id = 1; string filename = 2; uint64 size_bytes = 3; string content_type = 4;
+  string state = 5; string sha256 = 6; string created_at = 7; string reason = 8;
+}
+message UploadList { repeated Upload items = 1; uint32 total = 2; }
+message PluginEntry {
+  string id = 1; string name = 2; string version = 3; string description = 4;
+  string digest = 5; string trust = 6; string state = 7;
+  repeated string consumes = 8; repeated string produces = 9;
+  google.protobuf.Struct config_schema = 10; string reason = 11;
+}
+message PluginList { repeated PluginEntry items = 1; }
+message SavePluginConfig { string plugin_id = 1; string name = 2; google.protobuf.Struct config = 3; }
+message PluginConfig {
+  string id = 1; string plugin_id = 2; string name = 3; uint32 revision = 4;
+  google.protobuf.Struct config = 5; string config_hash = 6; string created_at = 7;
+}
+message PluginConfigList { repeated PluginConfig items = 1; uint32 total = 2; }
+message SavePipeline { string name = 1; string description = 2; string plugin_id = 3; string config_id = 4; }
+message Pipeline {
+  string id = 1; string name = 2; string description = 3; string plugin_id = 4;
+  string config_id = 5; string state = 6; uint32 revision = 7; string created_at = 8;
+  string plugin_digest = 9;
+}
+message PipelineList { repeated Pipeline items = 1; uint32 total = 2; }
+message SaveJobDraft { string asset_id = 1; string pipeline_id = 2; string name = 3; }
+message JobDraft {
+  string id = 1; string asset_id = 2; string pipeline_id = 3; string name = 4;
+  string state = 5; string created_at = 6; string reason = 7;
+}
+message JobDraftList { repeated JobDraft items = 1; uint32 total = 2; }
+message CreateToken { string name = 1; repeated string scopes = 2; uint32 expires_in_days = 3; }
+message AccessToken {
+  string id = 1; string name = 2; repeated string scopes = 3; string created_at = 4;
+  string expires_at = 5; bool revoked = 6; string token = 7;
+}
+message TokenList { repeated AccessToken items = 1; uint32 total = 2; }
+message AuditEvent { string id = 1; string actor = 2; string action = 3; string target = 4; string created_at = 5; }
+message AuditList { repeated AuditEvent items = 1; uint32 total = 2; }
+message CreateUser { string username = 1; string display_name = 2; string password = 3; repeated string roles = 4; }
+message UpdateUser { string display_name = 1; repeated string roles = 2; bool disabled = 3; optional string password = 4; }
+message User { string username = 1; string display_name = 2; repeated string roles = 3; bool disabled = 4; }
+message UserList { repeated User items = 1; uint32 total = 2; }
+message EmptyResponse {}

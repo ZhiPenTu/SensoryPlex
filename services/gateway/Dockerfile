@@ -3,12 +3,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 UV_LINK_MODE=copy
 WORKDIR /app
 COPY --from=ghcr.io/astral-sh/uv@sha256:73d2665b478d8fa2de1cf105c6841f8e9cb6b09e568fc7700440c09f8fcd7ac4 /uv /usr/local/bin/uv
 COPY pyproject.toml uv.lock ./
-COPY plugins/python/common/pyproject.toml plugins/python/common/pyproject.toml
-COPY services/gateway/pyproject.toml services/gateway/pyproject.toml
-RUN --mount=type=cache,id=sensoryplex-uv,target=/root/.cache/uv uv sync --frozen --no-dev --no-install-workspace
-COPY plugins/python/common plugins/python/common
+COPY plugins/python plugins/python
+COPY services/api services/api
 COPY services/gateway services/gateway
-RUN --mount=type=cache,id=sensoryplex-uv,target=/root/.cache/uv uv sync --frozen --no-dev --no-editable
+RUN --mount=type=cache,id=sensoryplex-uv,target=/root/.cache/uv uv sync --frozen --no-dev --no-editable --package sensoryplex-gateway
 COPY tools/migrate.py tools/migrate.py
 COPY db/migrations db/migrations
 RUN groupadd --gid 10001 sensoryplex && useradd --uid 10001 --gid 10001 --no-create-home sensoryplex

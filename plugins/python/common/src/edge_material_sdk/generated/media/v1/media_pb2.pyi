@@ -154,20 +154,22 @@ class RejectedTrack(_message.Message):
     def __init__(self, track_kind: _Optional[str] = ..., code: _Optional[str] = ..., detail: _Optional[str] = ..., container: _Optional[str] = ..., decoder_element: _Optional[str] = ...) -> None: ...
 
 class AudioSegment(_message.Message):
-    __slots__ = ("segment_id", "time_range", "sample_rate", "channels", "bytes", "partial")
+    __slots__ = ("segment_id", "time_range", "sample_rate", "channels", "bytes", "partial", "sample_format")
     SEGMENT_ID_FIELD_NUMBER: _ClassVar[int]
     TIME_RANGE_FIELD_NUMBER: _ClassVar[int]
     SAMPLE_RATE_FIELD_NUMBER: _ClassVar[int]
     CHANNELS_FIELD_NUMBER: _ClassVar[int]
     BYTES_FIELD_NUMBER: _ClassVar[int]
     PARTIAL_FIELD_NUMBER: _ClassVar[int]
+    SAMPLE_FORMAT_FIELD_NUMBER: _ClassVar[int]
     segment_id: str
     time_range: _common_pb2.TimeRange
     sample_rate: int
     channels: int
     bytes: int
     partial: bool
-    def __init__(self, segment_id: _Optional[str] = ..., time_range: _Optional[_Union[_common_pb2.TimeRange, _Mapping]] = ..., sample_rate: _Optional[int] = ..., channels: _Optional[int] = ..., bytes: _Optional[int] = ..., partial: bool = ...) -> None: ...
+    sample_format: str
+    def __init__(self, segment_id: _Optional[str] = ..., time_range: _Optional[_Union[_common_pb2.TimeRange, _Mapping]] = ..., sample_rate: _Optional[int] = ..., channels: _Optional[int] = ..., bytes: _Optional[int] = ..., partial: bool = ..., sample_format: _Optional[str] = ...) -> None: ...
 
 class AudioSegmentReport(_message.Message):
     __slots__ = ("segment_ms", "segments", "partial_segments", "bytes", "listed", "listed_limit", "dropped_samples", "discontinuities", "drop_reasons")

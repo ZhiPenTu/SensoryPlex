@@ -33,6 +33,25 @@ jobs:
       - run: make integration
       - run: make runtime-smoke
 
+  check-console:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: apps/console/package-lock.json
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.11.6'
+      - run: uv sync --frozen
+      - run: make proto
+      - run: git diff --exit-code -- apps/console/src/api/contracts.ts
+      - run: npm --prefix apps/console ci
+      - run: npm --prefix apps/console run format:check
+      - run: npm --prefix apps/console run build
+
   check-apple-silicon:
     # macOS 是一等端侧目标（ADR-008）；容器集成测试仍留在 ubuntu，
     # 因为 macOS runner 上的 service container 行为未经本项目验证。

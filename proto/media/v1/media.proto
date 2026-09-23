@@ -142,6 +142,8 @@ message AudioSegment {
   uint64 bytes = 5;
   // True when the segment is shorter than the configured length because the stream ended.
   bool partial = 6;
+  // Interleaved sample layout of the bytes this segment carries; mirrors BufferFormat.
+  string sample_format = 7;
 }
 
 message AudioSegmentReport {

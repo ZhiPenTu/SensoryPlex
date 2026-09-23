@@ -1,7 +1,13 @@
 # 服务边界
 
-已实现 `gateway/`：REST、认证、owner 查询过滤，以及 PostgreSQL metadata adapter。
-Rust `crates/runtime` 提供独立 gRPC 控制进程入口。
+已实现 `api/`：在一个 FastAPI 进程中装配 Business、Admin 与 Identity 路由，
+共用身份与 PostgreSQL；媒体上传使用独立异步连接池。`gateway/` 是旧导入与启动入口的兼容层，
+不再维护独立查询实现。前端位于 `apps/console`，Rust `crates/runtime` 保持独立控制进程。
+
+工程边界见 [ADR-013](../docs/adr/ADR-013-应用API模块化合并与部署边界.md)，
+[设计稿](../docs/design/console-mvp.md)保留完整 MVP 目标，
+[运行手册](../docs/runbooks/console.md)区分已交付应用准备流程和待接入 Runtime 的动作。
+REST 已接线；MCP / 对外查询 gRPC 尚未接线。没有独立 `admin-api` 进程。
 
 以下服务按 ADR 保留逻辑边界，在对应阶段添加可运行包和容器：
 

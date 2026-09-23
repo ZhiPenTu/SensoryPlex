@@ -1,12 +1,15 @@
-"""模型 worker（调度侧）：发现数据面里的帧，按契约调用插件，收集 observation。
+"""模型 worker（调度侧）：发现数据面里的输入（帧或音频段），按契约调用插件，收集 observation。
 
 三个角色必须分开，否则"跨进程"只是口号：
 1. Runtime（生产者，持有字节与保留表）；
 2. 本进程（worker：只做发现、构造请求、调用插件、对账）；
 3. 插件进程（`edge_material_plugin_vlm_moondream`：自己按 lease 读字节、跑模型）。
 
-本进程**不读**任何帧字节：它从 `List` 只拿到不透明句柄、区间与摘要；真正的字节由插件
+本进程**不读**任何输入字节：它从 `List` 只拿到不透明句柄、区间与摘要；真正的字节由插件
 通过 `BufferHandoffService.Acquire` 领取。因此 worker 的日志与报告里不可能出现原始媒体。
+
+一个 worker 服务所有插件：`--input-kind` 决定它挑哪种 buffer，`--plugin-config` 把插件自己的
+Start 配置整份传下去，而不是让 worker 猜每个插件要什么键。
 """
 
 import argparse
@@ -78,17 +81,31 @@ def main() -> int:
     parser.add_argument("--source-id", default="source_local_file")
     parser.add_argument("--model-endpoint", default="http://127.0.0.1:11434")
     parser.add_argument("--model", default="moondream:v2")
-    parser.add_argument("--max-frames", type=int, default=2)
+    parser.add_argument(
+        "--input-kind",
+        default="video_frame",
+        help="要处理的 buffer 种类（video_frame / audio_segment）",
+    )
+    parser.add_argument(
+        "--plugin-config",
+        default=None,
+        help="插件 Start 配置的 JSON 文件；给出时替代 --model-endpoint/--model",
+    )
+    parser.add_argument("--max-inputs", type=int, default=None, help="最多处理多少个输入")
+    parser.add_argument("--max-frames", type=int, default=2, help="--max-inputs 的兼容别名")
     parser.add_argument("--timeout-s", type=float, default=DEFAULT_TIMEOUT_S)
     parser.add_argument("--report", required=True)
     arguments = parser.parse_args()
+    max_inputs = arguments.max_inputs if arguments.max_inputs is not None else arguments.max_frames
 
     report = {
         "worker_pid": os.getpid(),
         "worker_host": socket.gethostname(),
         "data_plane": arguments.data_plane,
         "plugin": arguments.plugin,
+        "input_kind": arguments.input_kind,
         "observations": [],
+        # 处理过的输入清单（视频帧或音频段）。保留 `frames` 这个键名，验收脚本依赖它。
         "frames": [],
         "failures": [],
     }
@@ -122,11 +139,22 @@ def main() -> int:
 
     start_config = {
         "handoff_endpoint": arguments.data_plane,
-        "endpoint": arguments.model_endpoint,
-        "model": arguments.model,
         "ttl_ms": 30_000,
         "timeout_s": arguments.timeout_s,
     }
+    if arguments.plugin_config:
+        # 插件自己的配置整份传下去；数据面地址由 worker 决定，不被文件覆盖。
+        try:
+            supplied = json.loads(pathlib.Path(arguments.plugin_config).read_text())
+        except (OSError, json.JSONDecodeError) as error:
+            return fail(f"plugin_config_unreadable:{type(error).__name__}")
+        if not isinstance(supplied, dict):
+            return fail("plugin_config_not_an_object")
+        start_config.update(supplied)
+        start_config["handoff_endpoint"] = arguments.data_plane
+    else:
+        start_config["endpoint"] = arguments.model_endpoint
+        start_config["model"] = arguments.model
     validation = plugin.ValidateConfig(
         runtime_pb2.ValidateConfigRequest(config=as_struct(start_config)),
         timeout=arguments.timeout_s,
@@ -158,14 +186,15 @@ def main() -> int:
     }
     report["segment_name_hint"] = "opaque" if listing.segment_name else "missing"
 
-    video = [entry for entry in listing.buffers if entry.kind == "video_frame"]
-    report["video_buffers_available"] = len(video)
-    if not video:
-        return fail("no_video_buffer_to_describe")
-    # 取"最大帧优先"：同一条流里它最有信息量；仍然只处理有限的 max_frames 条。
-    selected = sorted(video, key=lambda entry: entry.length_bytes, reverse=True)[
-        : arguments.max_frames
-    ]
+    inputs = [entry for entry in listing.buffers if entry.kind == arguments.input_kind]
+    report["input_buffers_available"] = len(inputs)
+    if arguments.input_kind == "video_frame":
+        # 兼容既有验收脚本的键名。
+        report["video_buffers_available"] = len(inputs)
+    if not inputs:
+        return fail(f"no_{arguments.input_kind}_buffer_to_process")
+    # 取"最大输入优先"：同一条流里它最有信息量；仍然只处理有限的 max_inputs 条。
+    selected = sorted(inputs, key=lambda entry: entry.length_bytes, reverse=True)[:max_inputs]
     run_id = "run_" + stable_id(arguments.source_id, *[entry.buffer_id for entry in selected])
 
     for entry in selected:
@@ -196,6 +225,7 @@ def main() -> int:
             report["frames"].append(
                 {
                     "buffer_id": entry.buffer_id,
+                    "kind": entry.kind,
                     "observation_id": observation.observation_id,
                     "time_range_ms": [
                         observation.time_range.start_ms,

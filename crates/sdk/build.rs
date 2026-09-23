@@ -9,6 +9,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "media/v1/live.proto",
         "runtime/v1/runtime.proto",
         "gateway/v1/gateway.proto",
+        "gateway/v1/console.proto",
     ];
     let paths: Vec<_> = files.iter().map(|file| format!("{root}/{file}")).collect();
     for path in &paths {

@@ -13,6 +13,12 @@ pub const MIN_AUDIO_SEGMENT_MS: u32 = 200;
 pub const MAX_AUDIO_SEGMENT_MS: u32 = 30_000;
 /// 解码后的音频强制为 `F32LE`，因此一帧字节数为 `channels * 4`。
 pub const AUDIO_SAMPLE_BYTES: usize = 4;
+/// 解码后的音频唯一被承认的样本布局，与归一化链上的 capsfilter 是同一个值。
+///
+/// 布局是跨进程契约的一部分：插件要按它解释字节。因此这里**只**接受这一种布局，
+/// 别的布局显式记账丢弃（`audio_unsupported_sample_format`），既不猜宽度、
+/// 也不按 4 字节/样本去解释一段未知布局的字节。
+pub const AUDIO_SAMPLE_FORMAT: &str = "F32LE";
 /// 样本时长按整毫秒四舍五入传入，因此相邻样本几乎不会精确对齐。
 /// 只有达到此阈值的空洞才算真正的 discontinuity；更小的只是算术误差，
 /// 若据此关闭 segment 会无谓地切碎流。
@@ -91,6 +97,7 @@ impl AudioSegmenter {
         &mut self,
         sample_rate: u32,
         channels: u32,
+        audio_format: &str,
         pts_ms: i64,
         duration_ms: i64,
         bytes: &[u8],
@@ -99,6 +106,11 @@ impl AudioSegmenter {
             return Err(MediaError::UnsupportedSource(
                 "audio_segment_format_unknown".into(),
             ));
+        }
+        if audio_format != AUDIO_SAMPLE_FORMAT {
+            self.dropped_samples += 1;
+            self.drop_reasons.insert("audio_unsupported_sample_format");
+            return Ok(None);
         }
         if (self.sample_rate, self.channels) == (0, 0) {
             self.sample_rate = sample_rate;
@@ -195,7 +207,7 @@ mod tests {
 
     fn push(segmenter: &mut AudioSegmenter, pts_ms: i64) -> Option<PendingSegment> {
         segmenter
-            .push(RATE, 1, pts_ms, 10, &[0u8; MONO_10MS])
+            .push(RATE, 1, AUDIO_SAMPLE_FORMAT, pts_ms, 10, &[0u8; MONO_10MS])
             .unwrap()
     }
 
@@ -247,7 +259,7 @@ mod tests {
         let mut pts_ms = 0i64;
         for _ in 0..430 {
             if let Some(segment) = segmenter
-                .push(44_100, 1, pts_ms, 23, &[0u8; 4_096])
+                .push(44_100, 1, AUDIO_SAMPLE_FORMAT, pts_ms, 23, &[0u8; 4_096])
                 .unwrap()
             {
                 segments.push(segment);
@@ -274,7 +286,9 @@ mod tests {
         assert!(AudioSegmenter::new(MIN_AUDIO_SEGMENT_MS - 1).is_err());
         assert!(AudioSegmenter::new(MAX_AUDIO_SEGMENT_MS + 1).is_err());
         let mut segmenter = AudioSegmenter::new(200).unwrap();
-        assert!(segmenter.push(0, 0, 0, 10, &[0u8; 4]).is_err());
+        assert!(segmenter
+            .push(0, 0, AUDIO_SAMPLE_FORMAT, 0, 10, &[0u8; 4])
+            .is_err());
         let long = AudioSegmenter::new(DEFAULT_AUDIO_SEGMENT_MS).unwrap();
         assert_eq!(long.segment_ms(), DEFAULT_AUDIO_SEGMENT_MS);
     }
@@ -282,8 +296,14 @@ mod tests {
     #[test]
     fn misaligned_or_untimed_samples_are_dropped_with_a_reason() {
         let mut segmenter = AudioSegmenter::new(200).unwrap();
-        assert!(segmenter.push(RATE, 2, 0, 10, &[0u8; 3]).unwrap().is_none());
-        assert!(segmenter.push(RATE, 2, 10, 0, &[0u8; 8]).unwrap().is_none());
+        assert!(segmenter
+            .push(RATE, 2, AUDIO_SAMPLE_FORMAT, 0, 10, &[0u8; 3])
+            .unwrap()
+            .is_none());
+        assert!(segmenter
+            .push(RATE, 2, AUDIO_SAMPLE_FORMAT, 10, 0, &[0u8; 8])
+            .unwrap()
+            .is_none());
         assert_eq!(segmenter.dropped_samples(), 2);
         assert_eq!(
             segmenter.drop_reasons(),
@@ -297,7 +317,9 @@ mod tests {
         let mut error = None;
         for _ in 0..200 {
             // 每次都是同一个时间戳：segment 无法自行关闭。
-            error = segmenter.push(RATE, 1, 0, 10, &[0u8; MONO_10MS]).err();
+            error = segmenter
+                .push(RATE, 1, AUDIO_SAMPLE_FORMAT, 0, 10, &[0u8; MONO_10MS])
+                .err();
             if error.is_some() {
                 break;
             }
@@ -313,8 +335,27 @@ mod tests {
         let mut segmenter = AudioSegmenter::new(200).unwrap();
         push(&mut segmenter, 0);
         assert!(matches!(
-            segmenter.push(48_000, 2, 10, 10, &[0u8; 8]),
+            segmenter.push(48_000, 2, AUDIO_SAMPLE_FORMAT, 10, 10, &[0u8; 8]),
             Err(MediaError::UnsupportedSource(reason)) if reason == "audio_format_changed_mid_stream"
         ));
+    }
+
+    #[test]
+    fn an_unknown_sample_layout_is_dropped_instead_of_guessed() {
+        // 布局未知时不能按 4 字节/样本解释字节：那会静默改变下游模型的输入。
+        let mut segmenter = AudioSegmenter::new(200).unwrap();
+        assert!(segmenter
+            .push(RATE, 1, "S16LE", 0, 10, &[0u8; MONO_10MS])
+            .unwrap()
+            .is_none());
+        assert!(segmenter
+            .push(RATE, 1, "", 10, 10, &[0u8; MONO_10MS])
+            .unwrap()
+            .is_none());
+        assert_eq!(segmenter.dropped_samples(), 2);
+        assert_eq!(
+            segmenter.drop_reasons(),
+            vec!["audio_unsupported_sample_format"]
+        );
     }
 }

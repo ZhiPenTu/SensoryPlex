@@ -27,7 +27,7 @@ use crate::handoff::{BufferHandoff, RetainPolicy};
 use crate::lease::LeaseRegistry;
 use crate::live::{LiveConfig, LiveStats, StallTracker};
 use crate::sampler::{AdaptiveSampler, Decision, FrameSignature, SamplingPolicy, SkipReason};
-use crate::segment::{AudioSegmenter, PendingSegment};
+use crate::segment::{AudioSegmenter, PendingSegment, AUDIO_SAMPLE_FORMAT};
 use crate::MediaError;
 
 /// typefind 与 decodebin 之间必须隔一条 queue：实测（`macos-aarch64`，GStreamer 1.28.7）
@@ -319,7 +319,7 @@ impl GstDecoder {
                 TrackKind::Audio,
                 "audioconvert",
                 gst::Caps::builder("audio/x-raw")
-                    .field("format", "F32LE")
+                    .field("format", AUDIO_SAMPLE_FORMAT)
                     .build(),
                 &config,
             )?,
@@ -1203,6 +1203,8 @@ fn buffer_format(kind: TrackKind, sample: &DecodedSample) -> BufferFormat {
         TrackKind::Audio => {
             format.sample_rate = sample.sample_rate;
             format.channels = sample.channels;
+            // 样本布局也必须显式带出去：插件按字节解释音频，缺了它只能猜宽度。
+            format.sample_format = sample.audio_format.clone();
         }
     }
     format
@@ -1742,6 +1744,7 @@ impl<'a> DecodeSession<'a> {
             Some(segmenter) => segmenter.push(
                 sample.sample_rate,
                 sample.channels,
+                &sample.audio_format,
                 pts_ms,
                 duration_ms,
                 &sample.bytes,
@@ -1769,6 +1772,18 @@ impl<'a> DecodeSession<'a> {
             "seg-{}-{:08}",
             self.stream_short, self.segment_report.segments
         );
+        let time_range = TimeRange {
+            start_ms: segment.start_ms,
+            end_ms: segment.end_ms,
+        };
+        let format = BufferFormat {
+            sample_rate,
+            channels,
+            // 走到这里的样本布局已经在 segmenter 里被核实为 F32LE（其它布局被显式丢弃），
+            // 所以这里写的就是实测值，不是"默认值"。
+            sample_format: AUDIO_SAMPLE_FORMAT.to_string(),
+            ..Default::default()
+        };
         let descriptor = hand_off(
             &mut self.arena,
             &mut self.leases,
@@ -1776,20 +1791,27 @@ impl<'a> DecodeSession<'a> {
                 buffer_id: segment_id.clone(),
                 kind: AUDIO_SEGMENT_KIND,
                 stream_id: self.stream_id,
-                time_range: TimeRange {
-                    start_ms: segment.start_ms,
-                    end_ms: segment.end_ms,
-                },
-                format: BufferFormat {
-                    sample_rate,
-                    channels,
-                    ..Default::default()
-                },
+                time_range,
+                format: format.clone(),
             },
             &segment.bytes,
             self.now_ms,
             &mut self.counters,
         )?;
+        // 真实跨进程交接：段描述符必须和 `audio_pcm` 一样进保留表，否则插件端永远看不到
+        // `audio_segment` 这类输入——进程内 arena 与 lease 只够本进程自证，不能替代数据面。
+        // 容量类拒绝（保留表满、单类配额）是**有界行为**，已经计入 `BufferHandoff` 的统计；
+        // 契约违规才让本次 decode 失败。
+        if let Some(handoff) = self.handoff.as_mut() {
+            handoff.retain_or_reject(
+                &segment_id,
+                AUDIO_SEGMENT_KIND,
+                self.stream_id,
+                time_range,
+                format,
+                &segment.bytes,
+            )?;
+        }
         if self.segment_report.listed.len() < MAX_LISTED_SEGMENTS {
             self.segment_report.listed.push(media::AudioSegment {
                 segment_id: descriptor.buffer_id,
@@ -1798,6 +1820,7 @@ impl<'a> DecodeSession<'a> {
                 channels,
                 bytes: segment.bytes.len() as u64,
                 partial: segment.partial,
+                sample_format: AUDIO_SAMPLE_FORMAT.to_string(),
             });
         }
         Ok(())
@@ -2389,6 +2412,54 @@ mod tests {
                 .expect("a report is always attached")
                 .observed
         );
+    }
+
+    /// 音频段必须和 `audio_pcm` 一样落到跨进程保留表里：只有进程内的 arena + lease
+    /// 自证过不了验收——插件端读的是保留表。这条测试就是"段进了数据面"的证据。
+    #[test]
+    fn audio_segments_reach_the_cross_process_retained_table() {
+        let run = retained_run(1024 * 1024, 8, BackpressurePolicy::default());
+        let mut subject =
+            DecodeSession::new("stream-asr", "asr", "arena-asr-segment", &run).expect("session");
+        // 五秒 1 kHz 的连续音频，每段 5 s，正好关闭一个完整段。
+        for index in 0..5i64 {
+            let mut sample = audio_sample(Some(index * 1_000), Some(1_000));
+            sample.bytes = vec![0u8; 64];
+            subject.push(sample).expect("sample is admitted");
+        }
+        let (plane, handoff) = subject.finish().expect("session finishes");
+        let handoff = handoff.expect("retention stays alive for the consumer");
+        assert_eq!(
+            handoff.retained_by_kind().get("audio_segment").copied(),
+            Some(1),
+            "the segment descriptor must be offerable to another process"
+        );
+        let segment = handoff
+            .list()
+            .iter()
+            .find(|held| held.kind == "audio_segment")
+            .expect("the segment is in the retained table");
+        assert_eq!(
+            (segment.time_range.start_ms, segment.time_range.end_ms),
+            (0, 5_000)
+        );
+        assert_eq!(segment.format.sample_rate, 48_000);
+        assert_eq!(segment.format.channels, 2);
+        assert_eq!(
+            segment.format.sample_format, AUDIO_SAMPLE_FORMAT,
+            "the consumer must not have to guess the sample layout"
+        );
+        assert_eq!(
+            segment.length, 320,
+            "five 64-byte samples are the segment payload"
+        );
+        let listed = &plane
+            .audio_segments
+            .as_ref()
+            .expect("a segment report")
+            .listed;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].segment_id, segment.buffer_id);
     }
 
     #[test]
