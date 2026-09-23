@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sensoryplex:plugin:ocr-rapidocr:config:v1",
+  "title": "ocr-rapidocr Start(config)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["handoff_endpoint"],
+  "properties": {
+    "handoff_endpoint": {
+      "type": "string",
+      "description": "Runtime 数据面 gRPC 地址（只允许 host:port，不含 scheme）"
+    },
+    "provider": {
+      "enum": ["cpu", "coreml"],
+      "default": "cpu",
+      "description": "ONNX Runtime 执行后端；coreml 必须真的拿到 CoreMLExecutionProvider，否则显式失败"
+    },
+    "model_dir": {
+      "type": "string",
+      "default": "",
+      "description": "本机已有的 PP-OCR ONNX 权重目录；设置后摘要按该目录里实际加载的文件实测"
+    },
+    "model_id": {
+      "type": "string",
+      "default": "PP-OCRv6_mobile",
+      "description": "模型组合的标识（写进 provenance，不影响权重身份）"
+    },
+    "model_revision": {
+      "type": "string",
+      "default": "",
+      "description": "可选的权重 revision 说明；留空时按权重来源（bundled/local_dir）填写"
+    },
+    "text_score": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "maximum": 1,
+      "default": 0.5,
+      "description": "引擎的文本置信阈值（模型自己的过滤参数，不是校准置信度）"
+    },
+    "ttl_ms": {"type": "integer", "minimum": 50, "maximum": 60000, "default": 30000},
+    "timeout_s": {"type": "number", "exclusiveMinimum": 0, "default": 120}
+  }
+}

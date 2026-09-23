@@ -159,10 +159,13 @@ plugin-artifact:
 	$(EXEC_API) $(PY_API) tools/validate_plugin.py plugins/python/processors/asr-whisper-mlx/plugin.yaml
 	$(EXEC_API) $(PY_API) tools/plugin_artifact.py --sbom plugins/python/processors/vlm-moondream
 	$(EXEC_API) $(PY_API) tools/validate_plugin.py plugins/python/processors/vlm-moondream/plugin.yaml
+	$(EXEC_API) $(PY_API) tools/plugin_artifact.py --sbom plugins/python/processors/ocr-rapidocr
+	$(EXEC_API) $(PY_API) tools/validate_plugin.py plugins/python/processors/ocr-rapidocr/plugin.yaml
 
 plugin-artifact-check:
 	$(EXEC_API) $(PY_API) tools/plugin_artifact.py --check plugins/python/processors/asr-whisper-mlx || true
 	$(EXEC_API) $(PY_API) tools/plugin_artifact.py --check plugins/python/processors/vlm-moondream || true
+	$(EXEC_API) $(PY_API) tools/plugin_artifact.py --check plugins/python/processors/ocr-rapidocr || true
 
 # 模型插件链路验收（M8）：需要本机 VLM 服务（默认 http://127.0.0.1:11434）；
 # cargo build 走主机，verify_model 在容器内执行，MEDIA 通过 bind 进入容器。
@@ -267,3 +270,15 @@ resident-uninstall:
 
 resident-status:
 	uv run python tools/macos_resident.py status --verify-endpoint
+
+# ── OCR 插件链路验收（M8，ADR-016） ───────────────────────────────────────
+# 权重随 rapidocr 轮子携带（也可用 MODEL_DIR 指向本机目录）；cargo 走主机，
+# verify_ocr 在容器内执行，MEDIA 通过 bind 进入容器。
+# EXPECT=text 用于有文字的样本（要求有块）；EXPECT=empty 用于无文字样本
+# （要求 blocks=[] 且带 empty_reason，证明"没找到文字"与"处理失败"可区分）。
+# PROVIDER=cpu|coreml：coreml 必须真的被会话选中，否则显式失败（不静默退回 CPU）。
+.PHONY: ocr-check
+ocr-check:
+	@test -n "$(MEDIA)" || { echo "usage: make ocr-check MEDIA=/absolute/path/to/authorized-video.webm [EXPECT=text|empty] [PROVIDER=cpu|coreml]"; exit 1; }
+	$(CARGO_HOST) build --locked --release -p sensoryplex-runtime --features "$(MEDIA_FEATURES)"
+	$(EXEC_API) $(PY_API) tools/verify_ocr.py --media "/host-media/$(notdir $(MEDIA))" --provider "$(if $(PROVIDER),$(PROVIDER),cpu)" --expect "$(if $(EXPECT),$(EXPECT),text)" $(if $(MODEL_DIR),--model-dir "$(MODEL_DIR)",)

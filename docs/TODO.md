@@ -149,10 +149,13 @@
 
 ### M8 模型插件（ASR/OCR/VLM/BGE）
 
-- 状态：**进行中**——两个真实端侧模型（**VLM**、**ASR**）已接入并通过验收；OCR/BGE 与 CoreML/Metal 仍未做。
-  证据见 `docs/verification.md` 的 "M8 模型插件：真实 VLM 端侧接入与观察语义" 与
-  "M10 模型插件：真实 ASR 端侧接入与音频样本布局契约"；设计决策见
-  [ADR-012](adr/ADR-012-模型插件与端侧推理边界.md) 与 [ADR-014](adr/ADR-014-ASR插件与音频样本布局契约.md)。
+- 状态：**进行中**——三个真实端侧模型（**VLM**、**ASR**、**OCR**）已接入并通过验收；
+  BGE（向量）与运行时加速后端的能力上报仍未做。
+  证据见 `docs/verification.md` 的 "M8 模型插件：真实 VLM 端侧接入与观察语义"、
+  "M10 模型插件：真实 ASR 端侧接入与音频样本布局契约" 与 "M8 OCR"；设计决策见
+  [ADR-012](adr/ADR-012-模型插件与端侧推理边界.md)、
+  [ADR-014](adr/ADR-014-ASR插件与音频样本布局契约.md) 与
+  [ADR-016](adr/ADR-016-OCR与ONNX执行后端.md)。
 - 已完成（VLM）：`plugins/python/processors/vlm-moondream` 消费 Runtime 数据面里的真实视频帧
   （经 `LeaseBufferReader` 读字节，非文件名），调用**本机** ollama 的 `moondream:v2` 产出
   `observation.vision.scene_description`：锚点等于源帧半开区间（`timing_source=media_pts`）、
@@ -161,8 +164,9 @@
   `make model-check MEDIA=video/1.mp4` 四进程（编排/生产者/插件/worker）通过：2 帧真实推理，
   单帧端到端 0.6–2.2 s，账目 `released_total=24 retained=0 arena_live_slabs=0`。
 - 验收暴露并修掉 4 个真实缺陷（GET/POST 误用、空闲超时过短、消费者未归还非视频条目、验收脚本键名），详见 ADR-012 §7。
-- 仍未验证（不要当成已完成）：只有 VLM 一个模型，ASR/OCR/BGE 未接入；CoreML/Metal 仍
-  `execution_backend_not_implemented`；`local_native` 插件**未签名**（只在 manifest 写明原因），
+- 仍未验证（不要当成已完成）：BGE（向量）未接入；`coreml` 在插件侧已可选择并通过实测，
+  但运行时（Rust）的能力上报仍把加速后端记为不可用；`metal` 在 ONNX 路径上不存在独立执行后端；
+  `local_native` 插件**未签名**（只在 manifest 写明原因），
   签名/SBOM 只有结构预检；未做 worker 的 durable 幂等、lease 崩溃回收、沙箱与无外网策略的强制执行；
   `golden_path_verified` 恒为 false；只在本机回环 `macos-aarch64` 验收，`linux-x86_64` 与 Mac mini / 跨机未验证。
 - 仍未验证（模型质量）：`moondream:v2` 输出**不稳定**，同一帧两次推理可能不同，本轮实测到一次退化输出。
@@ -174,7 +178,16 @@
   暴露并修掉 5 个真实缺陷（含一个产品缺陷：段从未进跨进程数据面；以及"子段必定落在窗口内"这个
   错误假设——Whisper 退化会给出越窗时间戳）。详见 §M10 与
   [ADR-014](adr/ADR-014-ASR插件与音频样本布局契约.md)。
-- 剩余子项：OCR、BGE（向量），以及按机型档位选择模型（依赖 M5）。
+- 已完成（OCR，2026-09-23）：第三个模型插件 `plugins/python/processors/ocr-rapidocr` 消费数据面里的
+  真实视频帧，用**随包携带**的 PP-OCR 组合权重（det/cls/rec 三份 ONNX）产出带**帧像素坐标**、
+  归一化坐标、来源与显式"无置信度"语义的文字块；
+  `make ocr-check MEDIA=video/samples/screencast-video2commons.480p.vp9.webm`（6 块）与
+  `make ocr-check MEDIA=video/1.mp4 EXPECT=empty`（0 块 + `empty_reason`）四进程通过。
+  模型身份 = **三份权重字节的组合摘要**；`provider=coreml` 必须被会话真正选中，否则显式失败。
+  实测把 CoreML 从"看起来能用"降级成"可选择但不加速"（同帧 216–228 ms vs 1163 ms，
+  ORT 因动态 shape/NMS 子图分区回退到 CPU），详见
+  [ADR-016](adr/ADR-016-OCR与ONNX执行后端.md) 与 `docs/verification.md` 的"M8 OCR"一节。
+- 剩余子项：BGE（向量）、运行时加速后端的能力上报，以及按机型档位选择模型（依赖 M5）。
 
 ### M9 格式准入与显式拒绝（ADR-009，新增格式之前必须先做）
 

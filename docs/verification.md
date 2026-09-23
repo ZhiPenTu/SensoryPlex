@@ -1085,3 +1085,91 @@ Docker 构建尝试在拉取 Node 基础镜像时遇到配置镜像站 `docker.1
 前端构建、Ruff、Prettier 与 11 项 PostgreSQL 集成测试通过。真实浏览器点击后验证用户名为
 `demo`、密码已填入且仍在登录页；再点击登录成功进入视频库并显示“演示用户”，无运行时异常。
 截图：`.data/console-preview/demo-login.png`。
+
+### M8 OCR：真实帧 → 本机 PP-OCR，以及 CoreML 执行后端的实测约束（2026-09-23）
+
+本节记录 M8 的第二个剩余子项：**画面文字识别**（蓝图第 5 周"帧 → 文字块"）。第三个模型插件
+`plugins/python/processors/ocr-rapidocr` 消费 Runtime 数据面里的**真实视频帧**，用**随包携带**的
+PP-OCR ONNX 权重产出带帧像素坐标、来源与显式"无置信度"语义的文字块。决策与边界见
+[ADR-016](adr/ADR-016-OCR与ONNX执行后端.md)。
+
+**接入的模型：** `rapidocr 3.9.2` + `onnxruntime 1.30.0`，权重不再是"下载一个文件"而是
+**三个模型的组合**（det/cls/rec）。身份来自**实际被会话加载的那三个文件**的字节摘要，
+`artifact_digest` 是三者按角色排序折叠的组合摘要（不是配置里的版本号）：
+
+| 角色 | 文件 | 字节 | SHA-256（独立复算） |
+| --- | --- | --- | --- |
+| det | `PP-OCRv6_det_small.onnx` | 9 929 594 | `090f04abcd9d9a7498bc4ebf677e4cb9bdce1fe4197ddb7e529f1ef44e1ff94f` |
+| cls | `ch_ppocr_mobile_v2.0_cls_mobile.onnx` | 585 532 | `e47acedf663230f8863ff1ab0e64dd2d82b838fceb5957146dab185a89d6215c` |
+| rec | `PP-OCRv6_rec_small.onnx` | 21 234 383 | `6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884` |
+| **组合** | — | — | `31df9f5afcc7dacbf15acc380117833d2fece9f894f8e7f533f8b89cd3dc2cf6` |
+
+`tools/verify_ocr.py` **自己**重新计算这四行（独立实现，不调用插件代码），并要求 observation 的
+`provenance.modelArtifactDigest` 与之逐字相等。
+
+**验收命令：** `make ocr-check MEDIA=... [EXPECT=text|empty] [PROVIDER=cpu|coreml]`
+（四进程：编排 / `runtime replay --handoff-listen` / 插件 / `tools/ai_worker.py`）。
+
+#### 实测结果（三个真实样本，全部走完整四进程链路）
+
+| 场景 | 样本 | 帧 | 结果 | 单帧推理 |
+| --- | --- | --- | --- | --- |
+| 有文字（默认 `EXPECT=text`） | `screencast-video2commons.480p.vp9.webm` 854×480 | 2 | 各 **6 块 / 87 字**，首块 `Jak nahrát video do Commons` | 228 ms / 216 ms |
+| 无文字（`EXPECT=empty`） | `video/1.mp4` 540×960（风电塔风景） | 2 | **0 块**，`empty_reason=model_found_no_text` | 170 ms / 142 ms |
+| CoreML（`PROVIDER=coreml`） | 同上 screencast 854×480 | 1 | 6 块（与 CPU 结果一致） | **1163 ms** |
+
+三次运行都通过：`Describe` 只声明 `media.video_frame` / `observation.ocr_blocks` / `cpu_shared_memory`；
+锚点等于源帧半开区间（`timing_source=media_pts`）、`content_hash` 等于该帧 lease 窗口摘要、
+`confidence` 缺省且写明原因、每个块的四点框落在帧内且归一化坐标在 `[0,1]`；
+账目 `released + expired + retained == retained_total`、`retained=0`、`arena_live_slabs=0`；
+插件 stdout/stderr 与 worker 报告都没有媒体名/路径。
+
+#### CoreML 执行后端：选中了，但**不是加速**（本轮最重要的"负面证据"）
+
+| 观察项 | CPU（`provider=cpu`） | CoreML（`provider=coreml`） |
+| --- | --- | --- |
+| 三个会话的 `get_providers()` | `['CPUExecutionProvider']` | `['CoreMLExecutionProvider', 'CPUExecutionProvider']`（首选 CoreML） |
+| 断言 `execution_provider_not_selected` | 通过 | 通过（首选确实是 CoreML） |
+| 同一帧推理耗时 | 216–228 ms | **1163 ms（约 5 倍慢）** |
+| 单引擎 + 一帧常驻内存（`/usr/bin/time -l`） | ≈ 610 MiB | ≈ 2.4 GiB |
+| ORT stderr | 无 | 大量 `E5RT ... unbounded dimension which is not supported ...` 与 `p2o_pd_op_*` |
+
+`unbounded dimension` 说明 PP-OCR 的**动态 shape 与 NMS 子图无法编译成 CoreML 网络**，ORT 把这些
+子图**分区回退到 CPU**。所以"会话首选是 CoreML"**不等于**"全部算子跑在 ANE/GPU"，本版本也因此
+**不宣称 CoreML 加速**：只交付"请求显式、实际 provider 可观测、不一致就显式失败"的可选择后端，
+默认仍是 `cpu`。manifest 的 `resources.memory` 取两条路径的上界加余量（`3Gi`）。
+
+ONNX Runtime 在 macOS 上**没有独立的 Metal EP**（Apple 侧的执行后端就是 CoreML EP），因此本切片
+不引入 `metal` 后端；Apple GPU 的使用在本项目里是间接的：ASR 走 MLX（原生 Metal）、VLM 走 ollama。
+
+#### 本轮暴露并修掉的 3 个真实缺陷（不是"一次就过"）
+
+| # | 现象 | 根因 | 修复 |
+| --- | --- | --- | --- |
+| 1 | `provider=coreml` 时**第一次**实测得到 `execution_provider_not_selected:...CoreMLExecutionProvider`——原因串里的"实际值"和"请求值"是同一个东西 | `_backend_string()` 从 `self.config.provider` 反推"请求了哪个 provider"，而 `self.config` 要到 `configure()` 末尾才赋值；Start 期间它还是**默认的 `cpu`**。于是"请求 CoreML"被拿默认 CPU 去比对——正是本 ADR 要禁止的那类**静默降级**，只不过表现为误报失败而不是误报成功 | 请求值改为**显式入参**（`_session_summary(requested)` / `_backend_string(providers, requested)`），不再从可变状态反推；契约测试 `test_requested_provider_must_actually_be_selected` 锁死两侧（一致→通过、不一致→失败、会话缺失→失败） |
+| 2 | `getattr(rapidocr, "__version__", "")` 恒为空 | `rapidocr` 模块没有 `__version__`（它的模块级 `__getattr__` 会直接抛 `AttributeError`），于是 payload 里的 `engine.runtime_version` 会写成 `unknown`——而它正是"这份结果由哪个运行时算出来的"证据 | 改用 `importlib.metadata.version("rapidocr")`（实测 `3.9.2`）与 `"onnxruntime"`；读不到发行版元数据时显式写 `unknown`，验收脚本把 `unknown` 判为失败 |
+| 3 | 验收脚本自己误判两次：`plugin does not declare it consumes video frames`；`runtime reported unimplemented capabilities: ['max_points_truncated','decode_truncated']` | 前者：拿 **buffer 的 kind**（`video_frame`）去比**能力串**（`media.video_frame`）。后者：`--max-points` 是本次刻意设定的解码上限，运行时把它**诚实**记进 `blockers`，脚本却把所有 `blockers` 当成"能力未实现" | 验收脚本区分 `CONSUMES = "media.video_frame"`；`blockers` 只拒绝含 `not_implemented` 的条目（截断是设定，不是缺失） |
+
+缺陷 1 值得单独记一笔：它的**表现**是"明明选了 CoreML 却报失败"，修掉之后 CoreML 才真正被选中。
+也就是说这套断言的价值不在于"平时是否通过"，而在于它**不依赖默认值**。
+
+#### 测试与静态检查
+
+- 新增 `tests/contracts/test_ocr_plugin_contract.py`：**23 项**。覆盖输入准入（`memory_kind`、
+  `buffer_id`/`kind` 缺失、stream 不匹配）、像素布局四条显式拒绝、**RGBA→BGR 通道顺序**、
+  锚点/摘要/`timing_source`、`confidence` 缺省 + 原因、稳定 observation ID（同字节同 ID、
+  不同摘要不同 ID）、空结果 `empty_reason`、越界（`MAX_BLOCKS` 计数 + 超长块失败）、
+  provider 断言两侧、manifest 摘要/`local_native`/SBOM/schema/网络白名单与可写路径、
+  摘要范围（改说明文字不变、改代码必变）、ONNX 容器探测（空/非 protobuf/正常）、
+  组合摘要顺序无关且覆盖三角色、`installed_version` 不编造版本号。
+- `uv run ruff format --check .` 与 `uv run ruff check .`：全仓通过（101 文件）；
+  `uv run pytest tests/contracts -q`：**112 passed**。
+
+#### 仍未验证（不得当作完成）
+
+- 识别**质量**：没有准确率/召回基准，也没有按语言、字号、字体分层的评测——本切片只保证
+  **链路与几何语义**正确，不保证"认得准"。样本偏拉丁与俄文字符，中文界面样本尚未覆盖。
+- CoreML 的收益：见上，实测更慢；动态 shape 与分区回退未解决。
+- `metal`（ONNX 路径）、`linux-x86_64`、Mac mini、跨机：均未验证。
+- 插件仍未签名（只写明白原因），SBOM 只有结构预检；权重缓存目录与"绝不联网"只有 manifest
+  声明（`allowedHosts: [www.modelscope.cn]`、`writablePaths: []`），没有 DNS/egress 强制执行。

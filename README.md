@@ -45,6 +45,19 @@ make stream-up && make live-check
 
 `make media-test` 只跑解码路径的单元测试（含保留表按种类分配的 A/B 回归），需要 GStreamer 开发文件。
 
+端侧模型插件的验收都是**四个进程**（编排 / 生产者 runtime / 插件 / worker），各需要一份真实授权样本：
+
+```sh
+make model-check MEDIA=/absolute/path/to/authorized-sample.mp4    # VLM（本机 ollama）
+make asr-check   MEDIA=/absolute/path/to/authorized-speech.webm   # ASR（本机 MLX Whisper）
+make ocr-check   MEDIA=/absolute/path/to/authorized-video.webm    # OCR（随包 PP-OCR ONNX）
+```
+
+`make ocr-check` 支持 `EXPECT=empty`：无文字样本上"0 块 + `empty_reason`"才是正确结果，
+用它证明"模型没找到文字"与"处理失败"可区分；`PROVIDER=coreml` 走 CoreML 执行后端，
+拿不到 CoreML 会话会显式失败（不静默退回 CPU，见
+[ADR-016](docs/adr/ADR-016-OCR与ONNX执行后端.md)）。
+
 macOS 常驻形态（`launchd`）在主机的**用户级** LaunchAgents 中运行，按统一内存分级设置上限
 （设计见 [ADR-015](docs/adr/ADR-015-macOS常驻形态与统一内存分级.md)，操作见
 [macOS 常驻手册](docs/runbooks/macos-resident.md)）：
