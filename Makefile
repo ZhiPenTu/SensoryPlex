@@ -52,7 +52,7 @@ CARGO_HOST    ?= $(CARGO)
 PY_HOST       ?= uv run --frozen python
 
 .PHONY: setup configure proto check test integration format infra up down migrate gateway runtime pipeline-check runtime-smoke gateway-smoke media-replay media-check handoff-check backpressure-check
-.PHONY: stream-up stream-down stream-status stream-logs live-check model-check asr-check ocr-check embed-check plugin-artifact capability-check
+.PHONY: stream-up stream-down stream-status stream-logs live-check model-check asr-check ocr-check embed-check index-check plugin-artifact capability-check
 .PHONY: media-test resident-probe resident-install resident-uninstall resident-status
 .PHONY: lint-ruff test-py test-contracts test-integration proto-generate plugin-artifact-check
 
@@ -334,3 +334,14 @@ embed-check:
 	@test -n "$(MEDIA)" || { echo "usage: make embed-check MEDIA=/absolute/path/to/authorized-video.webm [PROVIDER=cpu|coreml] [MODEL_DIR=/path/to/bge-weights] [OBSERVATIONS=/path/to/ocr-ai-worker.json]"; exit 1; }
 	$(CARGO_HOST) build --locked --release -p sensoryplex-runtime --features "$(MEDIA_FEATURES)"
 	$(PY_HOST) tools/verify_embed.py --media "$(MEDIA)" --provider "$(if $(PROVIDER),$(PROVIDER),cpu)" $(if $(MODEL_DIR),--model-dir "$(MODEL_DIR)",) $(if $(OCR_MODEL_DIR),--ocr-model-dir "$(OCR_MODEL_DIR)",) $(if $(OBSERVATIONS),--input-observations "$(OBSERVATIONS)",)
+
+# ── 向量落库与检索闭环验收（M8 剩余，ADR-020） ──────────────────────────────
+# 输入必须是**真实** BGE 观测（`tools/verify_embed.py --keep-workspace` 的 ai-worker.json），
+# 不是自己造的向量：本目标跑真实 PostgreSQL（隔离 schema + 真实迁移）与真实 Milvus Lite，
+# 以独立进程调用 `python -m sensoryplex_index_worker.cli`，验写入确认、跨进程持久、
+# 回查过滤（owner / ready / material 状态）、幂等与四类显式失败（维度、不可达、契约漂移、目录被锁）。
+# Milvus Lite 是本地文件形态且**进程独占**（目录 flock），所以这一步固定在主机执行；
+# 服务端 Milvus 形态未验收（本机 Docker Hub 不可达），见 ADR-020 §6/§7。
+index-check:
+	@test -n "$(EMBEDDINGS)" || { echo "usage: make index-check EMBEDDINGS=/absolute/path/to/ai-worker.json（先跑 uv run --frozen python tools/verify_embed.py --media <sample> --keep-workspace 得到它）"; exit 1; }
+	$(PY_HOST) tools/verify_index.py --embeddings "$(EMBEDDINGS)"

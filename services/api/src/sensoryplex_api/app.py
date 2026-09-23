@@ -17,7 +17,12 @@ from .contracts import fail, out
 from .interfaces import admin, assets, business, identity
 from .settings import Settings
 
-SCHEMA = "0002_console"
+# 本镜像认识的迁移集合：/v1/health 要求库里应用的版本**恰好**等于这个集合，
+# 多一条（镜像旧了）少一条（没跑迁移）都直接 503。因此每加一条迁移都必须同步这里——
+# 本切片新增 `0003_embedding_index` 时漏掉这一跳，就是被真实集成测试抓出来的。
+# `SCHEMA` 仍是最新版本，供 `schema_version` 字段上报。
+SCHEMA = "0003_embedding_index"
+SCHEMA_VERSIONS = {"0001_initial", "0002_console", SCHEMA}
 CAPABILITIES = [
     ("console_metadata", True, ""),
     ("keyword_search", True, ""),
@@ -140,7 +145,7 @@ def create_app(settings: Settings | None = None):
             versions = {
                 r[0] for r in conn.execute("SELECT version FROM schema_migration").fetchall()
             }
-        if versions != {"0001_initial", SCHEMA}:
+        if versions != SCHEMA_VERSIONS:
             fail(503, "schema_version_mismatch")
         return SCHEMA
 

@@ -3,13 +3,13 @@ name = "sensoryplex"
 version = "0.1.0"
 description = "Edge multimodal material runtime development workspace"
 requires-python = ">=3.12,<3.13"
-dependencies = ["edge-material-plugin-asr-whisper-mlx", "edge-material-plugin-embed-bge-onnx", "edge-material-plugin-ocr-rapidocr", "edge-material-plugin-vlm-moondream", "edge-material-sdk", "sensoryplex-gateway", "sensoryplex-api"]
+dependencies = ["edge-material-plugin-asr-whisper-mlx", "edge-material-plugin-embed-bge-onnx", "edge-material-plugin-ocr-rapidocr", "edge-material-plugin-vlm-moondream", "edge-material-sdk", "sensoryplex-gateway", "sensoryplex-api", "sensoryplex-index-worker"]
 
 [tool.uv]
 package = false
 
 [tool.uv.workspace]
-members = ["plugins/python/common", "plugins/python/processors/asr-whisper-mlx", "plugins/python/processors/embed-bge-onnx", "plugins/python/processors/ocr-rapidocr", "plugins/python/processors/vlm-moondream", "services/gateway", "services/api"]
+members = ["plugins/python/common", "plugins/python/processors/asr-whisper-mlx", "plugins/python/processors/embed-bge-onnx", "plugins/python/processors/ocr-rapidocr", "plugins/python/processors/vlm-moondream", "services/gateway", "services/api", "services/index-worker"]
 
 [tool.uv.sources]
 edge-material-plugin-asr-whisper-mlx = { workspace = true }
@@ -19,6 +19,7 @@ edge-material-plugin-vlm-moondream = { workspace = true }
 edge-material-sdk = { workspace = true }
 sensoryplex-gateway = { workspace = true }
 sensoryplex-api = { workspace = true }
+sensoryplex-index-worker = { workspace = true }
 
 [dependency-groups]
 dev = [
