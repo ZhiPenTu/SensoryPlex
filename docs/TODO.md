@@ -14,7 +14,8 @@
 
 ## 当前并行工作与明确未完成项（2026-09-24）
 
-- [ ] **M8 整体仍在研发中**：OCR / BGE / CoreML、Metal 后端由另一任务推进。
+- [ ] **M8 整体仍在研发中**：四个模型（VLM / ASR / OCR / BGE）已接入并通过本机真实样本验收，
+  剩余的是运行时加速后端能力上报、向量库落库与检索、按机型选模型（明细见 §M8）。
   分项测试通过不等于整个 M8 或 Golden Path 完成，具体进展按其验收证据更新。
 - [ ] **真实媒体端到端**：Runtime → Timeline → metadata writer/outbox → 查询与回看尚未联调验收。
   Timeline 融合核心已在独立分支 `codex/timeline-fusion` 提交 `bdb00ef`，尚未合并主线。
@@ -154,18 +155,27 @@
   `check-apple-silicon` 3m46s（job 107189530242，13 个 step 全绿；含新增的 `uname -m` 硬断言
   与 `cargo test -p sensoryplex-media --features gstreamer` → **105 passed**）。
   runner 为 `macos-15-arm64`（Image 20260907.0337），`uname -m` 实测 `arm64`。
+- [x] **容器模式的 `make check` 一度是"跑不通"的，且镜像过期**（2026-09-24 修复）：
+  `90ef107` 把集成测试前缀写成 `$(EXEC_API) -e VAR`，展开后 `-e` 落在 SERVICE 之后，
+  容器模式直接 127 退出、集成测试一次没跑过；修成 `exec -T -e VAR api` 后又暴露
+  `services/api/Dockerfile` 从未注入 OCR / BGE 两个插件（契约测试 collect error），
+  以及 Docker Desktop 文件共享缓存给出**过期构建上下文**（镜像里的 `assets.py` 缺
+  `/v1/materials/{key}/sources/{asset_id}` 路由，被误读成 12 个集成用例"回归"）。
+  修复后 `make check EXEC_MODE=container` 全绿：契约 154、集成 24。详见
+  `docs/verification.md` 的"补记二"。
 - 仍未验证：Windows 与 Linux NVIDIA 侧没有 CI job；CI runner 只有 7 GiB 内存，
   低于 `small` 档下限，所以 `launchd` 常驻形态（M5）**不能**在 CI 里验收，只能真机跑。
 
 ### M8 模型插件（ASR/OCR/VLM/BGE）
 
-- 状态：**进行中**——三个真实端侧模型（**VLM**、**ASR**、**OCR**）已接入并通过验收；
-  BGE（向量）与运行时加速后端的能力上报仍未做。
+- 状态：**进行中**——四个真实端侧模型（**VLM**、**ASR**、**OCR**、**BGE 文本向量**）已接入并通过验收；
+  运行时加速后端的能力上报、向量库落库与检索仍未做。
   证据见 `docs/verification.md` 的 "M8 模型插件：真实 VLM 端侧接入与观察语义"、
-  "M10 模型插件：真实 ASR 端侧接入与音频样本布局契约" 与 "M8 OCR"；设计决策见
+  "M10 模型插件：真实 ASR 端侧接入与音频样本布局契约"、"M8 OCR" 与 "M8 BGE"；设计决策见
   [ADR-012](adr/ADR-012-模型插件与端侧推理边界.md)、
-  [ADR-014](adr/ADR-014-ASR插件与音频样本布局契约.md) 与
-  [ADR-016](adr/ADR-016-OCR与ONNX执行后端.md)。
+  [ADR-014](adr/ADR-014-ASR插件与音频样本布局契约.md)、
+  [ADR-016](adr/ADR-016-OCR与ONNX执行后端.md) 与
+  [ADR-017](adr/ADR-017-BGE文本向量与维度版本化.md)。
 - 已完成（VLM）：`plugins/python/processors/vlm-moondream` 消费 Runtime 数据面里的真实视频帧
   （经 `LeaseBufferReader` 读字节，非文件名），调用**本机** ollama 的 `moondream:v2` 产出
   `observation.vision.scene_description`：锚点等于源帧半开区间（`timing_source=media_pts`）、
@@ -174,7 +184,7 @@
   `make model-check MEDIA=video/1.mp4` 四进程（编排/生产者/插件/worker）通过：2 帧真实推理，
   单帧端到端 0.6–2.2 s，账目 `released_total=24 retained=0 arena_live_slabs=0`。
 - 验收暴露并修掉 4 个真实缺陷（GET/POST 误用、空闲超时过短、消费者未归还非视频条目、验收脚本键名），详见 ADR-012 §7。
-- 仍未验证（不要当成已完成）：BGE（向量）未接入；`coreml` 在插件侧已可选择并通过实测，
+- 仍未验证（不要当成已完成）：向量库落库与检索未做（本切片 `storage=inline_payload`、`vector_ref=null`）；`coreml` 在插件侧已可选择并通过实测（OCR 与 BGE 都实测**更慢**），
   但运行时（Rust）的能力上报仍把加速后端记为不可用；`metal` 在 ONNX 路径上不存在独立执行后端；
   `local_native` 插件**未签名**（只在 manifest 写明原因），
   签名/SBOM 只有结构预检；未做 worker 的 durable 幂等、lease 崩溃回收、沙箱与无外网策略的强制执行；
@@ -197,7 +207,20 @@
   实测把 CoreML 从"看起来能用"降级成"可选择但不加速"（同帧 216–228 ms vs 1163 ms，
   ORT 因动态 shape/NMS 子图分区回退到 CPU），详见
   [ADR-016](adr/ADR-016-OCR与ONNX执行后端.md) 与 `docs/verification.md` 的"M8 OCR"一节。
-- 剩余子项：BGE（向量）、运行时加速后端的能力上报，以及按机型档位选择模型（依赖 M5）。
+- 已完成（BGE 文本向量，2026-09-24）：第四个模型插件 `plugins/python/processors/embed-bge-onnx` 是
+  第一条**不接数据面**的链路：输入是上游 OCR 观测里的文字（`observation.ocr_blocks`），不是字节，
+  manifest 声明 `acceptsMemoryKinds: []`，喂 buffer 以 `buffer_reader_not_attached` 明确拒绝。
+  本机 BGE 权重的**三份文件组合摘要**为身份，产出**维度版本化**的 L2 归一化向量：`dimension=512`
+  取自 `config.json` 并经 Start 前向探针实测，`vector_index_key=material_text_bge_small_zh_v1_5_d512_v1`；
+  `content_hash` 是**实际被编码文本**的摘要（验收脚本按同一规则独立重拼），上游身份另写 `input.*`；
+  `confidence` 显式缺省并写原因。`make embed-check MEDIA=...`（cpu/coreml）与 `tools/verify_embed.py`
+  多进程通过：它会先跑一遍真实 OCR 链路产出文字块，再让 BGE 消费它；observation 路径的对账
+  显式写 `drain.leases=0` 且报告里没有数据面统计。实测把 CoreML 从“看起来能用”降级为
+  “可选择但更慢”（短文本 0.78 ms vs 3.16 ms）——与 OCR 同一结论。详见
+  [ADR-017](adr/ADR-017-BGE文本向量与维度版本化.md) 与 `docs/verification.md` 的"M8 BGE"一节。
+- 剩余子项：运行时加速后端的能力上报（Rust 侧本版本没有任何 in-process `ExecutionBackend`，
+  `coreml`/`metal` 因此仍记为不可用）、向量库落库与检索（含换模型/维度后旧向量的迁移决策），
+  以及按机型档位选择模型（依赖 M5）。
 
 ### M9 格式准入与显式拒绝（ADR-009，新增格式之前必须先做）
 

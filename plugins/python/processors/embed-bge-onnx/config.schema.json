@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sensoryplex:plugin:embed-bge-onnx:config:v1",
+  "title": "embed-bge-onnx Start(config)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["model_dir"],
+  "properties": {
+    "model_dir": {
+      "type": "string",
+      "description": "必须由运营显式提供的本机权重目录：至少包含 encoder 权重、tokenizer.json 与 config.json；插件自己绝不下载权重"
+    },
+    "model_file": {
+      "type": "string",
+      "default": "model_quantized.onnx",
+      "minLength": 1,
+      "description": "model_dir 里实际加载的 ONNX 文件的相对路径（可含子目录，例如 HF 快照的 onnx/model_quantized.onnx；不接受绝对路径或 .. 越界）。量化或 fp32 由运营决定，身份按字节实测"
+    },
+    "model_id": {
+      "type": "string",
+      "default": "bge-small-zh-v1.5",
+      "description": "模型标识（写进 provenance 与 vector_index_key，不影响权重身份）"
+    },
+    "model_revision": {
+      "type": "string",
+      "default": "",
+      "description": "可选的权重 revision 说明；留空时按权重来源（local_dir）填写"
+    },
+    "provider": {
+      "enum": ["cpu", "coreml"],
+      "default": "cpu",
+      "description": "ONNX Runtime 执行后端；coreml 必须真的拿到 CoreMLExecutionProvider，否则显式失败"
+    },
+    "max_length": {
+      "type": "integer",
+      "minimum": 8,
+      "maximum": 512,
+      "default": 512,
+      "description": "分词截断上限；超过它的文本会被分词器截断（truncation 是显式启用的）"
+    },
+    "ttl_ms": {"type": "integer", "minimum": 50, "maximum": 60000, "default": 30000},
+    "timeout_s": {"type": "number", "exclusiveMinimum": 0, "default": 120}
+  }
+}

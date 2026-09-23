@@ -1043,6 +1043,58 @@ M2 Max，32 GiB 统一内存）。
 **仍未验证**：Windows 与 Linux NVIDIA 侧没有 CI job；runner 只有 7 GiB 内存、低于 `small` 档下限，
 因此 `launchd` 常驻形态（M5）**不能**在 CI 里验收，只能真机跑（见本节上面 M5 一节）。
 
+#### 补记：容器化之后远端 CI 曾全线失败（2026-09-23，run 35886176518 → 35887640419）
+
+OCR 提交（`6b22cd9`）触发的 run **35886176518 三个 job 全部在第一个 `make proto` 就失败**：
+macOS runner 报 `make: docker: No such file or directory`，ubuntu runner 报
+`couldn't find env file: .../.env`。根因不是 OCR 代码，而是更早的一次改动：`76743e6` 把
+`Makefile` 全面**容器化**（`docker compose exec` + 必需 `.env`），但 `.github/workflows/ci.yml`
+没有同步——也就是说**"容器化"这件事从未在远端被验证过**，直到下一次 push 才暴露。
+
+修复（`90ef107`）给 `Makefile` 增加 `EXEC_MODE ?= container | host`：host 模式只做前缀退化
+（`EXEC_API=` 空、`PY_API=uv run --frozen python`），并把 `test-py` 拆成不依赖外部服务的
+`test-contracts` 与需要 PostgreSQL 的 `test-integration`；`ci.yml` 三个 job 统一
+`EXEC_MODE=host`。关键约束是**两种模式展开后的步骤集合必须逐字相同**（本机用
+`make check EXEC_MODE=container` 的展开结果与修复前对比过），否则"主机退化"会变成"悄悄少跑"。
+
+本机实测（macos-aarch64，2026-09-24）：`make proto EXEC_MODE=host` 生成目录无差异；
+`make check EXEC_MODE=host`（临时 PostgreSQL 容器）契约 112 + 集成 11 通过；
+`make lint-ruff test-contracts EXEC_MODE=host`（无数据库）112 passed；
+`make runtime-smoke EXEC_MODE=host` PASS。远端 **run 35887640419 三个 job 全绿**（2m56s）。
+
+（BGE 切片之后契约测试总数已从 112 增至 154，见文末 M8 BGE 一节。）
+
+#### 补记二：容器模式的 `make check` 其实一直跑不通，且镜像是过期的（2026-09-24）
+
+上面那次修复只验证了 host 模式；**默认的容器模式仍然没跑通过**。`90ef107` 把集成测试
+前缀写成 `EXEC_TEST = $(EXEC_API) -e SENSORYPLEX_TEST_DATABASE_URL`，展开后是
+`docker compose exec -T api -e VAR ...`——`-e` 必须写在 SERVICE **之前**
+（`docker compose exec [OPTIONS] SERVICE COMMAND`），于是 `make check` / `make integration`
+在容器模式下直接 `exec: "-e": executable file not found in $PATH`（错误 127），
+集成测试一次都没执行过。改成 `$(COMPOSE) exec -T -e SENSORYPLEX_TEST_DATABASE_URL api`
+后才真正跑起来。修好后立刻暴露两条**镜像侧**缺口：
+
+1. `services/api/Dockerfile` 只往容器 venv 里注入 `vlm-moondream` / `asr-whisper-mlx`
+   两个插件；OCR 提交（`6b22cd9`）与 BGE 提交新增的 `ocr-rapidocr` / `embed-bge-onnx`
+   从未进过镜像，容器里 `pytest tests/contracts` 直接 collect error
+   （`ModuleNotFoundError: No module named 'edge_material_plugin_ocr_rapidocr'`）。
+   而且这两个插件的契约测试断言的是**真实发行版元数据**
+   （`installed_version("onnxruntime")` 不许编、`installed_version("rapidocr")` 不许空），
+   所以镜像必须真装 `onnxruntime` / `tokenizers` / `rapidocr`；这一条显式**不加 `|| true`**，
+   装不上就让镜像构建失败，而不是让容器里的契约测试事后红成一片。
+2. 重跑 `docker compose build api` 时，Docker Desktop 的文件共享缓存给了一次**过期构建
+   上下文**：镜像里 `site-packages/sensoryplex_api/interfaces/assets.py` 的 md5 与仓库、
+   与任何 git revision 都不相同（缺 `/v1/materials/{key}/sources/{asset_id}` 路由），
+   于是 `tests/integration/test_material_review.py` 12 个用例全部 404 失败——
+   看起来像"代码回归"，实际是镜像旧了一个文件。再 build 一次后 baked 文件 md5 与仓库一致
+   （`d75d2cf8e1f886401351a16dac43f7c6`）。教训：容器模式跑集成测试前先核对
+   **镜像内 baked 源码 vs 仓库源码**（`diff -r` 或 `md5`），不要把过期镜像读成代码回归。
+
+修完两条后的实测（macos-aarch64，2026-09-24）：`make check EXEC_MODE=container` 全绿——
+ruff `All checks passed` + `117 files already formatted`、契约 **154 passed**、
+集成 **24 passed**（此前是 12 failed / 12 passed）、`cargo fmt --check` / `clippy -D warnings` /
+`cargo test --workspace` 全过。
+
 ### Console 应用准备流程（2026-09-23）
 
 本轮新增 `apps/console` 与 `services/api`，Gateway 保留兼容导入入口。验收范围是脱离 Runtime
@@ -1175,3 +1227,131 @@ ONNX Runtime 在 macOS 上**没有独立的 Metal EP**（Apple 侧的执行后�
 - `metal`（ONNX 路径）、`linux-x86_64`、Mac mini、跨机：均未验证。
 - 插件仍未签名（只写明白原因），SBOM 只有结构预检；权重缓存目录与"绝不联网"只有 manifest
   声明（`allowedHosts: [www.modelscope.cn]`、`writablePaths: []`），没有 DNS/egress 强制执行。
+
+### M8 BGE：真实上游 OCR 事实 → 本机 BGE 向量与维度版本化（2026-09-24）
+
+第四个模型插件 `plugins/python/processors/embed-bge-onnx` 接在 OCR 后面：**消费上游观测**
+（`observation.ocr_blocks` 里的真实文字）而不是字节，产出 `observation.text_embedding`。
+因此这条链路的验收除了向量本身，还必须验"它真的没碰数据面"。决策见
+[ADR-017](adr/ADR-017-BGE文本向量与维度版本化.md)。
+
+#### 命令与角色
+
+```bash
+# 完整链路：验收自己先跑一遍真实 OCR 链路（四进程）产出 ocr_blocks，再让 BGE 消费它
+make embed-check MEDIA=video/samples/screencast-video2commons.480p.vp9.webm
+# 只换编码后端（coreml 必须真的被会话选中，否则显式失败）
+make embed-check MEDIA=... PROVIDER=coreml
+# 复用既有上游报告，跳过重跑 OCR（本机实测 1.2 s）
+uv run --frozen python tools/verify_embed.py --media <sample> \
+  --input-observations <sensoryplex-ocr-*/ai-worker.json> [--provider coreml]
+```
+
+角色与 M8 其他插件同构，但第 2 个角色是**上游链路的真实执行**、不是生产者进程：
+
+1. `tools/verify_embed.py`（编排 + 对账）；
+2. `tools/verify_ocr.py` 的完整四进程链路（Runtime replay → OCR 插件 → worker），产出真实文字块；
+3. `python -m edge_material_plugin_embed_bge_onnx`（插件进程，Start 时真建会话并跑前向探针）；
+4. `tools/ai_worker.py --input-observations`（worker：原样转发上游事实，不接数据面）。
+
+本机实测（M2 Max / 32 GiB，`macos-aarch64`，2026-09-24）：
+
+```text
+upstream: OCR chain observations=2 released=19 engine=org.sensoryplex.ocr-rapidocr provider=cpu
+weights:  .../snapshots/75c43b069aac4d136ba6bc1122f995fedcfd2781
+  encoder: sha256:15b717c3...cd19bcc (24010842 bytes)
+  model_config: sha256:d4193ead...6538ff42f (716 bytes)
+  tokenizer: sha256:48cea5d4...339e8fae26 (439125 bytes)
+  combined: sha256:1d01788f...aa117271 dimension: 512
+embedded_inputs=2 observations=2 dimension=512 provider=cpu backend=CPUExecutionProvider
+
+embed acceptance: real OCR facts -> local BGE (cpu) -> versioned-dimension vectors passed in 65.2s
+```
+
+四份摘要由 `tools/verify_embed.py` **独立复算**（不调用插件代码），并要求 observation 的
+`provenance.modelArtifactDigest` 与 payload 里三个角色的 `sha256`/`bytes` 逐字相等——
+"身份来自实际加载的文件字节"因此不是声明，而是被第三次复算过的事实。
+
+#### 这条链路验了什么（都是真实执行结果）
+
+- **不接数据面**：`Describe.memory_kinds == []`；worker 报告 `input_mode == "observation"`、
+  `data_plane is None`、**没有** `runtime_stats` 键、`drain == {"discarded": 0, "failures": [],
+  "leases": 0}`、`runtime_stats_after == {"leased": 0, "leases": 0}`。零 lease 是显式写出来的账目，
+  不是留空。
+- **维度版本化**：`dimension == 512` 同时等于本脚本独立读出的 `config.json.hidden_size` 与向量长度；
+  `dimension_source == "config.json:hidden_size+probe_forward"`；
+  `vector_index_key == "material_text_bge_small_zh_v1_5_d512_v1"`。
+- **文本到向量的绑定**：`content_hash == text_sha256 == sha256(实际被编码的文本)`，而该文本由验收
+  脚本**按契约独立重拼**（`join_separator="\n"`、跳过空块并计数）；`block_count`/`blank_blocks`/
+  `char_count`/`source_modality` 逐项与上游块对账。
+- **上游身份不丢**：`payload.input.*` 的 `observation_id`/`content_hash`/`stream_id`/`source_item_id`/
+  `quality_state`/`time_range`/`model_release_id` 与上游观测逐项相等；`timeRange` 与
+  `timing_source` 原样继承（本插件不重新计时）。
+- **池化/归一化/置信度**：`pooling=cls`、`normalize=l2`、`norm == 1.0`（独立复算）、
+  `vector_sha256` 由向量 float32 小端字节独立复算；`confidence` 缺省且带原因；
+  `storage=inline_payload`、`vector_ref is None`（本切片**没有**向量库）。
+- **负路径在活进程上验**：worker 收尾 Stop 之后重新 Start（状态可重入），再对同一个进程发三种
+  不该接受的输入，全部拿到稳定原因码而不是"成功但结果为零"：
+  `buffer_reader_not_attached`（喂 buffer）、`unsupported_input_modality:video_frame`
+  （把上游观测的 modality 改错）、`input_text_empty`（`blocks=[]`）。
+- **不外泄**：worker 报告与插件 stdout/stderr 里没有媒体名/绝对路径/`srt://`/`rtmp://`，
+  payload 里也没有 `"vocab"`（整份词表塞不进来），且 payload 体积有上界（512 维向量的 JSON 约
+  12 KB，上限 128 KB）。
+
+#### cpu 与 coreml 的实测（同一份权重、同一批文字）
+
+| 口径 | cpu | coreml |
+| --- | --- | --- |
+| session providers | `['CPUExecutionProvider']` | `['CoreMLExecutionProvider', 'CPUExecutionProvider']` |
+| 单条短文本编码 | 0.78 ms | 3.16 ms |
+| 链路内单条 observation（含分词/池化） | 1.03–1.26 ms | 5.01–9.19 ms |
+| 同文本两次编码 | 向量摘要相同 | 向量摘要相同 |
+| 跨 provider | — | `cos ≈ 1.0`，最长文本 0.996986（`max|Δ| = 1.08e-2`） |
+| `norm` | 1.0 | 1.0 |
+
+结论与 OCR（ADR-016 §5）一致：**`coreml` 是可选择、可观测、必须真的被选中的后端，但在本模型上
+更慢（约 4–8 倍）**，因此默认仍是 `cpu`，本切片不宣称 CoreML 加速。跨 provider 的微小差异来自
+量化算子在不同 EP 上的分区与求值顺序；同一 provider 内是确定的（同文本两次得到同一个向量摘要）。
+Apple Silicon 上 ONNX 路径**没有**独立 Metal EP：GPU 是间接使用的（CoreML EP / ASR 走 MLX /
+VLM 走 ollama），`metal` 不作为后端引入。
+
+语义**合理性**（不是质量基准）：`cos("今天天气不错", "明天天气很好") = 0.8094`，而
+`cos("今天天气不错", "端侧推理在本地运行") = 0.2745`、`cos("今天天气不错", "股票市场今日下跌")
+= 0.4988`。向量空间顺序合理，但这**不是**召回/排序基准。
+
+#### 本轮暴露并修掉的 3 个真实缺陷
+
+| # | 现象 | 根因 | 修复 |
+| --- | --- | --- | --- |
+| 1 | 用真实 HF 权重目录启动时 `model_file_not_found` | HF 快照把 ONNX 放在 `onnx/` 子目录，`tokenizer.json`/`config.json` 在快照根；插件原先把 `model_file` 当纯文件名 | `model_file` 允许是 `model_dir` 内的相对路径；绝对路径与 `..` 越界被拒（契约测试覆盖子目录 + 三种越界） |
+| 2 | `--input-observations` 时插件拒绝配置 | worker 在 observation 路径仍注入 `handoff_endpoint` 与 `endpoint`/`model` 默认键，被插件 schema 的 `additionalProperties: false` 拒绝 | worker 只在 buffer 模式注入 `handoff_endpoint`，按输入路径决定模型服务默认键 |
+| 3 | 验收脚本误判 `token_count` 与 `input.time_range` | payload 是 protobuf `Struct`：数字在 JSON 里都是 double（脚本却要求 `isinstance(int)`）；`Struct` 键保留 snake_case 而真实 proto 字段是 camelCase，两个 dict 直接比较必然不等 | 按"整数性"而不是类型比较；`time_range` 显式按键取值比较 |
+
+缺陷 1 只在**真实权重目录**上才会暴露：用测试自造的平目录永远跑不出来。
+
+#### 测试与静态检查
+
+- `tests/contracts/test_embed_bge_onnx_contract.py`：**42 项**。覆盖输入准入（buffer / 非
+  `ocr_blocks` / 上下文不匹配 / 身份校验）、文本边界六类、CLS 池化与 L2 归一化语义、稳定 ID、
+  `content_hash` 与 `input.*` 的分工、provenance 与稳定 release、provider 断言两侧、
+  `model_file` 子目录与越界拒绝、三份权重的组合摘要顺序无关、ONNX 容器探测（空/非 protobuf/正常）、
+  `max_length` 超过位置编码上限、manifest/SBOM/schema/网络与可写路径、摘要范围（改说明文字不变、
+  改代码必变）。
+- `uv run pytest tests/contracts -q`：**154 passed**（含 BGE 42）。
+- `uv run ruff format --check .` / `uv run ruff check .`：全仓通过。
+
+#### 仍未验证（不得当作完成）
+
+- 向量**质量**：没有检索/排序基准（召回、MRR），没有中文长文本、跨语言或领域文本评测；
+  仓库登记样本里的屏幕文字是拉丁/俄文，中文界面样本尚未覆盖。
+- 向量库：本切片不落库（`storage = inline_payload`、`vector_ref = null`）；`vector_index_key`
+  只命名了 collection，Milvus 建索引、写入与检索都未验证。
+- 维度版本化的**迁移**：换模型或换维度后旧向量重建还是并存，尚未决策。
+- CoreML 收益：见上，实测更慢；动态 shape 与量化算子的分区回退未解决。
+- 运行时（Rust）加速后端的能力上报仍把加速后端记为不可用：本版本没有任何 in-process
+  `ExecutionBackend` 实现（`model_inference` 仍在 `unavailable_capabilities`）。这张表**不是**
+  "CoreML 不可用"的证据，只说明"运行时自己不做推理"。
+- `linux-x86_64`、Mac mini / 跨机未验证；插件未签名（只在 manifest 写明白原因），SBOM 只有结构预检；
+  "绝不联网"只有 manifest 声明，没有 DNS/egress 强制执行。
+- worker 的 durable 幂等与 lease 崩溃回收仍未做；observation 路径没有 lease，但这不改变 buffer
+  路径的结论。

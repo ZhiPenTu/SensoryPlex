@@ -57,12 +57,19 @@ make stream-up && make live-check
 make model-check MEDIA=/absolute/path/to/authorized-sample.mp4    # VLM（本机 ollama）
 make asr-check   MEDIA=/absolute/path/to/authorized-speech.webm   # ASR（本机 MLX Whisper）
 make ocr-check   MEDIA=/absolute/path/to/authorized-video.webm    # OCR（随包 PP-OCR ONNX）
+make embed-check MEDIA=/absolute/path/to/authorized-video.webm    # BGE 文本向量（随包 BGE ONNX，消费上游 OCR 文字）
 ```
 
 `make ocr-check` 支持 `EXPECT=empty`：无文字样本上"0 块 + `empty_reason`"才是正确结果，
 用它证明"模型没找到文字"与"处理失败"可区分；`PROVIDER=coreml` 走 CoreML 执行后端，
 拿不到 CoreML 会话会显式失败（不静默退回 CPU，见
 [ADR-016](docs/adr/ADR-016-OCR与ONNX执行后端.md)）。
+
+`make embed-check` 是唯一**不接数据面**的链路：它先跑一遍真实 OCR 产出文字块，再让 BGE 消费这些
+文字（`acceptsMemoryKinds: []`，喂字节以 `buffer_reader_not_attached` 明确拒绝），产出维度版本化的
+L2 归一化向量。想跳过 OCR、直接复用已有的 `ai-worker.json` 时传
+`OBSERVATIONS=/absolute/path/to/ai-worker.json`；`PROVIDER=coreml` 同样可用，但实测**更慢**
+（同文本 0.78 ms vs 3.16 ms），见 [ADR-017](docs/adr/ADR-017-BGE文本向量与维度版本化.md)。
 
 macOS 常驻形态（`launchd`）在主机的**用户级** LaunchAgents 中运行，按统一内存分级设置上限
 （设计见 [ADR-015](docs/adr/ADR-015-macOS常驻形态与统一内存分级.md)，操作见

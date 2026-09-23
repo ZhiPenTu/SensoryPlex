@@ -21,7 +21,7 @@
 | Console / Platform API | 独立 React / TS / Vite 工程、统一模块化 API、会话/CSRF/RBAC、真实上传与 Range 回看、插件配置版本、方案/任务草稿、作用域凭据、账户/角色管理与审计；运行手册见 `docs/runbooks/console.md` | Runtime 媒体准入、安装与生命周期、方案发布、任务执行及素材来源映射；当前不是完整业务 Golden Path |
 | 存储/硬件 | Rust adapter traits，模型与配置 hash 契约 | NAS/MinIO/Milvus、ONNX/TensorRT 实现 |
 | 直播接入基础设施 | 本机 MediaMTX 1.21.1（独立 Compose，仅回环端口）；SRT 直推（GStreamer `srtsink` 与用户自有 OBS）与 Runtime `ingest` 已打通：稳定窗口、断流恢复、无源失败、实时数据面交接、VideoToolbox 视频五个场景通过，OBS 真实直推亦实测（无 timing 码流的视频时长按 PTS 差分补齐），见 `docs/verification.md` | Mac mini / 跨机部署、SRT 加密与带凭据 publish、`linux-x86_64` 侧验收；服务器上有流不等于语义链路可用 |
-| 媒体与模型 | Pipeline 配置、真实媒体 probe 工具、ffprobe 锚点回放，GStreamer 真实解码 → arena → `BufferDescriptor` → lease 签发/校验/释放 → 音频 5 秒切段，视频自适应抽帧（keep/skip 全部带原因，7 个真实样本通过），跨进程数据面：Runtime 保留字节、独立进程按 lease 读取（3 个样本 × 2 个场景通过，具备有界容量与稳定拒绝码），SRT 实时接入 `ingest`（`make live-check` 五个场景通过），背压与队列可观察：三条有界队列的深度/峰值/容量、按原因与按种类的丢弃、lease 等待时间（`verify_backpressure.py` 4 场景 + OBS 直播实测，见 `docs/verification.md`），以及第一个**端侧模型插件**：本机 ollama `moondream:v2`（VLM），插件经 `LeaseBufferReader` 读真实视频帧产出带锚点/来源/版本/显式置信度语义的 observation，`tools/ai_worker.py` 只发现与调用不读字节，`make model-check` 四进程通过（见 `docs/verification.md` 的"M8"一节与 ADR-012），以及**媒体格式准入与显式拒绝**：承诺矩阵写成数据、源格式按 stream ID 关联、被拒轨道带稳定拒绝码进报告（`make capability-check` **19 场景**通过：6 个公开授权正样本 + 13 条拒绝路径，见 `docs/verification.md` 的"M9"一节与 ADR-009），以及第二个**端侧模型插件**（ASR）：本机 MLX Whisper 经 `LeaseBufferReader` 读真实音频段产出带锚点/来源/显式置信度语义的转写 observation，音频样本布局（`sample_format`）与音频段描述符进保留表一并落成契约，`make asr-check` 四进程通过（见 `docs/verification.md` 的"M10"一节与 ADR-014） | BGE 插件、运行时侧加速后端能力上报（`coreml`/`metal` 在 Rust 侧仍记为不可用）；ASR 的 Linux 后端（`mlx` 是 Apple Silicon 专属）；插件**未签名**（`local_native` 形态，签名/SBOM 只有结构预检）；旋转的采集与应用（v1 未实现） |
+| 媒体与模型 | Pipeline 配置、真实媒体 probe 工具、ffprobe 锚点回放，GStreamer 真实解码 → arena → `BufferDescriptor` → lease 签发/校验/释放 → 音频 5 秒切段，视频自适应抽帧（keep/skip 全部带原因，7 个真实样本通过），跨进程数据面：Runtime 保留字节、独立进程按 lease 读取（3 个样本 × 2 个场景通过，具备有界容量与稳定拒绝码），SRT 实时接入 `ingest`（`make live-check` 五个场景通过），背压与队列可观察：三条有界队列的深度/峰值/容量、按原因与按种类的丢弃、lease 等待时间（`verify_backpressure.py` 4 场景 + OBS 直播实测，见 `docs/verification.md`），以及第一个**端侧模型插件**：本机 ollama `moondream:v2`（VLM），插件经 `LeaseBufferReader` 读真实视频帧产出带锚点/来源/版本/显式置信度语义的 observation，`tools/ai_worker.py` 只发现与调用不读字节，`make model-check` 四进程通过（见 `docs/verification.md` 的"M8"一节与 ADR-012），以及**媒体格式准入与显式拒绝**：承诺矩阵写成数据、源格式按 stream ID 关联、被拒轨道带稳定拒绝码进报告（`make capability-check` **19 场景**通过：6 个公开授权正样本 + 13 条拒绝路径，见 `docs/verification.md` 的"M9"一节与 ADR-009），以及第二个**端侧模型插件**（ASR）：本机 MLX Whisper 经 `LeaseBufferReader` 读真实音频段产出带锚点/来源/显式置信度语义的转写 observation，音频样本布局（`sample_format`）与音频段描述符进保留表一并落成契约，`make asr-check` 四进程通过（见 `docs/verification.md` 的"M10"一节与 ADR-014），以及第三个（OCR）与第四个（BGE 文本向量）端侧模型插件：OCR 以随包携带的 PP-OCR 组合权重的**组合摘要**为身份、产出带帧像素坐标的文字块；BGE **不接数据面**（`acceptsMemoryKinds: []`），消费上游 OCR 事实产出**维度版本化**的 L2 归一化向量，`make ocr-check` / `make embed-check` 均多进程通过 | 运行时侧加速后端能力上报（`coreml`/`metal` 在 Rust 侧仍记为不可用，因为本版本没有任何 in-process `ExecutionBackend`）；向量库落库与检索；ASR 的 Linux 后端（`mlx` 是 Apple Silicon 专属）；插件**未签名**（`local_native` 形态，签名/SBOM 只有结构预检）；旋转的采集与应用（v1 未实现） |
 | 工程 | uv/Cargo 锁文件、Docker、检查命令、CI（`check`/`check-console` + **Apple Silicon** `check-apple-silicon`，远端 `macos-15-arm64` 已真实通过）、macOS `launchd` 常驻形态与统一内存分级（`tools/macos_resident.py`，见 ADR-015） | 真视频 Golden Path、Linux NVIDIA 侧 CI、压测、监控仪表盘 |
 
 下一里程碑：**本地文件 → GStreamer → PTS 正确的 frame/audio descriptor**，先完成
@@ -53,10 +53,12 @@ SRT 实时接入也已落地：`ingest` 在有限窗口内从 SRT 拉流，测�
 （[ADR-011](adr/ADR-011-保留窗口按种类分配.md)），消费者实测拿到视频帧。证据见
 `docs/verification.md` 的"M2"一节。
 
-模型链路（M8）已接入：本机 ollama 的 `moondream:v2` 通过插件消费真实视频帧，`tools/ai_worker.py`
-只做发现与调用（不读字节），`make model-check` 四进程通过；边界见
-[ADR-012](adr/ADR-012-模型插件与端侧推理边界.md)。仍未实现的是 **BGE（向量）**、
-运行时（Rust）侧对加速后端的能力上报与插件签名验证；`metal` 在 ONNX 路径上没有独立执行后端。
+模型链路（M8）已接入四个端侧模型插件：本机 ollama 的 `moondream:v2`（VLM，读视频帧）、
+MLX Whisper（ASR，读音频段）、PP-OCR（OCR，读视频帧）与 BGE（文本向量，**消费上游 OCR 观测而不是
+字节**，worker 用 `--input-observations` 走 observation 输入路径）；`tools/ai_worker.py` 只做发现与
+调用（不读字节），四者的验收脚本都是真跑多进程。边界见
+[ADR-012](adr/ADR-012-模型插件与端侧推理边界.md)。仍未实现的是**运行时（Rust）侧对加速后端的能力
+上报**、**向量库落库与检索**、以及插件签名验证；`metal` 在 ONNX 路径上没有独立执行后端。
 因此 `golden_path_verified` 恒为 false，不得把本节读作 Golden Path 已完成；
 接入的 VLM 只保证链路语义正确，**不保证描述可用**（模型输出不稳定）。
 抽帧的覆盖率目前只到帧数口径，语义覆盖仍未用模型输出度量。
@@ -92,6 +94,22 @@ OCR 链路也已落地（第三个模型插件 `plugins/python/processors/ocr-ra
 CoreML 收益未取得；`metal`（ONNX 路径）、`linux-x86_64`、Mac mini 与跨机未验证；
 "绝不联网"只有 manifest 声明，没有 DNS/egress 强制执行。
 
+文本向量链路也已落地（第四个模型插件 `plugins/python/processors/embed-bge-onnx`）：这是第一条
+**不接数据面**的链路——输入是上游 OCR 观测里的文字（`observation.ocr_blocks`），不是字节，
+因此 manifest 声明 `acceptsMemoryKinds: []`，喂 buffer 会以 `buffer_reader_not_attached` 明确拒绝。
+本机 BGE 权重（`onnx/model_quantized.onnx` 24 010 842 B + `tokenizer.json` + `config.json` 三份文件的
+**组合摘要**，由验收脚本独立复算）产出**维度版本化**的 L2 归一化向量：`dimension=512` 取自
+`config.json` 并经 Start 前向探针实测，`dimension_source`、`pooling=cls`、`normalize=l2`、
+`vector_index_key=material_text_bge_small_zh_v1_5_d512_v1` 都写进结果；`content_hash` 是**实际被编码
+文本**的摘要（验收脚本按同一规则独立重拼），上游身份另写 `input.*`；`confidence` 显式缺省并写原因。
+`make embed-check MEDIA=...` 先跑一遍真实 OCR 链路产出文字块、再让 BGE 消费它（provider cpu/coreml
+都通过）；observation 路径的对账显式写 `drain.leases=0`，且报告里**没有**数据面统计。决策与实测见
+[ADR-017](adr/ADR-017-BGE文本向量与维度版本化.md) 与 `docs/verification.md` 的"M8 BGE"一节。
+**仍未验证的仍然不得声称可用**：向量**质量**未验收（无召回/排序基准，中文长文本与领域文本未覆盖）；
+本切片**不落向量库**（`storage=inline_payload`、`vector_ref=null`），Milvus 建索引/写入/检索未验证；
+换模型或换维度后的旧向量迁移未决策；CoreML 实测**更慢**（短文本 0.78 ms vs 3.16 ms），不声称加速；
+`linux-x86_64`、Mac mini 与跨机未验证。
+
 媒体格式准入（M9）已按 [ADR-009](adr/ADR-009-媒体格式支持矩阵与拒绝语义.md) 落地：承诺矩阵写成
 数据（容器 → 编码 → 位深 → 色彩 → 采样格式 → 声道），判定输入是**解码前采集的源格式上下文**加上
 解码后格式，矩阵之外的组合进 `DecodedDataPlane.rejected_tracks`（稳定拒绝码 + 观测值 + 容器 +
@@ -121,3 +139,8 @@ GLMemory 协商导致多视频轨竞态、容器内 PCM 的源编码采集不到
 本次新增 `workflow_dispatch`、`uname -m` 硬断言与解码路径单测步骤，并已在远端跑通
 （run 35863597690：`check`/`check-console`/`check-apple-silicon` 三个 job 全绿，runner
 `macos-15-arm64`、`uname -m` 实测 `arm64`、解码路径单测 **105 passed**，见 `docs/verification.md` 的"M7"一节）。
+**默认的容器模式此前其实没跑通过**：集成测试前缀把 `-e` 写在 SERVICE 之后（容器模式 127 退出），
+而 `services/api/Dockerfile` 也从未把 OCR / BGE 两个插件注入容器 venv（契约测试 collect error）；
+两处都已修复，`make check EXEC_MODE=container` 现在全绿（契约 154 + 集成 24 + cargo 全过），
+并记下"Docker Desktop 文件共享缓存可能给出过期构建上下文、需先核对镜像内源码 md5"这条教训，
+详见 `docs/verification.md` 的"M7 补记二"。

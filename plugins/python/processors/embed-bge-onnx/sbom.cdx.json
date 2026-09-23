@@ -1,0 +1,75 @@
+{
+  "bomFormat": "CycloneDX",
+  "components": [
+    {
+      "name": "edge-material-sdk",
+      "type": "library",
+      "version": "unspecified"
+    },
+    {
+      "name": "grpcio",
+      "properties": [
+        {
+          "name": "sensoryplex:version_specifier",
+          "value": ">=1.71,<1.72"
+        }
+      ],
+      "type": "library",
+      "version": "unspecified"
+    },
+    {
+      "name": "numpy",
+      "properties": [
+        {
+          "name": "sensoryplex:version_specifier",
+          "value": ">=2"
+        }
+      ],
+      "type": "library",
+      "version": "unspecified"
+    },
+    {
+      "name": "onnxruntime",
+      "properties": [
+        {
+          "name": "sensoryplex:version_specifier",
+          "value": ">=1.23,<2"
+        }
+      ],
+      "type": "library",
+      "version": "unspecified"
+    },
+    {
+      "name": "tokenizers",
+      "properties": [
+        {
+          "name": "sensoryplex:version_specifier",
+          "value": ">=0.22,<1"
+        }
+      ],
+      "type": "library",
+      "version": "unspecified"
+    }
+  ],
+  "metadata": {
+    "component": {
+      "name": "edge-material-plugin-embed-bge-onnx",
+      "properties": [
+        {
+          "name": "sensoryplex:package_digest",
+          "value": "sha256:09b6d646c528cd8b9d20648bd532ec02dd8e74512df2c4d93d816193f442775d"
+        }
+      ],
+      "type": "application",
+      "version": "0.1.0"
+    },
+    "tools": [
+      {
+        "name": "sensoryplex-plugin-artifact",
+        "version": "0.1.0"
+      }
+    ]
+  },
+  "specVersion": "1.5",
+  "version": 1
+}

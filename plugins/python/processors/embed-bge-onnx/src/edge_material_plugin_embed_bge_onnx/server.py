@@ -1,0 +1,148 @@
+"""插件进程：把 `EmbedPlugin` 暴露成契约里的 gRPC 生命周期接口。
+
+Runtime/worker 只通过 `runtime.v1.ProcessorPluginService` 与本进程说话。本进程**不接数据面**：
+文本向量插件的输入是上游观测，不是字节；`Configure/Start` 时不创建任何 `LeaseBufferReader`，
+因此 buffer 输入会以 `buffer_reader_not_attached` 被明确拒绝（见插件模块的说明）。
+
+后端与权重的可用性在 `Start` 时就**真实探测**：缺 tokenizers/onnxruntime、权重目录或文件不存在、
+ONNX 容器损坏、分词器读不出来、会话没建起来、前向探针跑不通、实测维度与 `config.json` 不符、
+请求了 CoreML 却拿到别的 provider——都在这里失败，而不是等到第一次编码。
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import concurrent.futures
+import threading
+
+import grpc
+from edge_material_sdk.generated.common.v1 import common_pb2 as common
+from edge_material_sdk.generated.runtime.v1 import runtime_pb2, runtime_pb2_grpc
+from google.protobuf import json_format
+
+from .artifact import package_digest
+from .plugin import EmbedPlugin, describe, validate_config
+
+
+def _failure(code: int, reason: str, retryable: bool = False):
+    return common.ProcessingError(code=code, reason_code=reason, retryable=retryable)
+
+
+class PluginServicer(runtime_pb2_grpc.ProcessorPluginServiceServicer):
+    def __init__(self, plugin: EmbedPlugin, loop: asyncio.AbstractEventLoop):
+        self.plugin = plugin
+        self.state = "created"
+        self._loop = loop
+        self._in_flight: dict[str, concurrent.futures.Future] = {}
+
+    # --- 生命周期 -------------------------------------------------------------
+    def Describe(self, request, context):
+        return describe()
+
+    def ValidateConfig(self, request, context):
+        return validate_config(json_format.MessageToDict(request.config))
+
+    def Health(self, request, context):
+        unavailable = [] if self.state == "ready" else ["plugin_not_started"]
+        return runtime_pb2.HealthResponse(state=self.state, unavailable_capabilities=unavailable)
+
+    def Drain(self, request, context):
+        if self.state == "ready":
+            self.state = "draining"
+        return runtime_pb2.LifecycleResponse(state=self.state)
+
+    def Stop(self, request, context):
+        self.state = "stopped"
+        self.plugin.close()
+        return runtime_pb2.LifecycleResponse(state=self.state)
+
+    def Start(self, request, context):
+        config = json_format.MessageToDict(request.config)
+        if self.state not in {"created", "failed", "stopped"}:
+            return runtime_pb2.LifecycleResponse(
+                state=self.state, error=_failure(common.INVALID_INPUT, "plugin_already_started")
+            )
+        validated = validate_config(config)
+        if not validated.valid:
+            self.state = "failed"
+            return runtime_pb2.LifecycleResponse(
+                state=self.state, error=_failure(common.INVALID_INPUT, validated.field_errors[0])
+            )
+        try:
+            self.plugin.configure(config)
+        except (ValueError, OSError) as error:
+            self.state = "failed"
+            return runtime_pb2.LifecycleResponse(
+                state=self.state, error=_failure(common.TRANSIENT_BACKEND_FAILURE, str(error), True)
+            )
+        self.state = "ready"
+        return runtime_pb2.LifecycleResponse(state=self.state)
+
+    # --- 处理 -----------------------------------------------------------------
+    def Process(self, request, context):
+        if self.state != "ready":
+            return runtime_pb2.ProcessResponse(
+                error=_failure(common.UNSUPPORTED_CAPABILITY, f"plugin_not_ready:{self.state}")
+            )
+        future = asyncio.run_coroutine_threadsafe(self.plugin.invoke(request), self._loop)
+        self._in_flight[request.context.request_id] = future
+        try:
+            return future.result()
+        except concurrent.futures.CancelledError:
+            return runtime_pb2.ProcessResponse(
+                error=_failure(common.DEADLINE_EXCEEDED, "processing_cancelled", True)
+            )
+        finally:
+            self._in_flight.pop(request.context.request_id, None)
+
+    def Cancel(self, request, context):
+        future = self._in_flight.get(request.request_id)
+        if future is None:
+            return runtime_pb2.LifecycleResponse(
+                state=self.state, error=_failure(common.INVALID_INPUT, "unknown_request")
+            )
+        future.cancel()
+        return runtime_pb2.LifecycleResponse(state=self.state)
+
+
+def build_server(plugin: EmbedPlugin, loop: asyncio.AbstractEventLoop, workers: int = 4):
+    server = grpc.server(
+        concurrent.futures.ThreadPoolExecutor(max_workers=workers),
+        options=[("grpc.so_reuseport", 0)],
+    )
+    runtime_pb2_grpc.add_ProcessorPluginServiceServicer_to_server(
+        PluginServicer(plugin, loop), server
+    )
+    return server
+
+
+def serve(port: int, expect_digest: str | None = None) -> int:
+    digest = package_digest()
+    if expect_digest and expect_digest != digest:
+        # 摘要漂移不是警告：manifest 里写的摘要必须与当前代码一致，否则拒绝启动。
+        print(f"artifact digest mismatch: expected {expect_digest} got {digest}")
+        return 2
+    plugin = EmbedPlugin(artifact_digest=digest)
+    loop = asyncio.new_event_loop()
+    threading.Thread(target=loop.run_forever, daemon=True).start()
+    server = build_server(plugin, loop)
+    bound = server.add_insecure_port(f"127.0.0.1:{port}")
+    if bound == 0:
+        print(f"failed to bind 127.0.0.1:{port}")
+        return 2
+    server.start()
+    print(f"plugin ready name={describe().name} port={bound} artifact_digest={digest}", flush=True)
+    try:
+        server.wait_for_termination()
+    except KeyboardInterrupt:
+        server.stop(grace=1.0)
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="SensoryPlex BGE text embedding plugin (gRPC)")
+    parser.add_argument("--port", type=int, required=True)
+    parser.add_argument("--expect-digest", default=None)
+    arguments = parser.parse_args(argv)
+    return serve(arguments.port, arguments.expect_digest)

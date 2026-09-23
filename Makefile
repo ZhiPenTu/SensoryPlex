@@ -47,9 +47,12 @@ endif
 CARGO         ?= cargo
 # Cargo 必须在主机上调用（没有容器带 rust 工具链）。下游 target 仍依赖此变量。
 CARGO_HOST    ?= $(CARGO)
+# 需要"主机专属资源"的验收也固定在主机执行，理由与 cargo 相同：HF 权重缓存、CoreML EP、
+# MLX/Metal 都只存在于 macOS 主机，compose 容器里没有（.env 只挂 MEDIA_DIR）。
+PY_HOST       ?= uv run --frozen python
 
 .PHONY: setup configure proto check test integration format infra up down migrate gateway runtime pipeline-check runtime-smoke gateway-smoke media-replay media-check handoff-check backpressure-check
-.PHONY: stream-up stream-down stream-status stream-logs live-check model-check asr-check plugin-artifact capability-check
+.PHONY: stream-up stream-down stream-status stream-logs live-check model-check asr-check ocr-check embed-check plugin-artifact capability-check
 .PHONY: media-test resident-probe resident-install resident-uninstall resident-status
 .PHONY: lint-ruff test-py test-contracts test-integration proto-generate plugin-artifact-check
 
@@ -194,11 +197,14 @@ plugin-artifact:
 	$(EXEC_API) $(PY_API) tools/validate_plugin.py plugins/python/processors/vlm-moondream/plugin.yaml
 	$(EXEC_API) $(PY_API) tools/plugin_artifact.py --sbom plugins/python/processors/ocr-rapidocr
 	$(EXEC_API) $(PY_API) tools/validate_plugin.py plugins/python/processors/ocr-rapidocr/plugin.yaml
+	$(EXEC_API) $(PY_API) tools/plugin_artifact.py --sbom plugins/python/processors/embed-bge-onnx
+	$(EXEC_API) $(PY_API) tools/validate_plugin.py plugins/python/processors/embed-bge-onnx/plugin.yaml
 
 plugin-artifact-check:
 	$(EXEC_API) $(PY_API) tools/plugin_artifact.py --check plugins/python/processors/asr-whisper-mlx || true
 	$(EXEC_API) $(PY_API) tools/plugin_artifact.py --check plugins/python/processors/vlm-moondream || true
 	$(EXEC_API) $(PY_API) tools/plugin_artifact.py --check plugins/python/processors/ocr-rapidocr || true
+	$(EXEC_API) $(PY_API) tools/plugin_artifact.py --check plugins/python/processors/embed-bge-onnx || true
 
 # 模型插件链路验收（M8）：需要本机 VLM 服务（默认 http://127.0.0.1:11434）；
 # cargo build 走主机，verify_model 在容器内执行，MEDIA 通过 bind 进入容器。
@@ -317,3 +323,14 @@ ocr-check:
 	@test -n "$(MEDIA)" || { echo "usage: make ocr-check MEDIA=/absolute/path/to/authorized-video.webm [EXPECT=text|empty] [PROVIDER=cpu|coreml]"; exit 1; }
 	$(CARGO_HOST) build --locked --release -p sensoryplex-runtime --features "$(MEDIA_FEATURES)"
 	$(EXEC_API) $(PY_API) tools/verify_ocr.py --media "/host-media/$(notdir $(MEDIA))" --provider "$(if $(PROVIDER),$(PROVIDER),cpu)" --expect "$(if $(EXPECT),$(EXPECT),text)" $(if $(MODEL_DIR),--model-dir "$(MODEL_DIR)",)
+
+# ── BGE 文本向量链路验收（M8，ADR-017） ───────────────────────────────────
+# 这条链路**不接数据面**：输入是上游 OCR 观测里的文字。验收自己先跑一遍真实 OCR 链路
+# （四进程）产出 ocr_blocks，再让 BGE 插件编码成"维度版本化"的归一化向量；
+# 也可以用 OBSERVATIONS=<既有 ai-worker.json> 复用上游报告、跳过重跑 OCR。
+# PROVIDER=cpu|coreml：coreml 必须真的被会话选中，否则显式失败（不静默退回 CPU）。
+.PHONY: embed-check
+embed-check:
+	@test -n "$(MEDIA)" || { echo "usage: make embed-check MEDIA=/absolute/path/to/authorized-video.webm [PROVIDER=cpu|coreml] [MODEL_DIR=/path/to/bge-weights] [OBSERVATIONS=/path/to/ocr-ai-worker.json]"; exit 1; }
+	$(CARGO_HOST) build --locked --release -p sensoryplex-runtime --features "$(MEDIA_FEATURES)"
+	$(PY_HOST) tools/verify_embed.py --media "$(MEDIA)" --provider "$(if $(PROVIDER),$(PROVIDER),cpu)" $(if $(MODEL_DIR),--model-dir "$(MODEL_DIR)",) $(if $(OCR_MODEL_DIR),--ocr-model-dir "$(OCR_MODEL_DIR)",) $(if $(OBSERVATIONS),--input-observations "$(OBSERVATIONS)",)
