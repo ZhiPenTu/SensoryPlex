@@ -143,4 +143,6 @@ GLMemory 协商导致多视频轨竞态、容器内 PCM 的源编码采集不到
 而 `services/api/Dockerfile` 也从未把 OCR / BGE 两个插件注入容器 venv（契约测试 collect error）；
 两处都已修复，`make check EXEC_MODE=container` 现在全绿（契约 154 + 集成 24 + cargo 全过），
 并记下"Docker Desktop 文件共享缓存可能给出过期构建上下文、需先核对镜像内源码 md5"这条教训，
-详见 `docs/verification.md` 的"M7 补记二"。
+详见 `docs/verification.md` 的"M7 补记二"。同一批提交在远端也跑了两轮 `engineering-checks`、
+三个 job 全绿（run 35896034916 分支 / 35896037193 `master`）；`master` 那次是**外部**快进、
+没有经过 PR，需要维护者确认来源（见 `docs/verification.md` 的"M8 BGE"一节末）。
