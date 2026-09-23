@@ -12,8 +12,10 @@ Protobuf/gRPC + FastAPI** 工程，为 SRT/文件接入、感知、时间轴融�
 校验摘要并显式释放，容量与 lease 生命周期都有上限（见 ADR-010；消费方目前是验收脚本，不是模型 worker）。
 SRT 实时接入（M4）同样可用：`ingest` 在有限窗口内拉流、解码并测量断流与恢复，重连归解码元素
 （`srtsrc auto-reconnect`），本进程只测量；直播没有已知时长，因此不产出 anchor 区间。
-背压指标、模型推理、NATS 任务分发与 Milvus 语义索引尚未接入；
-相关 API 明确报告能力不可用。
+背压指标（M2）与四个端侧模型插件（VLM/ASR/OCR/BGE，ADR-012/016/017）已接入；BGE 向量也已能
+落库并检索回来（`services/index-worker`，ADR-020，本机为 Milvus Lite 文件形态）。仍未接入的是
+NATS 任务分发、常驻 index-worker 消费，以及网关侧语义检索——`mode=semantic` 仍返回 501，
+服务端 Milvus 拓扑在本机 Docker Hub 不可达的情况下未经验收。相关 API 明确报告能力不可用。
 
 ## 快速开始
 
@@ -64,6 +66,14 @@ make embed-check MEDIA=/absolute/path/to/authorized-video.webm    # BGE 文本�
 用它证明"模型没找到文字"与"处理失败"可区分；`PROVIDER=coreml` 走 CoreML 执行后端，
 拿不到 CoreML 会话会显式失败（不静默退回 CPU，见
 [ADR-016](docs/adr/ADR-016-OCR与ONNX执行后端.md)）。
+
+`make index-check EMBEDDINGS=/absolute/path/to/ai-worker.json` 把这份真实向量接进
+**落库与检索闭环**（ADR-020）：`services/index-worker` 写进 Milvus 并读回确认后才置 `ready`，
+检索命中必须回查 PostgreSQL 的 `ready` + material + `source.owner` 才返回；真实 PostgreSQL
+（隔离 schema + 真实迁移）与真实 Milvus Lite 上 11 个场景全过。输入取自
+`uv run --frozen python tools/verify_embed.py --media <sample> --keep-workspace` 产出的
+`ai-worker.json`。注意 Milvus Lite **是进程独占的**（同一数据目录不能被两个进程同时打开），
+服务端形态未验收，见 [ADR-020](docs/adr/ADR-020-向量索引落库与检索闭环.md)。
 
 `make embed-check` 是唯一**不接数据面**的链路：它先跑一遍真实 OCR 产出文字块，再让 BGE 消费这些
 文字（`acceptsMemoryKinds: []`，喂字节以 `buffer_reader_not_attached` 明确拒绝），产出维度版本化的

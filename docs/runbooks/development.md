@@ -144,11 +144,49 @@ SENSORYPLEX_SRT_LIVE_URI='srt://127.0.0.1:8890?streamid=read:live/obs' \
 断流只被**测量**（重连归 `srtsrc auto-reconnect`），详见
 [验证记录](../verification.md) 的"M4"一节。
 
-## 可选向量基础设施
+## 向量索引（ADR-020）
+
+向量落库与检索由 `services/index-worker`（`sensoryplex-index`）承担，只有两种入口：
+`index`（写向量并读回确认）、`search`（检索并回查 PostgreSQL 事实）、`inspect`（看 collection
+契约与行数）。**没有常驻消费者**：NATS/outbox 尚未接线，不要把它当成长驻服务启动。
+
+默认开发形态是 **Milvus Lite 文件路径**（`--uri /path/to/vector.db`，或环境变量
+`SENSORYPLEX_MILVUS_URI`）。两条必须知道的约束：
+
+- **Milvus Lite 是进程独占的**：数据目录带 flock，同一个路径不能被两个进程同时打开
+  （被占用时命令以 `vector_store_locked` 失败，detail 只给文件名）。所以写入者与检索者不能并存，
+  调试时不要一边留着一个开着的进程。
+- **服务端形态未验收**：`deploy/compose/docker-compose.vector.yml` 里的 etcd（quay.io）与
+  MinIO（pgsty）镜像能拿到，但 `milvusdb/milvus` 在 Docker Hub 上，本机
+  `docker pull milvusdb/milvus:v2.5.10` 直接 `EOF`，所以 **standalone 拓扑起不来、也没验过**。
+  不要用一个"看起来起来了"的半套栈宣称服务端可用。
+
+自检与验收：
+
+```sh
+# 1) 先拿一份真实 BGE 观测（真实 OCR 文本 + 真实 BGE 权重），保留工作区
+uv run --frozen python tools/verify_embed.py \
+  --media video/samples/screencast-video2commons.480p.vp9.webm --keep-workspace
+# 2) 用那份 ai-worker.json 跑真实 PostgreSQL（隔离 schema + 真实迁移）与真实 Milvus Lite
+make index-check EMBEDDINGS=/var/folders/.../sensoryplex-embed-XXXX/ai-worker.json
+```
+
+手工单步（需要 `SENSORYPLEX_INDEX_DATABASE_URL`，主机上把 host 换成 `127.0.0.1:${POSTGRES_PORT}`）：
+
+```sh
+uv run --frozen python -m sensoryplex_index_worker.cli --uri /tmp/vector.db inspect \
+  --vector-index-key material_text_bge_small_zh_v1_5_d512_v1
+```
+
+契约与稳定原因码见 [契约说明](../contracts/README.md) 的"向量索引落库契约"一节，
+决策与实测见 [ADR-020](../adr/ADR-020-向量索引落库与检索闭环.md)。
+
+## 可选向量基础设施（服务端拓扑，未验收）
 
 `deploy/compose/docker-compose.vector.yml` 包含 etcd、MinIO 和 Milvus，镜像锁定 digest，
-与基础 Compose 合并使用。MinIO 采用 pgsty 维护的发行镜像。初始 Gateway 不使用该栈，
-因此默认不拉取/启动；此配置尚未经过向量写入/检索验收。
+与基础 Compose 合并使用。MinIO 采用 pgsty 维护的发行镜像。上面的 Lite 形态不需要这套栈，
+初始 Gateway 也不使用它，因此默认不拉取/启动；**它尚未经过向量写入/检索验收**
+（本机 Docker Hub 不可达，Milvus 本体镜像拉不下来）。
 
 ```sh
 docker compose --env-file .env -f deploy/compose/docker-compose.poc.yml \

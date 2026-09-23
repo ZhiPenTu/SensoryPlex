@@ -13,6 +13,7 @@ COPY pyproject.toml uv.lock ./
 COPY plugins/python plugins/python
 COPY services/api services/api
 COPY services/gateway services/gateway
+COPY services/index-worker services/index-worker
 RUN --mount=type=cache,id=sensoryplex-uv,target=/root/.cache/uv uv sync --frozen --group dev --no-editable --package sensoryplex-api
 COPY tools/migrate.py tools/migrate.py
 COPY db/migrations db/migrations
@@ -33,6 +34,9 @@ RUN /usr/local/bin/uv pip install --python /app/.venv/bin/python --no-cache-dir 
 # 契约测试在事后红成一片。容器里只跑契约测试（引擎被测试替身替换），不跑真实推理。
 RUN /usr/local/bin/uv pip install --python /app/.venv/bin/python --no-cache-dir \
         "onnxruntime>=1.23,<2" "tokenizers>=0.22,<1" "rapidocr>=3.9,<4"
+# index-worker（ADR-020）的契约与集成测试在容器里也要能 collect：它的 pymilvus/milvus-lite
+# 不是"可选加速"，而是被测代码自身要 import 的依赖，所以同样真装、同样不加 `|| true`。
+RUN /usr/local/bin/uv pip install --python /app/.venv/bin/python --no-cache-dir ./services/index-worker
 RUN groupadd --gid 10001 sensoryplex && useradd --uid 10001 --gid 10001 --no-create-home sensoryplex && mkdir -p /app/.data/console-media && chown -R 10001:10001 /app/.data
 USER 10001:10001
 EXPOSE 8091

@@ -1447,3 +1447,128 @@ merge commit `460ecf2`。本次**没有**由我执行 `gh pr merge`，也**没�
 `tools/verify_replay.py` 的 `check_track` 会失败——ffprobe 报 `duration_ms=52208`，解码侧视频
 `last_end_ms=52209`，差 1 ms 使 `last_end_ms <= duration_ms` 不成立（本轮未触及解码与轨道统计路径；
 `video/1.mp4` 无此现象）。登记在此，供后续单独处理。
+
+### M8 剩余：向量索引落库与检索闭环（ADR-020）（2026-09-24）
+
+第四个模型插件（BGE）刻意**不落库**：ADR-017 把它写成 `storage=inline_payload`、`vector_ref=null`。
+本轮补上它身后的 sink：`services/index-worker` 把插件产出的向量写进向量库并**读回来确认**，
+再提供一条把同一批向量检索回来的闭环。决策见
+[ADR-020](adr/ADR-020-向量索引落库与检索闭环.md)。
+
+#### 命令与角色
+
+```bash
+# 1) 上游：真实 OCR → 真实 BGE 权重，得到真实向量（不是自己造的向量）
+uv run --frozen python tools/verify_embed.py \
+  --media video/samples/screencast-video2commons.480p.vp9.webm --keep-workspace
+# 2) 落库与检索闭环（真实 PostgreSQL 隔离 schema + 真实迁移 + 真实 Milvus Lite）
+make index-check EMBEDDINGS=/var/folders/.../sensoryplex-embed-XXXX/ai-worker.json
+```
+
+角色四方：验收脚本（编排与对账，主机）→ `python -m sensoryplex_index_worker.cli`
+（独立进程，`index`/`search`/`inspect`）→ 真实 PostgreSQL（本次新建隔离 schema，跑真实迁移
+`0001`–`0003`）→ Milvus（本机 Milvus Lite **文件形态**；服务端形态同一客户端与同一 collection 契约，
+但本机拉不到镜像，见下）。
+
+#### 实测结果
+
+```
+workspace: /var/folders/.../sensoryplex-index-i158cr6e
+database: 127.0.0.1:25432/sensoryplex_test (from env-file)
+embeddings: 2 from ai-worker.json          # 真实 BGE 观测：dimension=512
+vector uri: .../vector-edge.db  collection: material_text_bge_small_zh_v1_5_d512_v1  dimension: 512
+Applied 0001_initial / 0002_console / 0003_embedding_index
+
+index acceptance: real BGE vectors -> Milvus (2 rows) -> PostgreSQL provenance passed in 10.6s
+```
+
+11 个场景（同一轮全部执行，任何一条不满足即整体失败）：
+
+| # | 场景 | 实测证据 |
+| --- | --- | --- |
+| 1 | 真实落库并确认 | 两条都 `state=ready`、`confirmed=true`、`vector_ref=milvus://material_text_bge_small_zh_v1_5_d512_v1/emb_…`；PostgreSQL 侧 `vector_ref`/`indexed_at` 都有值且 `error_code IS NULL` |
+| 2 | 换进程重新打开同一个 Milvus | `inspect` 在新进程里数到 2 行 |
+| 3 | 检索并回查事实 | 自检索 `distance≈1.0`；`material_unit_id`/`stream_id`/`start_ms`/`end_ms` 与素材事实一致，`dimension=512` |
+| 4 | 非 owner 命中必须丢弃 | `results=[]`、`unindexed_hits=2`（Milvus 不是鉴权依据） |
+| 5 | 被标 `failed` 的记录即使还在库里也不返回 | `unindexed_hits=1` |
+| 6 | 幂等重跑 | 同一批 `embedding_id`、collection 不变、行数仍为 2 |
+| 7 | 维度篡改（payload 声明 513，key 声明 512，向量长 512） | `vector_dimension_mismatch`，`detail=key=512 declared=513 actual=512`；PostgreSQL 留下一行 `failed`（带原因码），向量库行数不变 |
+| 8 | 向量库不可达（`/dev/null/milvus-edge.db`） | 整轮失败：顶层 `error_code=vector_store_unavailable`（`detail=ConnectionConfigException`），`indexed=[]`，无 ready 行 |
+| 9 | collection 契约漂移（同名但缺字段） | 两条观测都 `vector_collection_contract_mismatch`，`indexed=[]` |
+| 10 | 不外泄 | 向量库里恰好 2 行；grep 被编码的原文片段、主机路径、DSN 全部找不到 |
+| 11 | 数据目录被别的进程 flock 持有 | `vector_store_locked`（`detail` 只有文件名）、`indexed=[]`、ready 行数不变；持有者退出后同一目录立刻可用（`inspect rows=0`） |
+
+场景 7/8/9/11 的失败面都是**结构化**的，不是"日志里有一行 warning"：
+
+```json
+{"failed":[{"detail":"key=512 declared=513 actual=512","observation_id":"obs_ab6a19ea…","reason_code":"vector_dimension_mismatch"}],"indexed":[<未被篡改的那一条>]}
+{"error_code":"vector_store_unavailable","failed":[{"observation_id":null,"reason_code":"vector_store_unavailable"}],"indexed":[]}
+{"failed":[{"detail":"material_text_bge_small_zh_v1_5_d512_v1","observation_id":"obs_ab6a19ea…","reason_code":"vector_collection_contract_mismatch"},{"…第二条同样是 contract_mismatch…"}],"indexed":[]}
+{"error_code":"vector_store_locked","detail":"vector-locked.db","indexed":[]}
+```
+
+场景 9 之后直接查事实表，能看到"拒绝也要留痕"（`--keep-workspace` 保留隔离 schema）：
+
+```
+emb_cec0b975…|failed|milvus://material_text_bge_small_zh_v1_5_d512_v1/emb_cec0b975…|vector_collection_contract_mismatch|512
+emb_1953e314…|failed|milvus://material_text_bge_small_zh_v1_5_d512_v1/emb_1953e314…|vector_collection_contract_mismatch|512
+```
+
+#### 本轮暴露并修掉的真实缺陷（7 条，全部由"真库 / 真库形态 / 真进程"抓出）
+
+1. **回查 SQL 引用了不存在的列**：`material_unit` 的列是 `revision`，
+   查询写成 `m.material_revision` → 真实 PostgreSQL 直接
+   `psycopg.errors.UndefinedColumn: column m.material_revision does not exist`。纯函数测试全绿也照样漏。
+2. **契约不符被兜底 `except` 吞掉**：`ensure_collection` 的通用包装把 `IndexContractError`
+   改写成 `vector_collection_create_failed`，稳定原因码在最后一跳丢失。
+3. **被拒绝的观测不留痕**：维度守卫在 `begin_pending` 之前抛出，于是"拒绝了"在库里查不到——
+   等同于静默丢弃。改成先落 `pending` 再标 `failed`。
+4. **锁冲突被读成"库不可用"**：Milvus Lite 的目录锁在 pymilvus 里变成一个笼统的
+   `ConnectionConfigException`（异常链断在起本地服务的线程），于是"稍后重试就行"与
+   "配置写错了"分不开。改成按同一个锁文件预检（`local_store_locked` → `vector_store_locked`）。
+5. **验收脚本自身的进程边界**：Milvus Lite 的目录锁是进程级的，父进程开过的目录子进程打不开，
+   而场景 9 要验的正是"子进程打开漂移 collection"。漂移 collection 改由子进程建。
+6. **新增迁移必须同步 `/v1/health` 的版本集合**：`0003_embedding_index` 加进去之后，
+   `SCHEMA` 仍是 `0002_console`，而健康检查断言的是"库里的迁移集合恰好等于镜像认识的集合"，
+   `/v1/health` 直接 503 `schema_version_mismatch`——真实集成测试
+   （`tests/integration/test_metadata.py`）当场变红。修法是 `SCHEMA` + `SCHEMA_VERSIONS`
+   两处一起更新（见 `services/api/src/sensoryplex_api/app.py`）。
+7. **api 镜像里没有 index-worker**：Dockerfile 只 `COPY services/api`/`services/gateway`，
+   容器里的契约测试会 collect error。补 `COPY services/index-worker` 与
+   `uv pip install ./services/index-worker`（**不加** `|| true`：装不上就让镜像构建失败，
+   而不是让容器里的测试事后红成一片）。
+
+#### 两条必须记住的环境事实
+
+- **本机 Docker Hub 不可达，`milvusdb/milvus` 拉不下来**：
+  `docker pull milvusdb/milvus:v2.5.10` → `Get "https://registry-1.docker.io/v2/": EOF`。
+  `deploy/compose/docker-compose.vector.yml` 里的 etcd（quay.io）与 MinIO（pgsty）镜像在本地存在，
+  但缺 Milvus 本体，**standalone 拓扑起不来**。因此本轮全部验收跑 Milvus **Lite 文件形态**，
+  服务端形态**未经写入与检索验收**（ADR-020 §6）。
+- **Milvus Lite 是进程独占的**：数据目录带 flock，同一路径不能被两个进程同时打开。
+  edge 形态因此是"单写进程"：写入者与检索者不能并存；`vector_store_locked` 就是这条约束的稳定码。
+
+#### `make check`（本切片收口，2026-09-24）
+
+| 模式 | 结果 |
+| --- | --- |
+| `make check EXEC_MODE=host`（macos-aarch64，`SENSORYPLEX_TEST_DATABASE_URL` 指向 `127.0.0.1:25432`） | ruff `All checks passed` + `128 files already formatted`；契约 **198 passed**；集成 **31 passed**；`cargo fmt`/`clippy -D warnings`/`test --workspace` 全过 |
+| `make check EXEC_MODE=container`（重建 api 镜像 + `make migrate` 应用 `0003` 后） | ruff `All checks passed` + `128 files already formatted`；契约 **198 passed**；集成 **31 passed**；`cargo fmt`/`clippy`/`test` 全过 |
+
+契约与集成的增量都来自本切片：`tests/contracts/test_index_worker_contract.py`（**43** 项，纯判定与形状）
+与 `tests/integration/test_index_records.py`（**7** 项，真实 PostgreSQL + 真实迁移）。
+后者专治"只有真库能暴露"的缺陷：它直接断言 `0003` 的三条不变式在数据库里生效
+（`embedding_record_ready_is_confirmed` / `embedding_record_ready_has_no_error` /
+`embedding_record_failed_has_reason` 的约束名都能被 `CheckViolation` 逐个对上）。
+
+#### 仍未验证（不得当成完成）
+
+- **常驻消费未接线**：没有 NATS/outbox 轮询把上游观测喂给 index-worker，本轮只有显式 CLI 调用，
+  因此**没有**常驻 index-worker 服务/容器；`deploy/` 下也没有对应服务。
+- **网关语义检索仍是 501**：`mode=semantic` 未接这批向量，RRF/混合检索、相关性排序均未做。
+- **向量质量未验收**：没有带参考文本的检索样本，所以没有 recall/MRR/排序基准；
+  本轮只证明"同一向量能取回自己的事实"。
+- **共享向量去重未做**：同一段文字在多个 material 下会各存一份向量（`embedding_id` 含 material 作用域）。
+- **服务端 Milvus / `linux-x86_64` / Mac mini 未验证**；`xlarge` 之外的机型档位未跑。
+- 未做 worker 侧的 durable 幂等与崩溃回收（重跑靠确定性 `embedding_id` + upsert，不是靠事务队列）。
+- `golden_path_verified` 仍恒为 false。

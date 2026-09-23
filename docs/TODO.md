@@ -15,7 +15,8 @@
 ## 当前并行工作与明确未完成项（2026-09-24）
 
 - [ ] **M8 整体仍在研发中**：四个模型（VLM / ASR / OCR / BGE）已接入并通过本机真实样本验收，
-  剩余的是运行时加速后端能力上报、向量库落库与检索、按机型选模型（明细见 §M8）。
+  向量落库与检索闭环也已落地（Lite 形态，见 §M8），剩余的是运行时加速后端能力上报、
+  网关侧语义检索接线（`mode=semantic` 仍 501）、以及按机型选模型（明细见 §M8）。
   分项测试通过不等于整个 M8 或 Golden Path 完成，具体进展按其验收证据更新。
 - [ ] **真实媒体端到端**：Runtime → Timeline → metadata writer/outbox → 查询与回看尚未联调验收。
   Timeline 融合核心已在独立分支 `codex/timeline-fusion` 提交 `bdb00ef`，尚未合并主线。
@@ -170,14 +171,17 @@
 
 ### M8 模型插件（ASR/OCR/VLM/BGE）
 
-- 状态：**进行中**——四个真实端侧模型（**VLM**、**ASR**、**OCR**、**BGE 文本向量**）已接入并通过验收；
-  运行时加速后端的能力上报、向量库落库与检索仍未做。
+- 状态：**进行中**——四个真实端侧模型（**VLM**、**ASR**、**OCR**、**BGE 文本向量**）已接入并通过验收，
+  BGE 向量也已能落库并检索回来（Milvus **Lite** 形态）；仍未做的是运行时加速后端的能力上报、
+  常驻 index-worker 消费、以及网关侧把这批向量接进 `mode=semantic`。
   证据见 `docs/verification.md` 的 "M8 模型插件：真实 VLM 端侧接入与观察语义"、
-  "M10 模型插件：真实 ASR 端侧接入与音频样本布局契约"、"M8 OCR" 与 "M8 BGE"；设计决策见
+  "M10 模型插件：真实 ASR 端侧接入与音频样本布局契约"、"M8 OCR"、"M8 BGE" 与
+  "M8 剩余：向量索引落库与检索闭环（ADR-020）"；设计决策见
   [ADR-012](adr/ADR-012-模型插件与端侧推理边界.md)、
   [ADR-014](adr/ADR-014-ASR插件与音频样本布局契约.md)、
   [ADR-016](adr/ADR-016-OCR与ONNX执行后端.md) 与
-  [ADR-017](adr/ADR-017-BGE文本向量与维度版本化.md)。
+  [ADR-017](adr/ADR-017-BGE文本向量与维度版本化.md)、
+  [ADR-020](adr/ADR-020-向量索引落库与检索闭环.md)。
 - 已完成（VLM）：`plugins/python/processors/vlm-moondream` 消费 Runtime 数据面里的真实视频帧
   （经 `LeaseBufferReader` 读字节，非文件名），调用**本机** ollama 的 `moondream:v2` 产出
   `observation.vision.scene_description`：锚点等于源帧半开区间（`timing_source=media_pts`）、
@@ -220,8 +224,23 @@
   显式写 `drain.leases=0` 且报告里没有数据面统计。实测把 CoreML 从“看起来能用”降级为
   “可选择但更慢”（短文本 0.78 ms vs 3.16 ms）——与 OCR 同一结论。详见
   [ADR-017](adr/ADR-017-BGE文本向量与维度版本化.md) 与 `docs/verification.md` 的"M8 BGE"一节。
+- 已完成（向量索引落库与检索闭环，2026-09-24）：第五个端侧组件 `services/index-worker`
+  （`sensoryplex-index`）把 BGE 向量写进向量库并**读回来确认**后才置 `embedding_record.state='ready'`
+  （迁移 `0003_embedding_index.sql` 把这条顺序写成行不变式），并提供 `search` 闭环：
+  Milvus 只回答"哪条最近"，命中必须回查 PostgreSQL 的 `ready` + material 存在 + `source.owner`
+  才允许返回，丢弃的命中单独计数。collection 名 = `vector_index_key`（换模型/维度=新 collection），
+  索引 FLAT + COSINE，`vector_ref` 只是逻辑引用（`milvus://<collection>/<id>`，不含路径/端口)。
+  `make index-check EMBEDDINGS=<ai-worker.json>` 用真实 BGE 向量 + 真实 PostgreSQL + 真实 Milvus Lite
+  跑 **11 个场景**（写入确认、跨进程持久、检索回查、非 owner 丢弃、failed 不返回、幂等、
+  维度篡改、库不可达、契约漂移、不外泄、目录被锁）全过。
+  **注意形态边界**：本机 Docker Hub 不可达，`deploy/compose/docker-compose.vector.yml` 的
+  Milvus standalone **起不来也未验收**；Milvus Lite 是**进程独占**的（目录 flock，
+  被占用即 `vector_store_locked`），因此 edge 是单写进程。详见
+  [ADR-020](adr/ADR-020-向量索引落库与检索闭环.md)。
 - 剩余子项：运行时加速后端的能力上报（Rust 侧本版本没有任何 in-process `ExecutionBackend`，
-  `coreml`/`metal` 因此仍记为不可用）、向量库落库与检索（含换模型/维度后旧向量的迁移决策），
+  `coreml`/`metal` 因此仍记为不可用）、常驻 index-worker 消费（NATS/outbox 未接线）、
+  网关侧语义检索与排序（`mode=semantic` 仍 501；RRF/混合检索未做）、
+  向量质量验收（无带参考文本的检索样本 → 无 recall/MRR）、
   以及按机型档位选择模型（依赖 M5）。
 
 ### M9 格式准入与显式拒绝（ADR-009，新增格式之前必须先做）
