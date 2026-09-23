@@ -57,10 +57,13 @@ jobs:
       - name: 强制 ASCII 文件名（中文文件名不易跨工具流转，仅校验本次 PR 变更）
         if: steps.changed.outputs.count > 0
         run: |
-          bad="$(while IFS= read -r f; do
+          bad=""
+          while IFS= read -r f || [ -n "$f" ]; do
             [ -z "$f" ] && continue
-            printf '%s' "$f" | LC_ALL=C grep -q '[^[:print:][:space:]]' && echo "$f"
-          done < "$CHANGED_FILE")"
+            if printf '%s' "$f" | LC_ALL=C grep -q '[^[:print:][:space:]]'; then
+              bad="${bad}${f}"$'"'"'\n'"'"'
+            fi
+          done < "$CHANGED_FILE"
           if [ -n "$bad" ]; then
             echo "$bad"; echo "检测到非 ASCII 文件名，请改用英文 slug"; exit 1
           fi
