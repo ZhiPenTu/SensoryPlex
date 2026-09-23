@@ -23,8 +23,16 @@ COPY --from=console /console/dist apps/console/dist
 RUN /usr/local/bin/uv pip install --python /app/.venv/bin/python --no-cache-dir \
         ./services/gateway \
         ./plugins/python/processors/vlm-moondream \
-        ./plugins/python/processors/asr-whisper-mlx --no-deps \
+        ./plugins/python/processors/asr-whisper-mlx \
+        ./plugins/python/processors/ocr-rapidocr \
+        ./plugins/python/processors/embed-bge-onnx --no-deps \
         numpy "scipy>=1.11" || true
+# OCR / BGE 的契约测试断言的是**真实发行版元数据**（`installed_version("onnxruntime")`
+# 不许编造，`installed_version("rapidocr")` 不许为空），所以这两个 ONNX 链路需要真安装；
+# 与上面那条不同，这里**不加 `|| true`**：装不上就让镜像构建失败，而不是让容器里的
+# 契约测试在事后红成一片。容器里只跑契约测试（引擎被测试替身替换），不跑真实推理。
+RUN /usr/local/bin/uv pip install --python /app/.venv/bin/python --no-cache-dir \
+        "onnxruntime>=1.23,<2" "tokenizers>=0.22,<1" "rapidocr>=3.9,<4"
 RUN groupadd --gid 10001 sensoryplex && useradd --uid 10001 --gid 10001 --no-create-home sensoryplex && mkdir -p /app/.data/console-media && chown -R 10001:10001 /app/.data
 USER 10001:10001
 EXPOSE 8091

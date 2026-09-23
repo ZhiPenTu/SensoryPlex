@@ -22,8 +22,10 @@ EXEC_API      = $(COMPOSE) exec -T api
 EXEC_GATEWAY  = $(COMPOSE) exec -T gateway
 EXEC_CONSOLE  = $(COMPOSE) exec -T console
 EXEC_MIGRATE  = $(COMPOSE) run --rm -T migrate
-# 集成测试的库地址：容器模式用 compose exec -e 从调用者环境注入，主机模式由调用者自己提供。
-EXEC_TEST     = $(EXEC_API) -e SENSORYPLEX_TEST_DATABASE_URL
+# 集成测试的库地址：容器模式用 compose exec -e 从调用者环境注入；`-e` 必须写在 SERVICE
+# **之前**（`docker compose exec [OPTIONS] SERVICE COMMAND`），所以这里不复用 EXEC_API。
+# 主机模式由调用者自己提供该变量（见下方 test-integration 注释）。
+EXEC_TEST     = $(COMPOSE) exec -T -e SENSORYPLEX_TEST_DATABASE_URL api
 # api / gateway / console 容器里的可执行入口：
 PY_API        = /app/.venv/bin/python
 PY_GATEWAY    = /app/.venv/bin/python
