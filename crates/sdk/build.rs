@@ -6,6 +6,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "material/v1/material.proto",
         "media/v1/media.proto",
         "media/v1/handoff.proto",
+        "media/v1/live.proto",
         "runtime/v1/runtime.proto",
         "gateway/v1/gateway.proto",
     ];

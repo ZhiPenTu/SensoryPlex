@@ -1,0 +1,31 @@
+apiVersion: edge.material/v1
+kind: Pipeline
+metadata:
+  name: srt-live-poc
+spec:
+  source:
+    # 实时接入：URI 本身（含 streamid/凭据）只从环境变量 SENSORYPLEX_SRT_LIVE_URI 读，
+    # 不进命令行、报告与日志。这里只登记引用名。
+    type: srt
+    uri_secret_ref: SRT_LIVE_URI
+  queue_capacity: 32
+  data_egress: local_only
+  processors:
+    - type: adaptive_sampler
+    - type: audio_segmenter
+    - type: asr
+      model: faster-whisper-large-v3
+    - type: ocr
+      model: paddleocr-v5
+    - type: vlm
+      model: qwen-vl-fast
+    - type: timeline_fusion
+    - type: embedding
+      model: bge-m3
+  slow_enrichment:
+    - type: vlm
+      model: qwen-vl-quality
+  sinks:
+    - type: blob_storage
+    - type: metadata_store
+    - type: vector_store

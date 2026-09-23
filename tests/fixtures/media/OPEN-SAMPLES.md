@@ -102,7 +102,10 @@ ffprobe 把首个音频点放在 12 ms，GStreamer 放在 6 ms，两者相差一
 
 ## 未覆盖范围（不得当作已完成）
 
-- **断流重连**：需要 SRT 直播源，文件样本无法覆盖，仍为 `UnavailableSource`。
+- **断流重连**：文件样本无法覆盖，必须走 SRT。已用 `screencast-video2commons`（552 s）经
+  GStreamer `srtsink` **直推** SRT 覆盖最小场景（`make live-check` 的 `stall_recovery`）：
+  发布端在窗口中被 SIGINT、随后重新拉起，Runtime 测到 `stalls=1`、`stalled_ms=4723`、`recovered=true`。
+  用户自有采集端（OBS / Mac mini）的直推样本仍待补，见 `docs/TODO.md` §2。
 - **容器级 VFR**：这些文件都是可用的 CFR（25/30/60 fps），容器层没有 VFR 长间隙；"长间隙"只由
   内容静止段近似（最长 45.6s），不等价于 VFR 时间戳缺帧。
 - 这些样本**没有**跑过模型：ASR/OCR/VLM/BGE 未接入，抽帧覆盖率结论也尚未产出——本清单只提供

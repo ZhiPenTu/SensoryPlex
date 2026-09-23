@@ -171,7 +171,7 @@ message ReplayReport {
   uint64 out_of_order_items = 6;
   uint64 gap_items = 7;
   string platform = 8;
-  // Capabilities this build did not implement, for example gstreamer_srt_ingest.
+  // Capabilities this build did not implement, for example gstreamer_decode_not_implemented.
   repeated string blockers = 9;
   // Why items were dropped. A drop is always explained, never silent.
   repeated string drop_reasons = 10;

@@ -73,6 +73,8 @@ arm64，M2 Max，32 GB 统一内存）。本次改动只涉及能力上报契约
 - 上面的冒烟使用合成片段，只证明契约与管道成立；`tests/fixtures/media/` 仍为空，真实授权样本尚未回放。
 - 未解码任何帧或音频：没有生成 `BufferDescriptor`，没有签发真实 lease（lease 仅有单元测试覆盖），也没有抽帧、音频切段与背压指标。
 - SRT 路径为 `UnavailableSource`，调用即返回 `gstreamer_srt_ingest_not_implemented`，不产生任何锚点。
+  （本条记录的是当时状态；SRT 接入已于 2026-09-23 落地，`replay` 的拒绝码改为
+  `srt_source_requires_ingest_command`，见下文"M4"一节。）
 - 实测中 ffprobe 输出已是呈现顺序，重排计数为 0；重排逻辑仅由 B 帧解码顺序的单元测试覆盖。
 - `make media-replay` 未加入 CI：它要求真实授权媒体，合成样本不能作为验收证据。
 
@@ -147,6 +149,7 @@ make media-replay MEDIA=/Users/tuzhipeng/Documents/SensoryPlex/video/1.mp4
   （本条记录的是当时状态；抽帧已于 2026-09-23 接入并从 `blockers` 移除，见下文"M1 自适应抽帧"一节，
   其余判断仍然有效。）
 - SRT 仍为 `UnavailableSource`；没有 SRT 端点，也没有断流重连验证。
+  （本条记录的是当时状态；该范围已于 2026-09-23 补齐，见下文"M4"一节，其余判断仍然有效。）
 - 模型链路全部未接入：ASR/OCR/VLM/BGE 无实现，CoreML/Metal 后端仍报 `execution_backend_not_implemented`。
 - 该样本由 FFmpeg 生成/转码（`encoder=Lavf58.20.100`），不是设备直出；静态投屏、翻页切换、运动/多人对话
   三类样本尚未回放，抽帧覆盖率结论不成立。
@@ -369,3 +372,89 @@ blocker 也随之移除。
 - 消费方是**验收脚本**，不是模型 worker：ASR/OCR/VLM/BGE 仍未接入，语义可见性仍无证据。
 - 未验证跨平台：全部在 `macos-aarch64` 完成，Linux/x86_64 侧（`docs/TODO.md` M6）未验收。
 - 未验证长时间运行下的段泄漏与反复 replay 的清理行为；未验证进程被强杀后段名残留的表现。
+
+### M4 SRT 实时接入：真实直推、断流恢复与实时数据面（2026-09-23）
+
+接入层是 MediaMTX 1.21.1（Compose 项目 `sensoryplex-stream`，端口只绑回环，见
+[OBS 推流手册](runbooks/obs-streaming.md)）。这一轮的发布端**不由 OBS 提供**：验收脚本自己用
+GStreamer `srtsink` 把登记在册的授权样本直推出去，所以既没有 RTMP 转封装，也不占用 OBS 会话。
+
+发布端（`tools/verify_live.py` 内建，等价命令）：
+
+```sh
+gst-launch-1.0 -e filesrc location=video/samples/screencast-video2commons.480p.vp9.webm \
+  ! decodebin name=d \
+  d. ! queue ! videoconvert ! videoscale ! video/x-raw,format=I420 \
+     ! x264enc tune=zerolatency speed-preset=ultrafast key-int-max=60 bitrate=2500 \
+     ! h264parse ! queue ! mux. \
+  d. ! queue ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=2 \
+     ! avenc_aac bitrate=128000 ! aacparse ! queue ! mux. \
+  mpegtsmux name=mux ! srtsink uri=srt://127.0.0.1:8890 streamid=publish:live/obs
+```
+
+消费端是 Runtime 的 `ingest` 命令；URI 只从环境变量读，不进命令行与报告：
+
+```sh
+SENSORYPLEX_SRT_LIVE_URI='srt://127.0.0.1:8890?streamid=read:live/obs' \
+  target/release/sensoryplex-runtime ingest config/pipelines/srt-live.yaml \
+  --report /tmp/live.pb --duration-ms 12000
+```
+
+**接入层探测（真实命令，不是推导）：**
+
+| 探测 | 结果 |
+| --- | --- |
+| SRT 发布 | `streamid=publish:live/obs` 被接受（配置为 `authInternalUsers: user: any`）；`read:` 不需要凭据 |
+| URI 形式 | `srtsrc uri="srt://127.0.0.1:8890?streamid=read:live/obs"` 可用，query 参数被元素解析 |
+| 断流 | 发布端 SIGINT 后 `paths{name="live/obs",state="notReady"}`，读者停止收到样本 |
+| 恢复 | `srtsrc auto-reconnect=true` 的**同一进程**在发布端回来后自动续上；Runtime 只测量，不控制重连 |
+| 无源 | 没有发布者时 `read:` 连不上；`ingest` 跑满窗口后以 `live_window_produced_no_samples` 失败（exit 1） |
+
+**四个场景（`make live-check`，macOS arm64 + MediaMTX arm64 容器）：**
+
+| 场景 | 窗口 | samples | descriptors | stalls | stalled_ms | max_stall | pts_gap | recovered | 结论 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| steady | 12 000 ms | 963 | 664（0 失败） | 0 | 0 | 0 | 0 | false | PASS |
+| stall_recovery | 20 000 ms | 1162 | 839（0 失败） | 1 | 4723 | 4723 | 4722 | true | PASS |
+| no_source | 1 500 ms | 0 | 0 | 1（`stream_gap_at_window_end`） | 1502 | 1502 | -1（未知） | false | 必须失败，exit 1 |
+| live_handoff | 8 000 ms | 692 | 493（0 失败） | 0 | 0 | 0 | 0 | false | PASS |
+
+断流场景的实测明细：发布端在窗口第 6 秒被 SIGINT、第 9 秒重新拉起，事件记为
+`started=7428ms ended=12151ms gap=4723ms pts_jump=4722ms reason=stream_gap`；
+`reconnect_owner=srtsrc auto-reconnect`。重连由解码元素负责，本进程没有自己的重连逻辑，
+因此报告里只有"测到断流 + 测到恢复"，没有"我重连了几次"这种无法观察的断言。
+
+`live_handoff` 与 M3 是同一条数据面：`--handoff-listen 127.0.0.1:<port>` 下由
+`tools/handoff_worker.py`（独立进程，63 项检查通过）按 lease 读取并释放，`handoff_stats` 显示
+`consumer_seen=true`、`retained=0`、`arena_live_slabs=0`，且
+`released + expired + retained == retained_total`（32 == 32）。
+
+**诚实性断言（脚本逐项检查）：**
+
+- `golden_path_verified` 恒为 false；稳定窗口 `blockers` 为空，无源窗口为 `live_window_produced_no_samples`；
+- 报告原始字节、Runtime stdout 与命令行里都不出现 URI、`streamid` 或 `127.0.0.1`（URI 只经环境变量传入）；
+- 直播没有已知时长：`source.duration_ms == 0`；直播不可复现：`content_hash == ""`，不用占位摘要；
+- 只列出真实观测到的轨道（video 854x480、audio 48 kHz/2ch，`timing_known=true`）；
+  `codec` 留空表示未知——容器编码名尚未采集，属 M9 的采集范围；
+- 没有样本的窗口不是成功：`samples == 0` 即 exit 1 并写明原因。
+
+**顺带修掉一个真实缺陷：** `GstDecoder::open_live` 原先在 `gst::init()` 之前解析 `srtsrc`；
+外部插件需要插件注册表，未初始化时直接 panic（`GStreamer has not been initialized`，
+实测于 `crates/media/src/decode.rs`）。现在 `open_file` / `open_live` 在创建元素**之前**初始化。
+直播路径另用 3 秒状态变更上限（直播不做 preroll，pad 是异步出现的），无源时不再白等文件路径的 15 秒。
+
+**复现命令：** `make stream-up && make live-check`。脚本在检测到已有发布者（例如正在直播的 OBS）时
+直接拒绝运行，不去挤掉别人的会话。
+
+**未验证范围（不得当作完成）：**
+
+- 没有用户自有采集端（OBS / Mac mini）的 SRT 直推记录：本轮发布端是 GStreamer 脚本 + 已登记的
+  公有许可样本；OBS 默认推 RTMP，SRT 直推需要单独配置。
+- SRT 加密（`passphrase` / `pbkeylen`）与"需要凭据的 publish"未验证：当前 publish 走 `user: any`。
+- 只在本机回环与 `macos-aarch64` 上验收；`linux-x86_64` 侧未执行。
+- 直播没有 anchor 区间（没有已知时长），M1 的覆盖率口径在直播下只有 `sampling.observed/kept` 数字。
+- 未验证小时级长直播的段清理、arena 碎片化与断流次数上限，也未验证连续多次断流。
+- 未验证 VFR、设备直出与 720p 屏幕文字的直播样本。
+- 运行时解码仍会出现一条 macOS GL 警告（`GStreamer-GL-WARNING ... NSApplication`）：VideoToolbox
+  解码出 GLMemory，`videoconvert` 负责下载。实测不影响结果（0 descriptor 失败），但无头常驻形态
+  （M5）下是否稳定未验证。

@@ -93,7 +93,7 @@ impl MediaSource for FileSource {
     }
 }
 
-/// 本次构建尚未实现的 ingestion adapter 占位。它拒绝产出 anchor，
+/// anchor 路径读不了的 source 占位。它拒绝产出 anchor，
 /// 不会返回一条"空的"——也即具有误导性的——时间轴。
 pub struct UnavailableSource {
     description: MediaSourceDescription,
@@ -101,7 +101,9 @@ pub struct UnavailableSource {
 }
 
 impl UnavailableSource {
-    /// SRT ingestion 需要 GStreamer adapter（ADR-003）；在那之前它显式保持缺失状态。
+    /// SRT 的实时接入走 Runtime 的 `ingest` 命令（GStreamer `srtsrc` + 墙钟窗口），
+    /// 它不产出 anchor 区间——直播没有已知时长。replay 这条 anchor 路径因此
+    /// 保持显式拒绝，而不是返回一条被清空的、看起来正常的时间轴。
     pub fn srt(stream_id: &str, uri_secret_ref: &str) -> Self {
         Self {
             description: MediaSourceDescription {
@@ -116,7 +118,7 @@ impl UnavailableSource {
                 duration_ms: 0,
                 probe_tool: String::new(),
             },
-            reason: "gstreamer_srt_ingest_not_implemented".to_string(),
+            reason: "srt_source_requires_ingest_command".to_string(),
         }
     }
 }

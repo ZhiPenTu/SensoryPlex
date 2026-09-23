@@ -4,7 +4,7 @@ COMPOSE = docker compose --env-file .env -f deploy/compose/docker-compose.poc.ym
 STREAM_COMPOSE = docker compose -f deploy/compose/docker-compose.stream.yml
 
 .PHONY: setup configure proto check test integration format infra up down migrate gateway runtime pipeline-check runtime-smoke gateway-smoke media-replay media-check handoff-check
-.PHONY: stream-up stream-down stream-status stream-logs
+.PHONY: stream-up stream-down stream-status stream-logs live-check
 setup: configure
 	$(UV) sync --frozen
 	$(MAKE) proto
@@ -90,6 +90,12 @@ media-replay:
 	@test -n "$(MEDIA)" || { echo "usage: make media-replay MEDIA=/absolute/path/to/authorized-sample.mp4"; exit 1; }
 	$(CARGO) build --locked --release -p sensoryplex-runtime --features "$(MEDIA_FEATURES)"
 	$(UV) run python tools/verify_replay.py --media "$(MEDIA)"
+
+# SRT 实时接入验收：脚本自己用 GStreamer `srtsink` 直推授权样本（不经 RTMP、不依赖 OBS 空闲），
+# 覆盖稳定窗口、断流恢复、无源失败与实时数据面交接。需要 MediaMTX 已启动（make stream-up）。
+live-check:
+	$(CARGO) build --locked --release -p sensoryplex-runtime --features "$(MEDIA_FEATURES)"
+	$(UV) run python tools/verify_live.py $(if $(SAMPLE),--sample "$(SAMPLE)",)
 
 # 跨进程数据面验收：Runtime 保留字节，独立 Python 进程按 lease 读取、校验并释放。
 # 需要真实授权样本，与 media-replay 同一份素材即可。

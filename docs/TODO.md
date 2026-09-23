@@ -23,6 +23,8 @@
       （证据：`docs/verification.md` "M1 自适应抽帧：接线与真实样本覆盖率"）
 - [x] 跨进程数据面（M3）：Runtime 保留字节 + 独立进程按 lease 读取/校验/释放，容量与 lease 生命周期有上限
       （证据：`docs/verification.md` "M3 跨进程数据面：lease 消费方与真实交接"；契约见 ADR-010）
+- [x] SRT 实时接入（M4）：`ingest` 在有限窗口内拉流、解码、测量断流与恢复，重连归解码元素
+      （证据：`docs/verification.md` "M4 SRT 实时接入：真实直推、断流恢复与实时数据面"）
 
 ## 1. 其他模块（先做这些，再做优化）
 
@@ -60,13 +62,22 @@
 
 ### M4 SRT 接入与断流重连
 
-- 现状：`UnavailableSource`，调用即报 `gstreamer_srt_ingest_not_implemented`。
-  本机已有 MediaMTX 接入基础设施（`make stream-up`，见 `docs/runbooks/obs-streaming.md`），
-  能用授权样本向本地 `srtsink` 回放并做独立 GStreamer 诊断；但**服务器上有流不等于 Runtime 已处理**，
-  Runtime 侧的 SRT Source 与断流重连都还没有实现。
-- 待输入：SRT 端点（host:port、streamid、加密/密码引用方式），或允许用 ffmpeg 从授权文件向本地
-  `srtsink` 推流做回放。
-- 验收：真实 SRT 源回放 + 主动断流后重连，锚点/descriptor 计数与丢弃原因可解释。
+- 状态：**已完成**（证据见 `docs/verification.md` "M4 SRT 实时接入：真实直推、断流恢复与实时数据面"）。
+- 结果：新增契约 `media/v1/live.proto`（`StreamStall` / `LiveStreamStats` / `LiveIngestReport`）与
+  `sensoryplex-runtime ingest <pipeline.yaml> --report <report.pb>`；URI 只从 pipeline 的
+  `uri_secret_ref` 派生出的环境变量读，命令行/日志/报告里只有引用名。
+  `make live-check` 自己用 GStreamer `srtsink` 直推授权样本（不经 RTMP 转封装、不占用 OBS），
+  四个场景全部通过：稳定窗口（samples=963、stalls=0、blockers 为空）、断流恢复
+  （stalls=1、stalled_ms=4723、recovered=true）、无源（exit 1，`live_window_produced_no_samples`）、
+  实时数据面交接（独立进程 63 项检查通过、账目对得上）。
+- 重连归属：重连由解码元素负责（`srtsrc auto-reconnect=true`）；本进程只**测量**断流与恢复，
+  报告里 `reconnect_owner` 如实写 `srtsrc auto-reconnect`，不声称自己控制重连。
+- 仍未验证（不要当成已完成）：没有用户自有采集端（OBS / Mac mini）的 SRT 直推记录；
+  SRT 加密与带凭据的 publish 未验证；只在本机回环与 `macos-aarch64` 上验收；
+  小时级长直播、连续多次断流、VFR/设备直出/720p 屏幕文字的直播样本都没有。
+- 注意（保持有效）：没有样本的窗口必须以 `live_window_produced_no_samples` 失败，不得报成
+  "成功但为空"；`replay` 读 SRT 仍必须显式拒绝（`srt_source_requires_ingest_command`）；
+  直播没有 anchor 区间，因此 M1 的覆盖率结论不适用于直播。
 
 ### M5 macOS 常驻形态（Mac mini）
 
@@ -111,7 +122,11 @@
 
 ## 2. 待补样本（用户后续提供，先按现有样本推进）
 
-- [ ] 断流重连样本：必须来自 SRT，文件样本无法覆盖（依赖 M4）。
+- [x] 断流重连样本（最小覆盖）：登记在册的 552 秒授权长样本经 GStreamer `srtsink` 直推 SRT，
+      主动断流后重启发布端（`make live-check` 的 `stall_recovery` 场景）。
+- [ ] 用户自有采集端的 SRT 直推样本：OBS 或 Mac mini 用 `srtsink` 直推（OBS 默认推 RTMP，需单独配置）；
+      未提供前不得声称"用户实际直播链路已验收"。
+- [ ] SRT 加密（`passphrase`）与带凭据 publish 的样本。
 - [ ] 容器级 VFR 长间隙样本：现有 6 个样本都是 CFR，"长间隙"只由内容静止段近似（最长 57.8s）。
 - [ ] 720p/原始分辨率屏幕文字样本：现有 480p 转码下 OCR 可辨识度有限，不能据此下 OCR 结论。
 - [ ] 设备直出样本：现有样本均为 FFmpeg/Commons 转码产物（`encoder=Lavf58.20.100` 或 vp9 转码），

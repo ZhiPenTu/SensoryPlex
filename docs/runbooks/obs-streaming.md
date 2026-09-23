@@ -30,9 +30,10 @@ OBS → 设置 → 直播（Stream）→ 服务选择「自定义」：
 | RTMP 读取 | `rtmp://127.0.0.1:1935/live/obs` |
 | 本机指标 | `http://127.0.0.1:9998/metrics` |
 
-当前 Runtime 的 SRT Source 仍明确返回 `gstreamer_srt_ingest_not_implemented`。
 服务器有流不等于 Runtime 已处理，也不代表 ASR/OCR/VLM 或 Golden Path 完成。
 停止 OBS 后源应变为不可用；不提供占位片段或自动录制回放。
+
+Runtime 侧的实时接入走 `ingest` 命令（见下文），它读的就是上面这条 `read:` URI。
 
 ```sh
 make stream-status
@@ -41,6 +42,52 @@ make stream-logs
 
 `paths` 指标中 `name="live/obs",state="ready"` 表示存在发布者；`paths_inbound_bytes` 增长
 表示接收了媒体字节。指标端点可访问仅代表服务已启动，实际媒体仍需探测/解码验证。
+
+## 用 GStreamer `srtsink` 直推 SRT（不经 RTMP）
+
+OBS 默认推 RTMP；要验证**真正的 SRT 直出**（而不是 RTMP 到 MediaMTX 后再读 SRT），
+可以用 GStreamer 自己当发布端。发布端做 H.264/AAC 编码并直接封进 MPEG-TS 交给 `srtsink`，
+MediaMTX 只转发、不转码：
+
+```sh
+GST_PLUGIN_FEATURE_RANK="vtdec_hw:0,vtdec:0" gst-launch-1.0 -e \
+  filesrc location=video/samples/screencast-video2commons.480p.vp9.webm ! decodebin name=d \
+  d. ! queue max-size-buffers=60 ! videoconvert ! videoscale ! video/x-raw,format=I420 \
+     ! x264enc tune=zerolatency speed-preset=ultrafast key-int-max=60 bitrate=2500 \
+     ! h264parse ! queue ! mux. \
+  d. ! queue max-size-buffers=200 ! audioconvert ! audioresample \
+     ! audio/x-raw,rate=48000,channels=2 ! avenc_aac bitrate=128000 ! aacparse ! queue ! mux. \
+  mpegtsmux name=mux ! srtsink uri="srt://127.0.0.1:8890" streamid=publish:live/obs max-bitrate=4000000
+```
+
+- `streamid=publish:live/obs` 在当前配置（`authInternalUsers: user: any`）下被接受；
+  `read:` 不需要凭据。要改成需要凭据的 publish，得在 `authInternalUsers` 里加一条带 `pass` 的规则——
+  **本轮没有验证带凭据的 publish**，也没有验证 SRT 加密（`passphrase` / `pbkeylen`）。
+- 播放列表里 `d.` 的两条分支分别编码视频与音频；`! mux.` 把两路合进同一条 MPEG-TS。
+- `GST_PLUGIN_FEATURE_RANK="vtdec_hw:0,vtdec:0"` 只影响**发布端**：macOS 上 VP9 硬解出 GLMemory，
+  后面的 `videoconvert` 接不上，因此这里固定用软件解码。
+- 已有一个发布者时（例如正在直播的 OBS），`overridePublisher: false` 会拒绝新发布者，**不会**挤掉它。
+- 停止发布端：`Ctrl+C`（`-e` 会正常收尾）。发布端退出后路径回到 `notReady`，读者会断开。
+
+## Runtime 实时接入（`ingest`）
+
+`ingest` 在有限墙钟窗口内拉流、解码，并把样本交给与 `replay` **同一条** arena / descriptor /
+lease /（可选）交接链路，同时测量断流与恢复：
+
+```sh
+SENSORYPLEX_SRT_LIVE_URI='srt://127.0.0.1:8890?streamid=read:live/obs' \
+  target/release/sensoryplex-runtime ingest config/pipelines/srt-live.yaml \
+  --report /tmp/live.pb --duration-ms 20000 [--stall-threshold-ms 1000] [--max-stalls 8]
+```
+
+- **URI 不进命令行**：变量名由 pipeline 的 `uri_secret_ref` 派生（`SRT_LIVE_URI` →
+  `SENSORYPLEX_SRT_LIVE_URI`），报告与日志里只有引用名；缺变量时以 `live_uri_env_missing: <变量名>` 失败。
+- 直播没有已知时长：报告里 `duration_ms=0`、`content_hash` 为空、没有 anchor 区间。
+- 重连由解码元素负责（`srtsrc auto-reconnect=true`）；Runtime 只**测量**断流与恢复，
+  `reconnect_owner` 如实写 `srtsrc auto-reconnect`。
+- 窗口里一个样本都没有不是成功：会以 `live_window_produced_no_samples` 退出非 0。
+- 完整验收（含断流恢复与实时数据面交接）见 `make live-check`；实测数据见
+  [验证记录](../verification.md) 的"M4"一节。
 
 ## 有限时长的真实样本验证
 
@@ -89,7 +136,10 @@ gst-launch-1.0 -e -v \
 - 验收后容器 CPU 0.07%、内存约 45.72 MiB / 128 MiB（单次采样，非压测结论），无 OOM 或重启。
 - `make integration`：3 项通过；`make check` 在 Rust 格式检查处被已有的 arena/handoff/shm/runtime
   未格式化改动阻断，其余检查没有执行；未改动这些工作区文件。Compose 校验与 `git diff --check` 通过。
-- 尚未验证用户 OBS 场景、Runtime SRT Source、断流重连或模型链路；`golden_path_verified=false`。
+- 尚未验证用户 OBS 的 **SRT 直推**场景（OBS 默认推 RTMP）、SRT 加密与带凭据 publish 或模型链路；
+  `golden_path_verified=false`。
+- Runtime 的 SRT 接入与断流重连随后已在同一套接入层上验收（发布端为 GStreamer `srtsink` 直推，
+  四个场景见 [验证记录](../verification.md) 的"M4"一节）；本轮记录里的 RTMP 发布路径仍然有效。
 
 本地诊断输出位于 Git 忽略的 `.logs/stream-verification/`，包括 `report.json`、
 `rtsp-probe.json`、`gstreamer.log` 与 `active-metrics.txt`，未保存媒体帧或录制文件。

@@ -10,6 +10,7 @@ pub mod decode;
 pub mod descriptor;
 pub mod handoff;
 pub mod lease;
+pub mod live;
 pub mod probe;
 pub mod sampler;
 pub mod segment;

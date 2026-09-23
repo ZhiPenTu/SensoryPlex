@@ -9,6 +9,8 @@ Protobuf/gRPC + FastAPI** 工程，为 SRT/文件接入、感知、时间轴融�
 并对视频做自适应抽帧（keep/skip 全部带原因），已在授权样本与 6 个公开许可样本上通过回放验收。
 跨进程数据面（M3）也已落地：`replay --handoff-listen` 把样本留在共享内存里，独立进程按 lease 读取、
 校验摘要并显式释放，容量与 lease 生命周期都有上限（见 ADR-010；消费方目前是验收脚本，不是模型 worker）。
+SRT 实时接入（M4）同样可用：`ingest` 在有限窗口内拉流、解码并测量断流与恢复，重连归解码元素
+（`srtsrc auto-reconnect`），本进程只测量；直播没有已知时长，因此不产出 anchor 区间。
 背压指标、模型推理、NATS 任务分发与 Milvus 语义索引尚未接入；
 相关 API 明确报告能力不可用。
 
@@ -36,12 +38,15 @@ make pipeline-check
 make runtime
 make media-replay MEDIA=/absolute/path/to/authorized-sample.mp4
 make handoff-check MEDIA=/absolute/path/to/authorized-sample.mp4
+make stream-up && make live-check
 ```
 
 `make media-replay` 需要 GStreamer 开发文件；没有的主机可加 `MEDIA_FEATURES=` 退回纯锚点报告
 （解码数据平面保持全零，并在 `blockers` 中声明未实现）。`make handoff-check` 在同一份素材上再跑一次
 跨进程数据面验收：Runtime 保留字节，独立 Python 进程按 lease 读取、校验摘要并释放，
-越界与过期路径必须给出显式拒绝码。
+越界与过期路径必须给出显式拒绝码。`make live-check` 需要先 `make stream-up`：脚本自己用 GStreamer
+`srtsink` 把授权样本直推 SRT（不经 RTMP 转封装、不占用 OBS 会话），再跑四个场景
+（稳定窗口、断流恢复、无源失败、实时数据面交接）。
 
 ## 工程结构
 
@@ -51,7 +56,7 @@ crates/                 runtime、media、timeline、storage、execution、sdk
 plugins/python/common/  edge_material_sdk 与生成的 Python 消息
 services/gateway/       FastAPI 与 PostgreSQL 元数据适配器
 db/migrations/          只追加的显式 PostgreSQL 迁移
-config/pipelines/       File Golden Path 配置
+config/pipelines/       文件与 SRT 实时接入的 pipeline 配置
 deploy/compose/         本地容器基础设施
 tests/                  契约测试、真实 PostgreSQL 集成测试、媒体样本说明
 tools/                  配置、代码生成、迁移、测试与真实媒体探测

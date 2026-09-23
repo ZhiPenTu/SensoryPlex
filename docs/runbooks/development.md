@@ -115,6 +115,31 @@ target/release/sensoryplex-runtime replay config/pipelines/file-material.yaml /a
 它不代表数据面已验证。安全边界（段名随机派生、lease 不是内存隔离、同 UID 可见性）见
 [ADR-010](../adr/ADR-010-跨进程数据面的安全边界.md)。
 
+SRT 实时接入验收（M4，需要先 `make stream-up`）：
+
+```sh
+make stream-up && make live-check
+```
+
+发布端由 `tools/verify_live.py` 自己拉起：GStreamer `srtsink` 把登记在册的授权样本**直推** SRT
+（不经 RTMP 转封装、不占用 OBS 会话；配置与命令见 [OBS 推流手册](obs-streaming.md)）。
+四个场景都会被检查：稳定窗口（`stalls == 0`、`blockers` 为空）、断流恢复
+（发布端被 SIGINT 后再拉起，`stalls >= 1`、`stalled_ms > 0`、`recovered == true`）、
+无源（必须 exit 1 并给出显式原因）、实时数据面交接（独立进程按 lease 读取并释放，账目对得上）。
+路径上已有别的发布者时脚本会拒绝运行，不会挤掉正在直播的 OBS。
+
+手工跑一次实时接入（URI 只经环境变量传入，绝不进命令行与报告）：
+
+```sh
+SENSORYPLEX_SRT_LIVE_URI='srt://127.0.0.1:8890?streamid=read:live/obs' \
+  target/release/sensoryplex-runtime ingest config/pipelines/srt-live.yaml \
+  --report /tmp/live.pb --duration-ms 20000
+```
+
+直播没有已知时长（报告 `duration_ms=0`、`content_hash` 为空、没有 anchor 区间），
+断流只被**测量**（重连归 `srtsrc auto-reconnect`），详见
+[验证记录](../verification.md) 的"M4"一节。
+
 ## 可选向量基础设施
 
 `deploy/compose/docker-compose.vector.yml` 包含 etcd、MinIO 和 Milvus，镜像锁定 digest，

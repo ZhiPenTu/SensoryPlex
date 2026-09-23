@@ -1,0 +1,616 @@
+"""SRT 实时接入验收：真实授权样本 → GStreamer `srtsink` 直推 → Runtime `ingest`。
+
+发布端由本脚本自己拉起（GStreamer 直接出 SRT，不是 RTMP 转封装），因此验收不依赖
+OBS 是否空闲。若 MediaMTX 上已经有别的发布者（例如正在直播的 OBS），脚本会拒绝运行，
+不去挤掉别人的会话（配置里 `overridePublisher: false` 也不允许）。
+
+判定标准（全部是真实执行结果，不用健康检查冒充）：
+- 稳定窗口：`samples > 0`、`stalls == 0`、`blockers` 为空、`golden_path_verified` 恒为 false，
+  并且 `source.duration_ms == 0`、`content_hash` 为空——直播没有已知时长与内容摘要；
+- 断流恢复：发布端被 SIGINT 后再拉起，必须测到 `stalls >= 1`、`stalled_ms > 0`、`recovered`，
+  且明细里至少一条 `stream_gap`；重连归属必须写成解码元素；
+- 无源：没有任何发布者时必须非 0 退出并写出显式原因，绝不"成功但为空"；
+- URI 只从环境变量读：命令行、stdout 与报告里都不出现 URI 或 streamid；
+- 同一趟数据面：`--handoff-listen` 下由**独立进程**按 lease 读取并释放，账目对得上。
+"""
+
+import argparse
+import os
+import re
+import signal
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+from edge_material_sdk.generated.media.v1 import live_pb2
+
+ROOT = Path(__file__).resolve().parents[1]
+PIPELINE = ROOT / "config/pipelines/srt-live.yaml"
+WORKER = ROOT / "tools/handoff_worker.py"
+# 覆盖类别为"翻页/界面突变"的 552 秒公有许可样本：够长，可以覆盖断流后重启发布端。
+DEFAULT_SAMPLE = ROOT / "video/samples/screencast-video2commons.480p.vp9.webm"
+# 与仓库登记一致的读取 URI（`read:` 不需要凭据；`publish:` 才需要）。
+DEFAULT_URI = "srt://127.0.0.1:8890?streamid=read:live/obs"
+DEFAULT_PUBLISH_URI = "srt://127.0.0.1:8890"
+DEFAULT_PUBLISH_STREAMID = "publish:live/obs"
+METRICS_URL = "http://127.0.0.1:9998/metrics"
+PATH_NAME = "live/obs"
+READY_TIMEOUT_S = 45.0
+STOP_TIMEOUT_S = 10.0
+# 报告里绝不允许出现的字符串：URI 可能带凭据，只能以引用名出现。
+FORBIDDEN_IN_REPORT = ("srt://", "127.0.0.1", "streamid", ":8890")
+
+STATE_PATTERN = re.compile(r'^paths\{name="' + re.escape(PATH_NAME) + r'",state="([^"]+)"\}', re.M)
+BYTES_PATTERN = re.compile(
+    r'^paths_inbound_bytes\{name="' + re.escape(PATH_NAME) + r'",state="[^"]+"\} (\d+)', re.M
+)
+
+
+def runtime_binary() -> Path:
+    for profile in ("release", "debug"):
+        candidate = ROOT / f"target/{profile}/sensoryplex-runtime"
+        if candidate.is_file():
+            return candidate
+    raise SystemExit("build the runtime first: make live-check builds it for you")
+
+
+def free_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+class Checks:
+    """收集断言结果：每一项都打印出来，不做静默跳过。"""
+
+    def __init__(self, name: str):
+        self.name = name
+        self.failures: list[str] = []
+        self.checks: list[str] = []
+
+    def check(self, condition: bool, description: str) -> bool:
+        if condition:
+            self.checks.append(description)
+        else:
+            self.failures.append(description)
+        print(f"  [{'ok' if condition else 'FAIL'}] {description}")
+        return bool(condition)
+
+    def finish(self) -> bool:
+        status = "PASS" if not self.failures else f"FAIL ({len(self.failures)})"
+        print(f"== {self.name}: {status} ==")
+        return not self.failures
+
+
+def metrics() -> tuple[str, int]:
+    """读取 MediaMTX 的路径状态与入站字节数。拿不到指标就是硬失败，不做默认值兜底。"""
+    try:
+        with urllib.request.urlopen(METRICS_URL, timeout=3) as response:
+            text = response.read().decode("utf-8", "replace")
+    except (urllib.error.URLError, TimeoutError) as error:
+        raise SystemExit(
+            f"MediaMTX metrics unreachable ({METRICS_URL}): {error}"
+            "\n前端接入层没起来？先执行 make stream-up。"
+        ) from error
+    state = STATE_PATTERN.search(text)
+    inbound = BYTES_PATTERN.search(text)
+    if state is None or inbound is None:
+        raise SystemExit(f"metrics for path {PATH_NAME} missing; is the config current?")
+    return state.group(1), int(inbound.group(1))
+
+
+class Publisher:
+    """用 GStreamer `srtsink` 把授权样本**直推** SRT（不经 RTMP、不经 MediaMTX 转码）。"""
+
+    def __init__(self, sample: Path, log_path: Path):
+        self.sample = sample
+        self.log_path = log_path
+        self.process: subprocess.Popen | None = None
+        self.log = None
+
+    def start(self) -> None:
+        environment = dict(os.environ)
+        # VP9 硬解在 macOS 上出 GLMemory，`videoconvert` 接不上；这里固定用软件解码，
+        # 只影响发布端的测试编码，与 Runtime 的读取链路无关。
+        environment["GST_PLUGIN_FEATURE_RANK"] = "vtdec_hw:0,vtdec:0"
+        self.log = self.log_path.open("ab")
+        self.process = subprocess.Popen(
+            [
+                "gst-launch-1.0",
+                "-e",
+                "filesrc",
+                f"location={self.sample}",
+                "!",
+                "decodebin",
+                "name=d",
+                "d.",
+                "!",
+                "queue",
+                "max-size-buffers=60",
+                "!",
+                "videoconvert",
+                "!",
+                "videoscale",
+                "!",
+                "video/x-raw,format=I420",
+                "!",
+                "x264enc",
+                "tune=zerolatency",
+                "speed-preset=ultrafast",
+                "key-int-max=60",
+                "bitrate=2500",
+                "!",
+                "h264parse",
+                "!",
+                "queue",
+                "!",
+                "mux.",
+                "d.",
+                "!",
+                "queue",
+                "max-size-buffers=200",
+                "!",
+                "audioconvert",
+                "!",
+                "audioresample",
+                "!",
+                "audio/x-raw,rate=48000,channels=2",
+                "!",
+                "avenc_aac",
+                "bitrate=128000",
+                "!",
+                "aacparse",
+                "!",
+                "queue",
+                "!",
+                "mux.",
+                "mpegtsmux",
+                "name=mux",
+                "!",
+                "srtsink",
+                f"uri={DEFAULT_PUBLISH_URI}",
+                f"streamid={DEFAULT_PUBLISH_STREAMID}",
+                "max-bitrate=4000000",
+            ],
+            env=environment,
+            stdout=self.log,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+        )
+
+    def wait_ready(self, timeout_s: float = READY_TIMEOUT_S) -> None:
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if self.process is not None and self.process.poll() is not None:
+                raise SystemExit(self.failure("publisher exited before the path became ready"))
+            state, inbound = metrics()
+            if state == "ready" and inbound > 0:
+                return
+            time.sleep(0.5)
+        raise SystemExit(self.failure(f"path {PATH_NAME} not ready within {timeout_s}s"))
+
+    def stop(self) -> None:
+        if self.process is None:
+            return
+        if self.process.poll() is None:
+            self.process.send_signal(signal.SIGINT)
+            try:
+                self.process.wait(timeout=STOP_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait(timeout=STOP_TIMEOUT_S)
+        self.process = None
+        if self.log is not None:
+            self.log.close()
+            self.log = None
+
+    def failure(self, message: str) -> str:
+        tail = ""
+        if self.log_path.is_file():
+            tail = self.log_path.read_text(errors="replace")[-1500:]
+        return f"{message}\n--- publisher log tail ---\n{tail}"
+
+
+def run_ingest(
+    report: Path,
+    duration_ms: int,
+    uri: str,
+    extra: list[str] | None = None,
+    stall_threshold_ms: int = 1000,
+) -> subprocess.CompletedProcess:
+    command = [
+        str(runtime_binary()),
+        "ingest",
+        str(PIPELINE),
+        "--report",
+        str(report),
+        "--duration-ms",
+        str(duration_ms),
+        "--stall-threshold-ms",
+        str(stall_threshold_ms),
+        *(extra or []),
+    ]
+    # URI 只经环境变量传入：进程参数里不得出现它。
+    assert uri not in " ".join(command), "the URI must never travel on the command line"
+    environment = dict(os.environ)
+    environment["SENSORYPLEX_SRT_LIVE_URI"] = uri
+    return subprocess.run(command, env=environment, capture_output=True, text=True, timeout=300)
+
+
+def read_report(path: Path) -> tuple[live_pb2.LiveIngestReport, bytes]:
+    raw = path.read_bytes()
+    report = live_pb2.LiveIngestReport()
+    report.ParseFromString(raw)
+    return report, raw
+
+
+def scenario_steady(sample: Path, workspace: Path, duration_ms: int, uri: str) -> bool:
+    checks = Checks("steady")
+    publisher = Publisher(sample, workspace / "steady-publisher.log")
+    publisher.start()
+    try:
+        publisher.wait_ready()
+        report_path = workspace / "steady-report.pb"
+        result = run_ingest(report_path, duration_ms, uri)
+        checks.check(
+            result.returncode == 0,
+            f"ingest exit 0 (got {result.returncode}): {result.stderr[-400:]}",
+        )
+        report, raw = read_report(report_path)
+        checks.check(report.platform == "macos-aarch64", f"platform={report.platform}")
+        checks.check(report.stream.samples > 0, f"samples={report.stream.samples} > 0")
+        checks.check(
+            report.stream.stalls == 0, f"stalls={report.stream.stalls} == 0 in a steady window"
+        )
+        checks.check(report.stream.stalled_ms == 0, f"stalled_ms={report.stream.stalled_ms} == 0")
+        checks.check(report.stream.recovered is False, "recovered stays false when nothing stalled")
+        checks.check(
+            report.stream.ended_by_deadline is True, "window ended by deadline, not by failure"
+        )
+        checks.check(
+            report.stream.reconnect_owner == "srtsrc auto-reconnect",
+            f"reconnect_owner={report.stream.reconnect_owner!r} "
+            "(measured, not controlled, by this process)",
+        )
+        checks.check(
+            abs(report.stream.elapsed_ms - duration_ms) < 3000,
+            f"elapsed_ms={report.stream.elapsed_ms} tracks the requested {duration_ms} ms",
+        )
+        checks.check(
+            report.stream.uri_secret_ref == "SRT_LIVE_URI",
+            "report carries the reference name, not the URI",
+        )
+        checks.check(
+            report.decoded.descriptors_validated > 0,
+            f"descriptors_validated={report.decoded.descriptors_validated}",
+        )
+        checks.check(
+            report.decoded.descriptor_failures == 0,
+            f"descriptor_failures={report.decoded.descriptor_failures}",
+        )
+        checks.check(
+            report.decoded.leases_issued == report.decoded.leases_released,
+            "every issued lease was released",
+        )
+        track_kinds = {track.track_kind for track in report.decoded.tracks if track.samples > 0}
+        checks.check(
+            track_kinds == {"video", "audio"},
+            f"decoded tracks with samples: {sorted(track_kinds)}",
+        )
+        checks.check(
+            len(report.source.tracks) >= 1, f"observed source tracks={len(report.source.tracks)}"
+        )
+        checks.check(
+            all(track.timing_known for track in report.source.tracks),
+            "observed tracks report known timing",
+        )
+        checks.check(
+            report.source.duration_ms == 0,
+            "a live stream has no known duration (0, never an assumed value)",
+        )
+        checks.check(
+            report.source.source.content_hash == "",
+            "content_hash stays empty: a live stream has no reproducible digest",
+        )
+        checks.check(report.source.source.kind == 2, "source kind is SRT")
+        checks.check(report.golden_path_verified is False, "golden_path_verified stays false")
+        checks.check(
+            report.handoff_state == "not_exercised", f"handoff_state={report.handoff_state!r}"
+        )
+        checks.check(list(report.blockers) == [], f"blockers={list(report.blockers)}")
+        leaked = [token for token in FORBIDDEN_IN_REPORT if token.encode() in raw]
+        checks.check(not leaked, f"report leaks no URI material (found {leaked})")
+        checks.check(uri not in result.stdout, "stdout leaks no URI")
+    finally:
+        publisher.stop()
+    return checks.finish()
+
+
+def scenario_stall_recovery(sample: Path, workspace: Path, uri: str) -> bool:
+    checks = Checks("stall_recovery")
+    window_ms = 20_000
+    publisher = Publisher(sample, workspace / "stall-publisher.log")
+    publisher.start()
+    ingest: subprocess.Popen | None = None
+    try:
+        publisher.wait_ready()
+        report_path = workspace / "stall-report.pb"
+        command = [
+            str(runtime_binary()),
+            "ingest",
+            str(PIPELINE),
+            "--report",
+            str(report_path),
+            "--duration-ms",
+            str(window_ms),
+            "--stall-threshold-ms",
+            "1000",
+        ]
+        environment = dict(os.environ)
+        environment["SENSORYPLEX_SRT_LIVE_URI"] = uri
+        ingest = subprocess.Popen(
+            command, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
+        time.sleep(6)
+        publisher.stop()
+        state, _ = metrics()
+        checks.check(state != "ready", f"publisher gone: path state={state!r}")
+        time.sleep(3)
+        publisher.start()
+        publisher.wait_ready()
+        stdout, stderr = ingest.communicate(timeout=120)
+        checks.check(
+            ingest.returncode == 0, f"ingest exit 0 (got {ingest.returncode}): {stderr[-400:]}"
+        )
+        report, _ = read_report(report_path)
+        stream = report.stream
+        checks.check(stream.samples > 0, f"samples={stream.samples} > 0 across the gap")
+        checks.check(stream.stalls >= 1, f"stalls={stream.stalls} >= 1")
+        checks.check(stream.stalled_ms > 0, f"stalled_ms={stream.stalled_ms} > 0")
+        checks.check(stream.max_stall_ms > 0, f"max_stall_ms={stream.max_stall_ms} > 0")
+        checks.check(stream.recovered is True, "recovered: samples arrived again after the gap")
+        checks.check(
+            stream.stalls + 1 > 0 and len(stream.stall_events) >= 1,
+            f"stall_events listed={len(stream.stall_events)} of {stream.stalls}",
+        )
+        if stream.stall_events:
+            event = stream.stall_events[0]
+            checks.check(event.reason == "stream_gap", f"first event reason={event.reason!r}")
+            checks.check(
+                event.ended_ms > event.started_ms and event.gap_ms >= 1000,
+                f"first event gap: started={event.started_ms} "
+                f"ended={event.ended_ms} gap={event.gap_ms}",
+            )
+            # 媒体时间缺口可以是负数：重启的发布端从 0 重新计时。-1 才是"未知"。
+            checks.check(
+                event.pts_jump_ms != -1,
+                f"media-time jump was observable: pts_jump_ms={event.pts_jump_ms}",
+            )
+        else:
+            checks.check(False, "no stall detail was recorded")
+        checks.check(stream.ended_by_deadline is True, "the window still ran to its deadline")
+        checks.check(report.golden_path_verified is False, "golden_path_verified stays false")
+    finally:
+        if ingest is not None and ingest.poll() is None:
+            ingest.kill()
+            ingest.wait(timeout=10)
+        publisher.stop()
+    return checks.finish()
+
+
+def scenario_no_source(workspace: Path, uri: str) -> bool:
+    checks = Checks("no_source")
+    state, _ = metrics()
+    checks.check(state != "ready", f"no publisher is running: state={state!r}")
+    report_path = workspace / "no-source-report.pb"
+    result = run_ingest(report_path, 1500, uri)
+    checks.check(
+        result.returncode != 0, f"ingest must fail without a source (exit={result.returncode})"
+    )
+    if report_path.is_file():
+        report, _ = read_report(report_path)
+        blockers = list(report.blockers)
+        checks.check(
+            any(
+                blocker in blockers
+                for blocker in ("live_ingest_failed", "live_window_produced_no_samples")
+            ),
+            f"explicit blocker instead of a silent empty success: {blockers}",
+        )
+        checks.check(report.golden_path_verified is False, "golden_path_verified stays false")
+        checks.check(
+            report.stream.samples == 0, f"no sample was invented: samples={report.stream.samples}"
+        )
+    else:
+        checks.check(False, "a report was still written on failure")
+    return checks.finish()
+
+
+def scenario_live_handoff(sample: Path, workspace: Path, duration_ms: int, uri: str) -> bool:
+    checks = Checks("live_handoff")
+    listen = f"127.0.0.1:{free_port()}"
+    publisher = Publisher(sample, workspace / "handoff-publisher.log")
+    publisher.start()
+    ingest: subprocess.Popen | None = None
+    try:
+        publisher.wait_ready()
+        report_path = workspace / "live-handoff-report.pb"
+        worker_report = workspace / "live-handoff-worker.json"
+        environment = dict(os.environ)
+        environment["SENSORYPLEX_SRT_LIVE_URI"] = uri
+        ingest = subprocess.Popen(
+            [
+                str(runtime_binary()),
+                "ingest",
+                str(PIPELINE),
+                "--report",
+                str(report_path),
+                "--duration-ms",
+                str(duration_ms),
+                "--handoff-listen",
+                listen,
+                "--handoff-wait-timeout-ms",
+                "30000",
+                "--handoff-idle-timeout-ms",
+                "2000",
+            ],
+            env=environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        # 消费者必须在数据面就绪之后、decode 结束时才算数：等 runtime 打印 handoff_ready。
+        lines: list[str] = []
+        deadline = time.monotonic() + 120
+        ready = False
+        while time.monotonic() < deadline and not ready:
+            line = ingest.stdout.readline()
+            if not line:
+                break
+            lines.append(line.rstrip("\n"))
+            ready = line.startswith("handoff_ready")
+        checks.check(ready, "the runtime exposed the live data plane on loopback")
+        worker = subprocess.run(
+            [
+                "uv",
+                "run",
+                "python",
+                str(WORKER),
+                "--listen",
+                listen,
+                "--report",
+                str(worker_report),
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        remaining_out, remaining_err = ingest.communicate(timeout=180)
+        lines.extend(remaining_out.splitlines())
+        checks.check(
+            worker.returncode == 0, f"independent consumer exited 0: {worker.stderr[-400:]}"
+        )
+        checks.check(
+            ingest.returncode == 0,
+            f"ingest exit 0 (got {ingest.returncode}): {remaining_err[-400:]}",
+        )
+        report, _ = read_report(report_path)
+        checks.check(
+            report.handoff_state == f"exposed_on={listen}",
+            f"handoff_state={report.handoff_state!r}",
+        )
+        checks.check(
+            report.stream.samples > 0,
+            f"live samples reached the data plane: {report.stream.samples}",
+        )
+        stats_line = next((line for line in lines if line.startswith("handoff_stats")), None)
+        checks.check(
+            stats_line is not None, "the runtime reconciled the lease ledger before exiting"
+        )
+        if stats_line:
+            fields = dict(token.split("=", 1) for token in stats_line.split(" ") if "=" in token)
+            checks.check(fields.get("consumer_seen") == "true", "consumer_seen=true")
+            checks.check(
+                fields.get("retained") == "0",
+                f"no buffer left retained: retained={fields.get('retained')}",
+            )
+            checks.check(
+                fields.get("arena_live_slabs") == "0",
+                f"arena has no dangling slab: arena_live_slabs={fields.get('arena_live_slabs')}",
+            )
+            accounted = (
+                int(fields.get("released", 0))
+                + int(fields.get("expired", 0))
+                + int(fields.get("retained", 0))
+            )
+            checks.check(
+                accounted == int(fields.get("retained_total", -1)),
+                f"released+expired+retained={accounted} "
+                f"== retained_total={fields.get('retained_total')}",
+            )
+    finally:
+        if ingest is not None and ingest.poll() is None:
+            ingest.kill()
+            ingest.wait(timeout=10)
+        publisher.stop()
+    return checks.finish()
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--sample",
+        type=Path,
+        default=DEFAULT_SAMPLE,
+        help="发布端使用的授权样本（默认：公有许可的 552 秒录屏）",
+    )
+    parser.add_argument("--uri", default=DEFAULT_URI, help="读取 URI（只经环境变量传给 Runtime）")
+    parser.add_argument("--steady-duration-ms", type=int, default=12_000)
+    parser.add_argument("--handoff-duration-ms", type=int, default=8_000)
+    parser.add_argument(
+        "--scenario", action="append", default=None, help="只跑指定场景，可重复；默认全跑"
+    )
+    args = parser.parse_args()
+
+    if not args.sample.is_file():
+        raise SystemExit(
+            f"sample not found: {args.sample}（见 tests/fixtures/media/OPEN-SAMPLES.md）"
+        )
+    if subprocess.run(["which", "gst-launch-1.0"], capture_output=True).returncode != 0:
+        raise SystemExit("gst-launch-1.0 not found; the SRT publisher needs GStreamer")
+    state, _ = metrics()
+    if state == "ready":
+        raise SystemExit(
+            f"path {PATH_NAME} already has a publisher (OBS 在直播？)。"
+            "移除它或等它结束后再跑本验收。"
+        )
+
+    scenarios = {
+        "steady": lambda workspace: scenario_steady(
+            args.sample, workspace, args.steady_duration_ms, args.uri
+        ),
+        "stall_recovery": lambda workspace: scenario_stall_recovery(
+            args.sample, workspace, args.uri
+        ),
+        "no_source": lambda workspace: scenario_no_source(workspace, args.uri),
+        "live_handoff": lambda workspace: scenario_live_handoff(
+            args.sample, workspace, args.handoff_duration_ms, args.uri
+        ),
+    }
+    selected = args.scenario or list(scenarios)
+    unknown = [name for name in selected if name not in scenarios]
+    if unknown:
+        raise SystemExit(f"unknown scenario(s): {unknown}; known: {list(scenarios)}")
+
+    workspace = Path(tempfile.mkdtemp(prefix="sensoryplex-live-"))
+    print(f"workspace: {workspace}")
+    results = {}
+    for name in selected:
+        results[name] = scenarios[name](workspace)
+
+    state, _ = metrics()
+    print(f"\npath state after the run: {state}")
+    if state == "ready":
+        print(
+            "WARNING: a publisher is still live on the path; check for leftover processes",
+            file=sys.stderr,
+        )
+
+    print("\nscenario summary:")
+    for name, passed in results.items():
+        print(f"  {'PASS' if passed else 'FAIL'}  {name}")
+    if not all(results.values()):
+        print(f"\nartifacts kept for inspection: {workspace}", file=sys.stderr)
+        return 1
+    print("live ingest acceptance: all scenarios passed")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,59 @@
+syntax = "proto3";
+package edge.material.media.v1;
+
+import "media/v1/media.proto";
+
+// 实时接入（SRT）的报告契约。
+//
+// 与离线 replay 的区别必须显式表达，不能靠"字段恰好为空"暗示：
+// - 直播没有已知时长，`MediaSourceDescription.duration_ms` 固定为 0，读数者不得把它当 0 秒素材；
+// - 媒体时间轴只在本次 ingest 窗口内有效，`LiveStreamStats` 记录窗口起止与媒体时间进度；
+// - 断流是正常事件而不是错误，但必须有计数、有原因、有恢复证据（AGENTS.md 的可观察语义）。
+
+// 一次断流/卡顿：从"超过阈值没收到样本"到"样本恢复"。全程由本进程测量，
+// 不依赖解码元素内部的私有状态。
+message StreamStall {
+  // 相对本次 ingest 开始的墙钟偏移。
+  uint64 started_ms = 1;
+  uint64 ended_ms = 2;
+  uint64 gap_ms = 3;
+  // 恢复后首个样本的媒体时间与断流前该轨道已知媒体时间终点之差；未知时为 -1。
+  // 它回答的是"媒体时间轴中间缺了多少"，与墙钟 gap 不是一回事。
+  int64 pts_jump_ms = 4;
+  // 稳定原因码：`stream_gap`（超阈值无样本）、`stream_ended`（源结束）。
+  string reason = 5;
+}
+
+message LiveStreamStats {
+  // 来源的**引用名**，不是 URI：URI 可能带 streamid 或凭据，不进报告与日志。
+  string uri_secret_ref = 1;
+  uint64 requested_duration_ms = 2;
+  uint64 elapsed_ms = 3;
+  // 本次窗口内从源收到的样本数（视频帧 + 音频帧）；真正落到 descriptor 的数量
+  // 见 `decoded.tracks[].samples`，两者不是一回事。
+  uint64 samples = 4;
+  uint64 stalls = 5;
+  uint64 stalled_ms = 6;
+  uint64 max_stall_ms = 7;
+  int64 pts_gap_total_ms = 8;
+  // 至少发生过一次断流后又收到样本，才允许置真。
+  bool recovered = 9;
+  // 窗口由 deadline 正常结束，还是由源结束/失败提前结束。
+  bool ended_by_deadline = 10;
+  // 重连由谁负责：当前为解码元素（`srtsrc auto-reconnect=true`）。
+  // 本进程只负责**测量**断流与恢复，不假装自己在控制重连。
+  string reconnect_owner = 11;
+  // 有界的明细列表（最多 MAX_STALL_EVENTS 条），`stalls` 是它的总数。
+  repeated StreamStall stall_events = 12;
+}
+
+message LiveIngestReport {
+  edge.material.media.v1.MediaSourceDescription source = 1;
+  string platform = 2;
+  edge.material.media.v1.LiveStreamStats stream = 3;
+  edge.material.media.v1.DecodedDataPlane decoded = 4;
+  repeated string blockers = 5;
+  bool golden_path_verified = 6;
+  // 与 ReplayReport 同义：`exposed_on=<addr>` 或 `not_exercised`。
+  string handoff_state = 7;
+}

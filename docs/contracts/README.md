@@ -79,6 +79,34 @@ reserved，破坏语义的修改进入新的协议 major。当前为开发预览
   `missing_signature`）；禁止静默丢帧。
 - `DecodedTrackStat.last_end_ms` 描述该轨解码到哪里，抽帧只缩短交接，不缩短它。
 
+实时接入契约（`media/v1/live.proto`，`sensoryplex-runtime ingest`）：
+
+- 直播与离线是两条语义不同的路径：直播**没有已知时长**，因此不产出 `TimelineAnchor`，也不写
+  `ReplayReport`；它写 `LiveIngestReport`，`MediaSourceDescription.duration_ms` 固定为 0。
+  读数者不得把 0 当作"0 秒素材"。
+- URI 可能带 streamid 或凭据，因此**只从环境变量读**：变量名由 pipeline 的 `uri_secret_ref` 派生
+  （`SRT_LIVE_URI` → `SENSORYPLEX_SRT_LIVE_URI`）。命令行、日志与报告里只出现引用名；
+  缺变量时以 `live_uri_env_missing: <变量名>` 失败，不做默认值兜底。
+- 直播不可复现：`MediaSourceRef.content_hash` 保持为空，绝不用占位摘要冒充内容寻址；
+  arena/stream 身份来自"本次会话"（引用名 + 时刻 + 运行种子），同一毫秒内并发的两次接入也不相同。
+- `LiveStreamStats.samples` 是**从源收到**的样本数（视频帧 + 音频帧），落到 descriptor 的数量是
+  `decoded.tracks[].samples`，两者不是一回事，也不可互相替代。
+- 断流是正常事件而不是错误，但必须可观察：`stalls` / `stalled_ms` / `max_stall_ms` /
+  `stall_events[]`（有界明细）全部来自本进程的墙钟测量。断流起点是**最后一个样本的时刻**，
+  不是"发现超阈值那一刻"；窗口结束时仍在断流也必须计入，并记 `stream_gap_at_window_end`。
+- `StreamStall.pts_jump_ms` 是"媒体时间缺了多少"，与墙钟 `gap_ms` 不是一回事；两端未知时写 `-1`，
+  绝不填 0。恢复后新发布者从 0 重新计时会让它是负数，这同样是事实。
+- `reconnect_owner` 如实写明重连归属：当前为 `srtsrc auto-reconnect`，即**解码元素负责重连**，
+  Runtime 只测量断流与恢复，不声称自己控制重连。
+- 重试有上限：卡顿次数超过 `--max-stalls` 即以 `live_stall_budget_exceeded` 显式失败，
+  不无限等待。窗口长度/阈值/预算越界一律拒绝启动，不做夹取。
+- 窗口里一个样本都没有**不是**成功：必须记 `live_window_produced_no_samples` 并以非 0 退出；
+  `LiveIngestReport.golden_path_verified` 与 `ReplayReport` 同义，恒为 false。
+- `handoff_state` 与 `ReplayReport` 同义（`exposed_on=<addr>` 或 `not_exercised`）；
+  `ingest` 与 `replay` 共用同一条 arena / descriptor / lease / 交接链路与同一套运行参数解析。
+- `replay` 读不了 SRT：anchor 路径要求已知时长，遇到 `type: srt` 的 pipeline 会以
+  `srt_source_requires_ingest_command` 显式拒绝，绝不返回一条被清空的、看起来正常的时间轴。
+
 跨进程数据面契约（`media/v1/handoff.proto`，**BufferHandoffService**；安全边界见
 [ADR-010](../adr/ADR-010-跨进程数据面的安全边界.md)）：
 

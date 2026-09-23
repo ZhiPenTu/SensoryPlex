@@ -7,6 +7,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use gstreamer as gst;
 use gstreamer::prelude::*;
@@ -18,6 +19,7 @@ use crate::arena::{Arena, DEFAULT_ARENA_CAPACITY_BYTES};
 use crate::descriptor::{hand_off, BufferSpec, HandoffCounters};
 use crate::handoff::{BufferHandoff, RetainPolicy};
 use crate::lease::LeaseRegistry;
+use crate::live::{LiveConfig, LiveStats, StallTracker};
 use crate::sampler::{AdaptiveSampler, Decision, FrameSignature, SamplingPolicy};
 use crate::segment::{AudioSegmenter, PendingSegment};
 use crate::MediaError;
@@ -25,6 +27,9 @@ use crate::MediaError;
 pub const DEFAULT_SINK_MAX_BUFFERS: u32 = 8;
 pub const DEFAULT_PULL_TIMEOUT_MS: u64 = 5;
 pub const DEFAULT_STATE_TIMEOUT_S: u64 = 15;
+/// 直播不做 preroll：pad 是异步出现的，数据晚到不影响墙钟窗口循环，
+/// 因此不等文件路径那种 15 秒状态变更超时——无源时更快暴露，而不是白等。
+pub const LIVE_STATE_TIMEOUT_S: u64 = 3;
 /// 连续多次 pull 都没有进展即视为卡住（stalled），而不是慢。
 pub const MAX_IDLE_ROUNDS: u32 = 2_000;
 /// 证据保持精简：报告只证明交接契约，不是 buffer 转储。
@@ -121,26 +126,55 @@ struct TrackHandle {
     origin: Origin,
 }
 
-pub struct GstFileDecoder {
+pub struct GstDecoder {
     pipeline: gst::Pipeline,
     video: Option<TrackHandle>,
     audio: Option<TrackHandle>,
     config: DecodeConfig,
 }
 
-impl GstFileDecoder {
-    /// 构建并启动 pipeline。缺失的轨道保持 `None`，不会被伪造。
-    pub fn open(path: &Path, config: DecodeConfig) -> Result<Self, MediaError> {
+/// `ElementFactory::make` 要求 GStreamer 已经初始化：核心元素能靠静态注册表解析，
+/// 但外部插件（例如 `srtsrc`）要经插件注册表，未初始化时会直接 panic。
+fn ensure_gst() -> Result<(), MediaError> {
+    gst::init().map_err(|error| MediaError::DecodeFailed(format!("gst_init: {error}")))
+}
+
+impl GstDecoder {
+    /// 构建并启动离线文件 pipeline。缺失的轨道保持 `None`，不会被伪造。
+    pub fn open_file(path: &Path, config: DecodeConfig) -> Result<Self, MediaError> {
+        ensure_gst()?;
         if !path.is_file() {
             return Err(MediaError::IoFailed("media_path_not_a_file".into()));
         }
-        gst::init().map_err(|error| MediaError::DecodeFailed(format!("gst_init: {error}")))?;
-        let pipeline = gst::Pipeline::new();
         let source = gst::ElementFactory::make("filesrc")
             .name("source")
             .build()
             .map_err(decoder_error)?;
         source.set_property("location", path.to_string_lossy().to_string());
+        Self::assemble(source, config)
+    }
+
+    /// 构建并启动 SRT 实时 pipeline。
+    ///
+    /// 直播没有 EOF：`automatic-eos` 关闭。断流由元素按 `auto-reconnect` 自行重连，
+    /// 本进程只**测量**断流与恢复（见 `crate::live`），不假装控制重连，
+    /// 也不把"元素内部重试了几次"写成已知事实。
+    pub fn open_live(uri: &str, config: DecodeConfig) -> Result<Self, MediaError> {
+        ensure_gst()?;
+        let source = gst::ElementFactory::make("srtsrc")
+            .name("source")
+            .build()
+            .map_err(decoder_error)?;
+        source.set_property("uri", uri);
+        source.set_property("auto-reconnect", true);
+        source.set_property("automatic-eos", false);
+        Self::assemble(source, config)
+    }
+
+    /// 离线与实时共用的装配部分：只在这里决定"源"是什么。
+    fn assemble(source: gst::Element, config: DecodeConfig) -> Result<Self, MediaError> {
+        ensure_gst()?;
+        let pipeline = gst::Pipeline::new();
         let decode = gst::ElementFactory::make("decodebin")
             .name("decode")
             .build()
@@ -271,7 +305,7 @@ impl GstFileDecoder {
     }
 }
 
-impl Drop for GstFileDecoder {
+impl Drop for GstDecoder {
     fn drop(&mut self) {
         let _ = self.pipeline.set_state(gst::State::Null);
     }
@@ -533,7 +567,7 @@ impl TrackState {
     }
 }
 
-struct DecodeSession<'a> {
+pub(crate) struct DecodeSession<'a> {
     stream_id: &'a str,
     stream_short: &'a str,
     now_ms: i64,
@@ -551,7 +585,7 @@ struct DecodeSession<'a> {
 }
 
 impl<'a> DecodeSession<'a> {
-    fn new(
+    pub(crate) fn new(
         stream_id: &'a str,
         stream_short: &'a str,
         arena_id: &str,
@@ -591,6 +625,16 @@ impl<'a> DecodeSession<'a> {
         })
     }
 
+    /// 当前该流的媒体时间终点（各轨道 `last_end_ms` 的最大值）；还没样本时为 `None`。
+    /// 实时路径用它把墙钟断流换算成"媒体时间缺了多少"。
+    pub(crate) fn media_end_ms(&self) -> Option<i64> {
+        self.tracks
+            .iter()
+            .map(|track| track.last_end_ms)
+            .filter(|end| *end >= 0)
+            .max()
+    }
+
     fn drop_sample(&mut self, index: usize, reason: &'static str) {
         self.tracks[index].dropped_samples += 1;
         self.tracks[index].drop_reasons.insert(reason);
@@ -598,7 +642,7 @@ impl<'a> DecodeSession<'a> {
 
     /// 把一个解码后的样本转换为已校验的 descriptor、一条轨道统计，
     /// 以及（音频场景下）一段 segment 贡献。字节不会离开 arena。
-    fn accept(&mut self, sample: DecodedSample) -> Result<(), MediaError> {
+    pub(crate) fn accept(&mut self, sample: DecodedSample) -> Result<(), MediaError> {
         let index = track_index(sample.track);
         let Some(pts_ms) = sample.pts_ms.filter(|pts| *pts >= 0) else {
             self.drop_sample(index, "pts_unavailable");
@@ -792,7 +836,9 @@ impl<'a> DecodeSession<'a> {
         Ok(())
     }
 
-    fn finish(mut self) -> Result<(media::DecodedDataPlane, Option<BufferHandoff>), MediaError> {
+    pub(crate) fn finish(
+        mut self,
+    ) -> Result<(media::DecodedDataPlane, Option<BufferHandoff>), MediaError> {
         let flushed = self.segmenter.as_mut().map(|segmenter| {
             (
                 segmenter.sample_rate(),
@@ -884,7 +930,7 @@ pub fn decode_file(
             "decode_sample_budget_is_zero".into(),
         ));
     }
-    let decoder = GstFileDecoder::open(path, run.decode.clone())?;
+    let decoder = GstDecoder::open_file(path, run.decode.clone())?;
     if !decoder.has_track(TrackKind::Video) && !decoder.has_track(TrackKind::Audio) {
         return Err(MediaError::DecodeFailed("no_decodable_track".into()));
     }
@@ -929,6 +975,96 @@ pub fn decode_file(
     Ok(DecodeOutcome {
         plane,
         handoff,
+        truncated,
+    })
+}
+
+/// 一次实时 ingest 的结果。
+pub struct LiveOutcome {
+    pub plane: media::DecodedDataPlane,
+    /// 与 `DecodeOutcome` 同义：`Some` 表示字节留在共享内存里等消费者领 lease。
+    pub handoff: Option<BufferHandoff>,
+    /// 窗口内的断流/恢复记录。没有样本的窗口不是一个成功的 ingest。
+    pub stats: LiveStats,
+    /// 样本预算耗尽导致窗口提前结束。
+    pub truncated: bool,
+}
+
+/// 从 SRT 实时接入：在 `live.duration_ms` 的墙钟窗口内把样本送进与文件路径**同一条**
+/// arena / descriptor / lease /（可选）交接路径，并测量断流与恢复。
+///
+/// 直播没有已知时长，因此本路径不产出 anchor 区间，也不写 `ReplayReport`：
+/// 它产出 `LiveIngestReport`（`proto/media/v1/live.proto`）。
+pub fn decode_live(
+    uri: &str,
+    stream_id: &str,
+    arena_id: &str,
+    run: &DecodeRun,
+    live: &LiveConfig,
+) -> Result<LiveOutcome, MediaError> {
+    live.validate()?;
+    if run.max_samples == 0 {
+        return Err(MediaError::DecodeFailed(
+            "decode_sample_budget_is_zero".into(),
+        ));
+    }
+    let mut decode_config = run.decode.clone();
+    decode_config.state_timeout_s = LIVE_STATE_TIMEOUT_S;
+    let decoder = GstDecoder::open_live(uri, decode_config)?;
+    if !decoder.has_track(TrackKind::Video) && !decoder.has_track(TrackKind::Audio) {
+        return Err(MediaError::DecodeFailed("no_decodable_track".into()));
+    }
+    let stream_short = stream_id.strip_prefix("stream-").unwrap_or(stream_id);
+    let mut session = DecodeSession::new(stream_id, stream_short, arena_id, run)?;
+    let mut tracker = StallTracker::new(live);
+
+    let started = Instant::now();
+    let mut consumed = 0usize;
+    let mut truncated = false;
+    let mut ended_by_deadline = true;
+    loop {
+        if started.elapsed().as_millis() as u64 >= live.duration_ms {
+            break;
+        }
+        let mut round_samples = 0u64;
+        let mut first_pts: Option<i64> = None;
+        for kind in [TrackKind::Video, TrackKind::Audio] {
+            if !decoder.has_track(kind) {
+                continue;
+            }
+            while let Some(sample) = decoder.pull(kind)? {
+                if consumed >= run.max_samples {
+                    truncated = true;
+                    break;
+                }
+                consumed += 1;
+                round_samples += 1;
+                if first_pts.is_none() {
+                    first_pts = sample.pts_ms;
+                }
+                session.accept(sample)?;
+            }
+        }
+        let now_ms = started.elapsed().as_millis() as u64;
+        if round_samples > 0 {
+            tracker.on_progress(now_ms, round_samples, first_pts, session.media_end_ms());
+        } else {
+            // 卡顿预算超限会显式失败，而不是无限等下去。
+            tracker.on_idle(now_ms, session.media_end_ms())?;
+        }
+        if truncated {
+            // 样本预算先到：窗口是被预算截断的，不是按 deadline 正常结束。
+            ended_by_deadline = false;
+            break;
+        }
+    }
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    let stats = tracker.finish(elapsed_ms, ended_by_deadline);
+    let (plane, handoff) = session.finish()?;
+    Ok(LiveOutcome {
+        plane,
+        handoff,
+        stats,
         truncated,
     })
 }
