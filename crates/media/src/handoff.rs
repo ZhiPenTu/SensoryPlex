@@ -17,6 +17,18 @@ use crate::{validate_descriptor, MediaError};
 /// 保留表上限。数据面无界是缺陷，不是限流策略。
 pub const DEFAULT_RETAINED_LIMIT: usize = 32;
 pub const MAX_RETAINED_LIMIT: usize = 4_096;
+/// 单一 buffer 种类在保留表里能占用的最大槽位数。
+///
+/// 保留表是**所有种类共用**的一张 FIFO，而不按种类分区：实时流里音频块每 21 ms 一个、
+/// 视频 keep 只有几 Hz，只要音频先到（实测直播窗口里就是如此），它会把整张表占满，
+/// 视频帧此后每一帧都被拒绝——下游拿到的窗口里一帧视频都没有。有界窗口因此按种类对半
+/// 分配：任何一种都不得占用超过一半，谁也不能把另一类挤出去。
+///
+/// 单一种类的流（例如纯音频）只会用到自己那一半：这是显式接受的代价，换来的是
+/// "窗口里必然同时容得下两类"这条可断言的性质。
+pub fn retained_kind_limit(retained_limit: usize) -> usize {
+    (retained_limit / 2).max(1)
+}
 /// lease TTL 的下限保证消费端真的有机会读完；上限避免一句话占住 buffer。
 pub const MIN_LEASE_TTL_MS: u32 = 50;
 pub const MAX_LEASE_TTL_MS: u32 = 60_000;
@@ -82,6 +94,8 @@ pub struct RetainedBuffer {
     pub length: u64,
     pub content_hash: String,
     pub lease_id: Option<String>,
+    /// 保留发生的墙钟时间，用来算消费者等待时长。它不是时间轴的一部分，也不进 descriptor。
+    pub retained_at_ms: i64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -100,9 +114,28 @@ pub struct HandoffStats {
     pub request_rejections: u64,
     /// 两类拒绝的原因拆分。`retain_rejections + request_rejections` 是它的总和。
     pub rejection_reasons: BTreeMap<String, u64>,
+    pub arena_capacity_bytes: u64,
     pub arena_used_bytes: u64,
     pub arena_peak_bytes: u64,
     pub arena_live_slabs: u64,
+    /// 保留表深度的高水位（条数）。它是本次运行真正达到过的最大值，
+    /// 因此可以直接和 `retained_limit` 比对"离触顶有多近"。
+    pub retained_peak: u64,
+    /// 单一 buffer 种类能占用的槽位数上限。与 `retained_by_kind` 一起读，
+    /// 才能看出"是不是某一类把窗口占满了"，而不是只看总深度还没触顶就以为有富余。
+    pub retained_kind_limit: u64,
+    /// 当前保留的 buffer 按种类拆分。总数是 `retained`，这里说明它由谁组成。
+    pub retained_by_kind: BTreeMap<String, u64>,
+    /// 单一 buffer 种类占用槽位数的高水位（种类取最大值）。
+    pub retained_kind_peak: u64,
+    /// 只统计写侧（保留）拒绝的原因拆分。`rejection_reasons` 是写侧 + 读侧的合并口径，
+    /// 用它反推写侧会算错；背压报告需要一条能对账的写侧因果表。
+    pub retain_rejection_reasons: BTreeMap<String, u64>,
+    /// 保留到释放/过期之间的等待时间（毫秒）。只统计已经结束的 buffer，
+    /// 所以这三个数的样本数就是 `residency_samples`，可以小于 released + expired。
+    pub residency_samples: u64,
+    pub residency_max_ms: u64,
+    pub residency_total_ms: u64,
 }
 
 pub struct BufferHandoff {
@@ -117,6 +150,16 @@ pub struct BufferHandoff {
     retain_rejections: u64,
     request_rejections: u64,
     rejection_reasons: BTreeMap<String, u64>,
+    retain_rejection_reasons: BTreeMap<String, u64>,
+    retain_rejection_kinds: BTreeMap<String, u64>,
+    retained_peak: u64,
+    retained_kind_peak: u64,
+    residency_samples: u64,
+    residency_max_ms: u64,
+    residency_total_ms: u64,
+    /// 保留时刻的取值方式。生产用真实墙钟；测试可以换成确定性的时钟，
+    /// 否则驻留时长只能靠 sleep 来测。
+    clock: fn() -> i64,
 }
 
 impl BufferHandoff {
@@ -146,7 +189,21 @@ impl BufferHandoff {
             retain_rejections: 0,
             request_rejections: 0,
             rejection_reasons: BTreeMap::new(),
+            retain_rejection_reasons: BTreeMap::new(),
+            retain_rejection_kinds: BTreeMap::new(),
+            retained_peak: 0,
+            retained_kind_peak: 0,
+            residency_samples: 0,
+            residency_max_ms: 0,
+            residency_total_ms: 0,
+            clock: crate::now_unix_ms,
         })
+    }
+
+    /// 测试辅助：换一个确定性的时钟，让驻留时长可断言，而不是靠 sleep。
+    #[cfg(test)]
+    fn set_clock_for_test(&mut self, clock: fn() -> i64) {
+        self.clock = clock;
     }
 
     pub fn arena_id(&self) -> &str {
@@ -185,16 +242,67 @@ impl BufferHandoff {
             retain_rejections: self.retain_rejections,
             request_rejections: self.request_rejections,
             rejection_reasons: self.rejection_reasons.clone(),
+            arena_capacity_bytes: self.arena.capacity() as u64,
             arena_used_bytes: self.arena.used_bytes() as u64,
             arena_peak_bytes: self.arena.peak_bytes() as u64,
             arena_live_slabs: self.arena.live_slabs() as u64,
+            retained_peak: self.retained_peak,
+            retained_kind_limit: self.kind_quota(),
+            retained_by_kind: self.retained_by_kind(),
+            retained_kind_peak: self.retained_kind_peak,
+            retain_rejection_reasons: self.retain_rejection_reasons.clone(),
+            residency_samples: self.residency_samples,
+            residency_max_ms: self.residency_max_ms,
+            residency_total_ms: self.residency_total_ms,
         }
     }
 
+    /// 保留表当前深度。背压策略按它与 `retained_limit` 的比例判定压力等级。
+    pub fn depth(&self) -> u64 {
+        self.retained.len() as u64
+    }
+
+    pub fn limit(&self) -> u64 {
+        self.limit as u64
+    }
+
+    /// 单一 buffer 种类能占用的槽位数上限。它和总上限一样是硬上限，因此压力读数必须
+    /// 同时看这两条：表里还有空位不等于"某一类还进得来"。
+    pub fn kind_quota(&self) -> u64 {
+        retained_kind_limit(self.limit) as u64
+    }
+
+    /// 当前保留的 buffer 按种类拆分。按种类名排序，保证同样的状态产出同样的字节。
+    pub fn retained_by_kind(&self) -> BTreeMap<String, u64> {
+        let mut counts = BTreeMap::new();
+        for held in &self.retained {
+            *counts.entry(held.kind.clone()).or_insert(0) += 1;
+        }
+        counts
+    }
+
+    /// 占用最多的那个种类的槽位数。它是"按种类分配"这条上限的实际水位。
+    pub fn deepest_kind(&self) -> u64 {
+        self.retained_by_kind().values().copied().max().unwrap_or(0)
+    }
+
+    /// 写侧拒绝按 buffer 种类拆分的计数。与原因表一样，总和等于 `retain_rejections`。
+    pub fn retain_rejections_by_kind(&self) -> &BTreeMap<String, u64> {
+        &self.retain_rejection_kinds
+    }
+
     /// 写侧（保留）拒绝：有界容量把这次保留挡在外面。
-    fn reject_retain(&mut self, reason: &str) -> MediaError {
+    ///
+    /// 记录 `kind` 是必要的：保留表是所有 buffer 种类共用的，只有按种类拆开，
+    /// `dropped_total` 才能被读成"谁被挡住了"，而不是一个无从解释的总数。
+    fn reject_retain(&mut self, kind: &str, reason: &str) -> MediaError {
         self.retain_rejections += 1;
         self.count_rejection(reason);
+        self.count_retain_rejection(reason);
+        *self
+            .retain_rejection_kinds
+            .entry(kind.to_string())
+            .or_insert(0) += 1;
         MediaError::DescriptorRejected(reason.to_string())
     }
 
@@ -212,6 +320,22 @@ impl BufferHandoff {
             .or_insert(0) += 1;
     }
 
+    fn count_retain_rejection(&mut self, reason: &str) {
+        *self
+            .retain_rejection_reasons
+            .entry(reason.to_string())
+            .or_insert(0) += 1;
+    }
+
+    /// 一条保留的 buffer 结束了它的一生（被释放或被回收），把等待时长记进驻留统计。
+    /// 只在这里累计：没有归宿的 buffer 没有等待时间可测，绝不用当前时刻凑一个数。
+    fn settle_residency(&mut self, retained_at_ms: i64, now_ms: i64) {
+        let waited = now_ms.saturating_sub(retained_at_ms).max(0) as u64;
+        self.residency_samples += 1;
+        self.residency_total_ms = self.residency_total_ms.saturating_add(waited);
+        self.residency_max_ms = self.residency_max_ms.max(waited);
+    }
+
     /// 把字节保留在 arena 里等待消费者。这里**不**签发 lease：lease 是"读取窗口"，
     /// 只有在消费者真的来领取时才有意义，否则会在没人读的情况下白白过期。
     pub fn retain(
@@ -227,22 +351,33 @@ impl BufferHandoff {
         // `offered_total = retained_total + retain_rejections` 这条恒等式。
         self.offered_total += 1;
         if bytes.is_empty() {
-            return Err(self.reject_retain("empty_buffer_payload"));
+            return Err(self.reject_retain(kind, "empty_buffer_payload"));
         }
         if buffer_id.is_empty() || kind.is_empty() || stream_id.is_empty() {
-            return Err(self.reject_retain("missing_buffer_identity"));
+            return Err(self.reject_retain(kind, "missing_buffer_identity"));
         }
         if validate_range(&time_range).is_err() {
-            return Err(self.reject_retain("invalid_half_open_time_range"));
+            return Err(self.reject_retain(kind, "invalid_half_open_time_range"));
         }
         if time_range.end_ms - time_range.start_ms > MAX_BUFFER_INTERVAL_MS {
-            return Err(self.reject_retain("buffer_interval_longer_than_a_minute"));
+            return Err(self.reject_retain(kind, "buffer_interval_longer_than_a_minute"));
         }
         if self.retained.len() >= self.limit {
-            return Err(self.reject_retain("handoff_backlog_full"));
+            return Err(self.reject_retain(kind, "handoff_backlog_full"));
+        }
+        // 第二重有界：单一 kind 不得超过自己的配额。少了这一条，先到的种类（实时流里是
+        // 每 21 ms 一个的音频块）会把整张表占满，另一类此后一帧也进不来。
+        if self
+            .retained
+            .iter()
+            .filter(|held| held.kind == kind)
+            .count()
+            >= retained_kind_limit(self.limit)
+        {
+            return Err(self.reject_retain(kind, "handoff_kind_quota_full"));
         }
         if self.retained.iter().any(|held| held.buffer_id == buffer_id) {
-            return Err(self.reject_retain("duplicate_buffer_id"));
+            return Err(self.reject_retain(kind, "duplicate_buffer_id"));
         }
         let offset = match self.arena.allocate(bytes.len()) {
             Ok(offset) => offset,
@@ -251,6 +386,11 @@ impl BufferHandoff {
                 // 看到"拒绝"这件事，而不是只看到保留表还有空位。
                 self.retain_rejections += 1;
                 self.count_rejection("arena_capacity_exceeded");
+                self.count_retain_rejection("arena_capacity_exceeded");
+                *self
+                    .retain_rejection_kinds
+                    .entry(kind.to_string())
+                    .or_insert(0) += 1;
                 return Err(error);
             }
         };
@@ -265,9 +405,14 @@ impl BufferHandoff {
             length: bytes.len() as u64,
             content_hash: content_hash(bytes),
             lease_id: None,
+            retained_at_ms: (self.clock)(),
         };
         self.retained.push(held.clone());
         self.retained_total += 1;
+        self.retained_peak = self.retained_peak.max(self.retained.len() as u64);
+        // 种类水位同样记高水位：只报总深度会让人以为"表还有富余"，
+        // 而实际上是某一类已经顶到自己那一半了。
+        self.retained_kind_peak = self.retained_kind_peak.max(self.deepest_kind());
         Ok(held)
     }
 
@@ -389,7 +534,7 @@ impl BufferHandoff {
         let held = self.retained.remove(index);
         self.arena.release(held.offset as usize);
         self.released_total += 1;
-        let _ = now_ms;
+        self.settle_residency(held.retained_at_ms, now_ms);
         Ok(held.buffer_id)
     }
 
@@ -420,6 +565,7 @@ impl BufferHandoff {
             {
                 let held = self.retained.remove(index);
                 self.arena.release(held.offset as usize);
+                self.settle_residency(held.retained_at_ms, now_ms);
                 dropped += 1;
             }
         }
@@ -436,7 +582,7 @@ impl BufferHandoff {
 }
 
 /// 只由"有界容量"产生、且已经在 `count_rejection` 里计过数的拒绝码。
-const CAPACITY_REJECTIONS: [&str; 1] = ["handoff_backlog_full"];
+const CAPACITY_REJECTIONS: [&str; 2] = ["handoff_backlog_full", "handoff_kind_quota_full"];
 
 fn is_capacity_rejection(reason: &str) -> bool {
     CAPACITY_REJECTIONS.contains(&reason)
@@ -459,8 +605,29 @@ impl BufferHandoff {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicI64, Ordering};
 
     const MB: usize = 1024 * 1024;
+
+    /// 保留时刻用的可控时钟。驻留时长要能被断言，就不能靠 sleep。
+    static TEST_CLOCK_MS: AtomicI64 = AtomicI64::new(0);
+
+    fn test_clock() -> i64 {
+        TEST_CLOCK_MS.load(Ordering::Relaxed)
+    }
+
+    fn set_test_clock(now_ms: i64) {
+        TEST_CLOCK_MS.store(now_ms, Ordering::Relaxed);
+    }
+
+    fn frame_format() -> BufferFormat {
+        BufferFormat {
+            pixel_format: "RGBA".into(),
+            width: 16,
+            height: 16,
+            ..Default::default()
+        }
+    }
 
     fn range(start_ms: i64, end_ms: i64) -> TimeRange {
         TimeRange { start_ms, end_ms }
@@ -596,6 +763,89 @@ mod tests {
     }
 
     #[test]
+    fn one_kind_cannot_take_the_whole_window() {
+        // 8 条上限 → 每类 4 条。实时流里音频块 47 Hz、视频 keep 只有几 Hz：没有这条上限时
+        // 先到的音频把 8 条全占满，视频一帧都进不来（直播实测就是这样，见验证记录）。
+        let mut plane = BufferHandoff::new("arena-quota", MB, None, 8).unwrap();
+        for index in 0..4 {
+            plane
+                .retain(
+                    &format!("audio-{index}"),
+                    "audio_pcm",
+                    "stream-1",
+                    range(index * 20, index * 20 + 20),
+                    BufferFormat::default(),
+                    b"pcm",
+                )
+                .unwrap();
+        }
+        let error = plane
+            .retain(
+                "audio-4",
+                "audio_pcm",
+                "stream-1",
+                range(80, 100),
+                BufferFormat::default(),
+                b"pcm",
+            )
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("handoff_kind_quota_full"),
+            "the quota must fire before the table is full: {error}"
+        );
+        assert_eq!(plane.depth(), 4, "表里还有空位，但这一类不能再用");
+        for index in 0..4 {
+            plane
+                .retain(
+                    &format!("video-{index}"),
+                    "video_frame",
+                    "stream-1",
+                    range(index * 40, index * 40 + 40),
+                    BufferFormat::default(),
+                    b"frame",
+                )
+                .unwrap();
+        }
+        assert_eq!(plane.depth(), 8, "两类各占一半后，窗口才真正满");
+        // 两类都到配额后总上限接手：原因码必须换成"表满"，不能含糊成同一个。
+        let error = plane
+            .retain(
+                "video-4",
+                "video_frame",
+                "stream-1",
+                range(160, 200),
+                BufferFormat::default(),
+                b"frame",
+            )
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("handoff_backlog_full"),
+            "{error}"
+        );
+        let stats = plane.stats();
+        assert_eq!(stats.retained_kind_limit, 4);
+        assert_eq!(
+            stats.retained_by_kind,
+            BTreeMap::from([("audio_pcm".to_string(), 4), ("video_frame".to_string(), 4),]),
+            "窗口由谁组成必须能读出来"
+        );
+        assert_eq!(stats.retained_kind_peak, 4);
+        assert_eq!(stats.retain_rejections, 2);
+        assert_eq!(
+            stats.retain_rejection_reasons,
+            BTreeMap::from([
+                ("handoff_backlog_full".to_string(), 1),
+                ("handoff_kind_quota_full".to_string(), 1),
+            ])
+        );
+        assert_eq!(
+            stats.offered_total,
+            stats.retained_total + stats.retain_rejections,
+            "第二条恒等式在配额拒绝下同样成立"
+        );
+    }
+
+    #[test]
     fn the_backlog_and_the_arena_are_both_bounded() {
         let mut plane = BufferHandoff::new("arena-small", 64, None, 1).unwrap();
         plane
@@ -667,5 +917,82 @@ mod tests {
             &consumer.as_slice()[start..start + locator.length as usize],
             b"payload"
         );
+    }
+
+    #[test]
+    fn retention_peak_and_residency_are_measured_not_assumed() {
+        let mut plane = handoff(4);
+        plane.set_clock_for_test(test_clock);
+        let bytes = vec![5u8; 64];
+        set_test_clock(1_000);
+        plane
+            .retain(
+                "buf-1",
+                "video_frame",
+                "stream-1",
+                range(0, 40),
+                frame_format(),
+                &bytes,
+            )
+            .unwrap();
+        set_test_clock(1_500);
+        plane
+            .retain(
+                "buf-2",
+                "video_frame",
+                "stream-1",
+                range(40, 80),
+                frame_format(),
+                &bytes,
+            )
+            .unwrap();
+        assert_eq!(
+            plane.stats().retained_peak,
+            2,
+            "the high-water mark is real"
+        );
+
+        // 消费者在 1_750 释放 buf-1：等待 750ms。
+        let leased = plane.acquire("buf-1", None, 5_000, 1_750).unwrap();
+        let lease_id = leased.descriptor.lease.clone().unwrap().lease_id;
+        plane.release(&lease_id, 1_750).unwrap();
+        let stats = plane.stats();
+        assert_eq!(stats.residency_samples, 1);
+        assert_eq!(stats.residency_total_ms, 750);
+        assert_eq!(stats.residency_max_ms, 750);
+
+        // buf-2 在 1_500 保留、3_000 被 TTL 回收：等待 1_500ms，成为新的最大值。
+        plane.acquire("buf-2", None, 500, 1_600).unwrap();
+        assert_eq!(plane.expire(3_000), 1);
+        let stats = plane.stats();
+        assert_eq!(stats.residency_samples, 2);
+        assert_eq!(stats.residency_total_ms, 2_250, "750 + 1500");
+        assert_eq!(stats.residency_max_ms, 1_500);
+        assert_eq!(
+            stats.retained_peak, 2,
+            "releasing buffers never rewrites the peak downwards"
+        );
+
+        // 再保留一条但没人领：它没有归宿，因此没有等待时长可测。
+        set_test_clock(3_500);
+        plane
+            .retain(
+                "buf-3",
+                "video_frame",
+                "stream-1",
+                range(80, 120),
+                frame_format(),
+                &bytes,
+            )
+            .unwrap();
+        let stats = plane.stats();
+        assert_eq!(plane.stats().retained_peak, 2);
+        assert_eq!(
+            stats.residency_samples, 2,
+            "a buffer still waiting has no measured wait time"
+        );
+        assert_eq!(stats.retained, 1);
+        // 用一条能独立核对的等式收尾：总和 = 最大值 + 另一条的等待时间。
+        assert_eq!(stats.residency_total_ms, stats.residency_max_ms + 750);
     }
 }

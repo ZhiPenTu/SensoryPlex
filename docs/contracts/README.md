@@ -130,7 +130,13 @@ reserved，破坏语义的修改进入新的协议 major。当前为开发预览
   `offered_total = retained_total + retain_rejections`（每个保留请求都有结果）。
 - `offered_total` 必须等于本次解码交接的样本数（`Σtrack.samples`）：数据面与报告的计数对不上即为缺陷。
 - 保留表上限 `<= 4096`、lease TTL 限定 `[50, 60000] ms`、单条 buffer 区间不超过 60 s，越界一律拒绝，
-  不做夹取；写侧容量拒绝只有 `handoff_backlog_full` 与 `arena_capacity_exceeded` 两种原因。
+  不做夹取；写侧容量拒绝是稳定字符串，只有三种原因：`handoff_backlog_full`（保留表满）、
+  `handoff_kind_quota_full`（单一 buffer 种类到配额）、`arena_capacity_exceeded`（共享段满）。
+- 保留表是**所有种类共用**的一张表，因此上限分两层：总上限 `retained_limit`，以及单一
+  buffer 种类的上限 `retained_kind_limit = max(1, retained_limit / 2)`（**ADR-011**）。
+  实时流里音频块约 47 Hz、视频 keep 只有几 Hz，没有第二层上限时先到的种类会把整张表占满：
+  实测 10 秒直播窗口的 32 条保留全部是音频块，视频帧一帧也交不出去。
+  `retained_by_kind` 说明窗口由谁组成，`retained_kind_peak` 是单一种类的水位高水位。
 - 消费期拒绝码是稳定字符串：`mapping_out_of_range`（越界，含跨到相邻 buffer）、`ambiguous_window`
   （只给 offset 不给 length 或反之）、`unknown_buffer`、`invalid_lease_ttl`、`buffer_already_leased`、
   `unknown_or_released_lease`（迟到释放）；一律通过 `ProcessingError.reason_code` 返回，不只写日志。
@@ -140,6 +146,28 @@ reserved，破坏语义的修改进入新的协议 major。当前为开发预览
 - **lease 不是内存隔离**：同 UID 进程映射整段后仍能看到相邻 buffer 的字节；消费进程属于受信组件，
   这一点在验收输出里以 `same_uid_segment_visibility` 显式上报，不得当作已实现的安全边界。
 - 生产者退出时 `shm_unlink` 段名；消费者只解除自己的映射，不删名。
+
+背压与队列可观察契约（`media/v1/media.proto` 的 **BackpressureReport**，装配于 `DecodedDataPlane.backpressure`；
+设计决策见 [ADR-011](../adr/ADR-011-保留窗口按种类分配.md)）：
+
+- `observed` 不是"指标为零"，而是"这次运行到底有没有可测量的有界队列"：未暴露数据面的
+  replay 写 `observed=false`，此时**其余字段一律无意义**，不得读成"压力为零"。
+- `state` 只有 `ok | degraded | saturated`，由队列深度对阈值推导，**不由健康检查推导**。
+  `degraded_entries`/`saturated_entries` 是进入次数，`state` 是结束时所处档位。
+- `queues[]` 三条，`name[unit]=current/peak/capacity`：`handoff_retained_table[items]`（保留表总深度）、
+  `handoff_retained_kind[items]`（最深的单一种类，容量 = `retained_kind_limit`）、
+  `handoff_arena_bytes[bytes]`（共享段已用）。`peak` 是真实达到过的最大深度，不是配置上限。
+- 两条恒等式必须成立：`dropped_total == Σ drop_reasons[].count == Σ drop_kinds[].count`。
+  原因是稳定字符串（`handoff_backlog_full` / `handoff_kind_quota_full` / `arena_capacity_exceeded`），
+  种类是 descriptor 携带的 kind 字符串（`video_frame` / `audio_pcm` / `audio_segment`）；
+  只报总数会让人把"某一类被限流"误读成"视频帧全丢了"。
+- `timeouts_total` / `residency_*` 来自 lease：`residency_*_ms` 是"保留 → 释放或过期"的等待时间，
+  超时是**真实测量事件**，不是缺失样本。
+- 处理顺序是**先降级、再拒绝**：进入 `degraded` 先按 `throttle_factor` 放大采样最小间隔
+  （有 `throttle_cap_ms` 上限），被抑制的 keep 记 `sampling_throttled_samples` 与
+  `sampling.skipped_backpressure_throttled`；进入 `saturated` 才由保留表拒绝。
+- 覆盖边界：三条队列覆盖 arena 与保留表；GStreamer `queue` 元素与 `appsink max_buffers`
+  **没有计数出口**，不在本报告内，不能据此宣称"全链路队列都可观察"。
 
 媒体格式准入契约（ADR-009，**[媒体格式支持矩阵与拒绝语义](../adr/ADR-009-媒体格式支持矩阵与拒绝语义.md)**，
 以下为待实现要求，当前状态见 [实现状态](../implementation-status.md)）：

@@ -25,6 +25,9 @@
       （证据：`docs/verification.md` "M3 跨进程数据面：lease 消费方与真实交接"；契约见 ADR-010）
 - [x] SRT 实时接入（M4）：`ingest` 在有限窗口内拉流、解码、测量断流与恢复，重连归解码元素
       （证据：`docs/verification.md` "M4 SRT 实时接入：真实直推、断流恢复与实时数据面"）
+- [x] 背压与队列可观察（M2）：保留表/arena 深度、丢弃原因与种类、lease 等待时间以计数 + 原因暴露；
+      降级先于拒绝，且单一种类不能独占保留窗口
+      （证据：`docs/verification.md` "M2 背压与队列可观察：直播实测、两条恒等式与按种类分配"；决策见 ADR-011）
 
 ## 1. 其他模块（先做这些，再做优化）
 
@@ -40,9 +43,19 @@
 
 ### M2 背压与队列可观察
 
-- 现状：队列有上限（pipeline `queue_capacity=32`、sink `max_buffers=8`），但没有等待/丢弃/超时指标。
-- 目标：把等待时间、队列峰值、丢弃与超时以计数 + 原因暴露（报告或指标端点）。
-- 验收：在 `officehours-panel`（最长静止段 57.8s）与 `sasebo-basketball`（持续运动）上跑出非零指标。
+- 状态：**已完成**（证据见 `docs/verification.md` "M2 背压与队列可观察：直播实测、两条恒等式与按种类分配"；
+  设计决策见 [ADR-011](adr/ADR-011-保留窗口按种类分配.md)）。
+- 结果：`BackpressureReport`（契约 `media/v1/media.proto`）装配在 `DecodedDataPlane.backpressure`，
+  给出三条有界队列 `handoff_retained_table`/`handoff_retained_kind`/`handoff_arena_bytes` 的
+  深度/峰值/容量、`state`（`ok|degraded|saturated`）、`degraded_entries`/`saturated_entries`、
+  按原因与按种类的丢弃（`dropped_total == Σ drop_reasons == Σ drop_kinds`）、lease 等待时间
+  （`timeouts_total`/`residency_*`）以及降级抑制的 keep 数（`sampling_throttled_samples`）。
+  处理顺序是**先降级、再拒绝**；保留表分两层上限，单一种类最多占一半（`retained_kind_limit`）。
+  `tools/verify_backpressure.py` 4 场景（运动饱和 / 静止填表 / 消费方测等待 / 无保留控制）全部通过；
+  用户 OBS 直播实测（10–20 秒窗口）得到非零指标，且消费者真拿到视频帧（`video_buffers=3`）。
+- 仍未验证（不要当成已完成）：GStreamer `queue` 与 `appsink max_buffers` **没有计数出口**，
+  不在报告内；只在本机回环与 `macos-aarch64` 验收；未验证小时级长直播与唯一 kind 长期贴住配额的尾延迟；
+  单一种类流只能用一半窗口是显式接受的代价。模型 worker（M8）仍未接入。
 
 ### M3 lease 消费方（跨进程数据面）
 
@@ -162,4 +175,5 @@
       峰值 3564864 = 单帧 1639680 + 双声道 5 s 段 1925184。原因是 `peak_bytes` 统计**已提交容量**，
       bump 分配 + 空闲链复用：mono 段（960000 B）能复用单帧释放的区域，stereo 段（1920000 B）不能，
       于是新增提交。行为正确，语义已写入 `proto/media/v1/media.proto` 与 `docs/contracts/README.md`。
-      剩余待办：当提交量接近容量时给出显式告警（属 M2 背压可观察范畴）。
+      已覆盖（2026-09-23）：提交量接近容量时由 `BackpressureReport` 的 `handoff_arena_bytes` 队列与
+      `state=degraded|saturated` 显式告警（M2，见本文件 §M2 与 ADR-011），不再是待办。

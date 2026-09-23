@@ -151,7 +151,7 @@ class AudioSegmentReport(_message.Message):
     def __init__(self, segment_ms: _Optional[int] = ..., segments: _Optional[int] = ..., partial_segments: _Optional[int] = ..., bytes: _Optional[int] = ..., listed: _Optional[_Iterable[_Union[AudioSegment, _Mapping]]] = ..., listed_limit: _Optional[int] = ..., dropped_samples: _Optional[int] = ..., discontinuities: _Optional[int] = ..., drop_reasons: _Optional[_Iterable[str]] = ...) -> None: ...
 
 class SamplingReport(_message.Message):
-    __slots__ = ("track_kind", "min_interval_ms", "static_hold_ms", "change_threshold", "observed", "kept", "kept_first_frame", "kept_content_change", "kept_static_heartbeat", "skipped_rate_limited", "skipped_no_change", "skipped_non_monotonic", "skipped_missing_signature", "max_gap_ms", "max_keeps_bound", "max_frame_interval_ms")
+    __slots__ = ("track_kind", "min_interval_ms", "static_hold_ms", "change_threshold", "observed", "kept", "kept_first_frame", "kept_content_change", "kept_static_heartbeat", "skipped_rate_limited", "skipped_no_change", "skipped_non_monotonic", "skipped_missing_signature", "max_gap_ms", "max_keeps_bound", "max_frame_interval_ms", "skipped_backpressure_throttled")
     TRACK_KIND_FIELD_NUMBER: _ClassVar[int]
     MIN_INTERVAL_MS_FIELD_NUMBER: _ClassVar[int]
     STATIC_HOLD_MS_FIELD_NUMBER: _ClassVar[int]
@@ -168,6 +168,7 @@ class SamplingReport(_message.Message):
     MAX_GAP_MS_FIELD_NUMBER: _ClassVar[int]
     MAX_KEEPS_BOUND_FIELD_NUMBER: _ClassVar[int]
     MAX_FRAME_INTERVAL_MS_FIELD_NUMBER: _ClassVar[int]
+    SKIPPED_BACKPRESSURE_THROTTLED_FIELD_NUMBER: _ClassVar[int]
     track_kind: str
     min_interval_ms: int
     static_hold_ms: int
@@ -184,10 +185,11 @@ class SamplingReport(_message.Message):
     max_gap_ms: int
     max_keeps_bound: int
     max_frame_interval_ms: int
-    def __init__(self, track_kind: _Optional[str] = ..., min_interval_ms: _Optional[int] = ..., static_hold_ms: _Optional[int] = ..., change_threshold: _Optional[int] = ..., observed: _Optional[int] = ..., kept: _Optional[int] = ..., kept_first_frame: _Optional[int] = ..., kept_content_change: _Optional[int] = ..., kept_static_heartbeat: _Optional[int] = ..., skipped_rate_limited: _Optional[int] = ..., skipped_no_change: _Optional[int] = ..., skipped_non_monotonic: _Optional[int] = ..., skipped_missing_signature: _Optional[int] = ..., max_gap_ms: _Optional[int] = ..., max_keeps_bound: _Optional[int] = ..., max_frame_interval_ms: _Optional[int] = ...) -> None: ...
+    skipped_backpressure_throttled: int
+    def __init__(self, track_kind: _Optional[str] = ..., min_interval_ms: _Optional[int] = ..., static_hold_ms: _Optional[int] = ..., change_threshold: _Optional[int] = ..., observed: _Optional[int] = ..., kept: _Optional[int] = ..., kept_first_frame: _Optional[int] = ..., kept_content_change: _Optional[int] = ..., kept_static_heartbeat: _Optional[int] = ..., skipped_rate_limited: _Optional[int] = ..., skipped_no_change: _Optional[int] = ..., skipped_non_monotonic: _Optional[int] = ..., skipped_missing_signature: _Optional[int] = ..., max_gap_ms: _Optional[int] = ..., max_keeps_bound: _Optional[int] = ..., max_frame_interval_ms: _Optional[int] = ..., skipped_backpressure_throttled: _Optional[int] = ...) -> None: ...
 
 class DecodedDataPlane(_message.Message):
-    __slots__ = ("arena_id", "arena_capacity_bytes", "arena_peak_bytes", "decoded_bytes", "tracks", "descriptors_built", "descriptors_validated", "descriptor_failures", "failure_reasons", "leases_issued", "leases_released", "evidence_descriptors", "audio_segments", "sampling")
+    __slots__ = ("arena_id", "arena_capacity_bytes", "arena_peak_bytes", "decoded_bytes", "tracks", "descriptors_built", "descriptors_validated", "descriptor_failures", "failure_reasons", "leases_issued", "leases_released", "evidence_descriptors", "audio_segments", "sampling", "backpressure")
     ARENA_ID_FIELD_NUMBER: _ClassVar[int]
     ARENA_CAPACITY_BYTES_FIELD_NUMBER: _ClassVar[int]
     ARENA_PEAK_BYTES_FIELD_NUMBER: _ClassVar[int]
@@ -202,6 +204,7 @@ class DecodedDataPlane(_message.Message):
     EVIDENCE_DESCRIPTORS_FIELD_NUMBER: _ClassVar[int]
     AUDIO_SEGMENTS_FIELD_NUMBER: _ClassVar[int]
     SAMPLING_FIELD_NUMBER: _ClassVar[int]
+    BACKPRESSURE_FIELD_NUMBER: _ClassVar[int]
     arena_id: str
     arena_capacity_bytes: int
     arena_peak_bytes: int
@@ -216,7 +219,70 @@ class DecodedDataPlane(_message.Message):
     evidence_descriptors: _containers.RepeatedCompositeFieldContainer[_common_pb2.BufferDescriptor]
     audio_segments: AudioSegmentReport
     sampling: _containers.RepeatedCompositeFieldContainer[SamplingReport]
-    def __init__(self, arena_id: _Optional[str] = ..., arena_capacity_bytes: _Optional[int] = ..., arena_peak_bytes: _Optional[int] = ..., decoded_bytes: _Optional[int] = ..., tracks: _Optional[_Iterable[_Union[DecodedTrackStat, _Mapping]]] = ..., descriptors_built: _Optional[int] = ..., descriptors_validated: _Optional[int] = ..., descriptor_failures: _Optional[int] = ..., failure_reasons: _Optional[_Iterable[str]] = ..., leases_issued: _Optional[int] = ..., leases_released: _Optional[int] = ..., evidence_descriptors: _Optional[_Iterable[_Union[_common_pb2.BufferDescriptor, _Mapping]]] = ..., audio_segments: _Optional[_Union[AudioSegmentReport, _Mapping]] = ..., sampling: _Optional[_Iterable[_Union[SamplingReport, _Mapping]]] = ...) -> None: ...
+    backpressure: BackpressureReport
+    def __init__(self, arena_id: _Optional[str] = ..., arena_capacity_bytes: _Optional[int] = ..., arena_peak_bytes: _Optional[int] = ..., decoded_bytes: _Optional[int] = ..., tracks: _Optional[_Iterable[_Union[DecodedTrackStat, _Mapping]]] = ..., descriptors_built: _Optional[int] = ..., descriptors_validated: _Optional[int] = ..., descriptor_failures: _Optional[int] = ..., failure_reasons: _Optional[_Iterable[str]] = ..., leases_issued: _Optional[int] = ..., leases_released: _Optional[int] = ..., evidence_descriptors: _Optional[_Iterable[_Union[_common_pb2.BufferDescriptor, _Mapping]]] = ..., audio_segments: _Optional[_Union[AudioSegmentReport, _Mapping]] = ..., sampling: _Optional[_Iterable[_Union[SamplingReport, _Mapping]]] = ..., backpressure: _Optional[_Union[BackpressureReport, _Mapping]] = ...) -> None: ...
+
+class BackpressureQueue(_message.Message):
+    __slots__ = ("name", "unit", "capacity", "current", "peak")
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    UNIT_FIELD_NUMBER: _ClassVar[int]
+    CAPACITY_FIELD_NUMBER: _ClassVar[int]
+    CURRENT_FIELD_NUMBER: _ClassVar[int]
+    PEAK_FIELD_NUMBER: _ClassVar[int]
+    name: str
+    unit: str
+    capacity: int
+    current: int
+    peak: int
+    def __init__(self, name: _Optional[str] = ..., unit: _Optional[str] = ..., capacity: _Optional[int] = ..., current: _Optional[int] = ..., peak: _Optional[int] = ...) -> None: ...
+
+class BackpressureDropReason(_message.Message):
+    __slots__ = ("reason", "count")
+    REASON_FIELD_NUMBER: _ClassVar[int]
+    COUNT_FIELD_NUMBER: _ClassVar[int]
+    reason: str
+    count: int
+    def __init__(self, reason: _Optional[str] = ..., count: _Optional[int] = ...) -> None: ...
+
+class BackpressureDropKind(_message.Message):
+    __slots__ = ("kind", "count")
+    KIND_FIELD_NUMBER: _ClassVar[int]
+    COUNT_FIELD_NUMBER: _ClassVar[int]
+    kind: str
+    count: int
+    def __init__(self, kind: _Optional[str] = ..., count: _Optional[int] = ...) -> None: ...
+
+class BackpressureReport(_message.Message):
+    __slots__ = ("observed", "queues", "state", "degraded_entries", "saturated_entries", "dropped_total", "drop_reasons", "timeouts_total", "residency_samples", "residency_max_ms", "residency_avg_ms", "sampling_throttled_samples", "throttle_factor", "drop_kinds")
+    OBSERVED_FIELD_NUMBER: _ClassVar[int]
+    QUEUES_FIELD_NUMBER: _ClassVar[int]
+    STATE_FIELD_NUMBER: _ClassVar[int]
+    DEGRADED_ENTRIES_FIELD_NUMBER: _ClassVar[int]
+    SATURATED_ENTRIES_FIELD_NUMBER: _ClassVar[int]
+    DROPPED_TOTAL_FIELD_NUMBER: _ClassVar[int]
+    DROP_REASONS_FIELD_NUMBER: _ClassVar[int]
+    TIMEOUTS_TOTAL_FIELD_NUMBER: _ClassVar[int]
+    RESIDENCY_SAMPLES_FIELD_NUMBER: _ClassVar[int]
+    RESIDENCY_MAX_MS_FIELD_NUMBER: _ClassVar[int]
+    RESIDENCY_AVG_MS_FIELD_NUMBER: _ClassVar[int]
+    SAMPLING_THROTTLED_SAMPLES_FIELD_NUMBER: _ClassVar[int]
+    THROTTLE_FACTOR_FIELD_NUMBER: _ClassVar[int]
+    DROP_KINDS_FIELD_NUMBER: _ClassVar[int]
+    observed: bool
+    queues: _containers.RepeatedCompositeFieldContainer[BackpressureQueue]
+    state: str
+    degraded_entries: int
+    saturated_entries: int
+    dropped_total: int
+    drop_reasons: _containers.RepeatedCompositeFieldContainer[BackpressureDropReason]
+    timeouts_total: int
+    residency_samples: int
+    residency_max_ms: int
+    residency_avg_ms: int
+    sampling_throttled_samples: int
+    throttle_factor: int
+    drop_kinds: _containers.RepeatedCompositeFieldContainer[BackpressureDropKind]
+    def __init__(self, observed: bool = ..., queues: _Optional[_Iterable[_Union[BackpressureQueue, _Mapping]]] = ..., state: _Optional[str] = ..., degraded_entries: _Optional[int] = ..., saturated_entries: _Optional[int] = ..., dropped_total: _Optional[int] = ..., drop_reasons: _Optional[_Iterable[_Union[BackpressureDropReason, _Mapping]]] = ..., timeouts_total: _Optional[int] = ..., residency_samples: _Optional[int] = ..., residency_max_ms: _Optional[int] = ..., residency_avg_ms: _Optional[int] = ..., sampling_throttled_samples: _Optional[int] = ..., throttle_factor: _Optional[int] = ..., drop_kinds: _Optional[_Iterable[_Union[BackpressureDropKind, _Mapping]]] = ...) -> None: ...
 
 class ReplayReport(_message.Message):
     __slots__ = ("source", "anchors", "decoded_items", "emitted_anchors", "dropped_items", "out_of_order_items", "gap_items", "platform", "blockers", "drop_reasons", "golden_path_verified", "decoded", "handoff_state")

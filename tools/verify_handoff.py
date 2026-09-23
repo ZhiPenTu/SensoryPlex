@@ -9,7 +9,8 @@
 - 消费者进程与生产者进程不同 PID；
 - 视频/音频 buffer 的摘要与 mmap 读到的字节一致；子窗口摘要与整条 buffer 不同；
 - 越界、未知 buffer、非法 TTL、重复领取、迟到释放都得到显式拒绝码；
-- 保留表有界：满时拒绝码为 `handoff_backlog_full`，且保留 + 拒绝 = 已交接样本数；
+- 保留表有界：触顶时拒绝码落在容量类（`handoff_backlog_full` / `handoff_kind_quota_full` /
+  `arena_capacity_exceeded`），且保留 + 拒绝 = 已交接样本数；
 - 结束时每条保留的 buffer 都被释放或过期回收（`released + expired + retained == retained_total`），
   arena 没有悬挂 slab。
 """
@@ -37,7 +38,7 @@ WAIT_TIMEOUT_MS = 30_000
 # 服务端默认 lease TTL：必须覆盖消费者读完一整批 buffer 的时间。
 SERVER_TTL_MS = 30_000
 # 只由"有界容量"产生的保留期拒绝码。
-CAPACITY_REASONS = {"handoff_backlog_full", "arena_capacity_exceeded"}
+CAPACITY_REASONS = {"handoff_backlog_full", "handoff_kind_quota_full", "arena_capacity_exceeded"}
 # 长样本（如 officehours-panel 五万五千帧）单次 replay 要数分钟，等待窗口必须给足。
 READY_TIMEOUT_S = 900.0
 RUN_TIMEOUT_S = 900.0
@@ -219,7 +220,7 @@ def verify_scenario(media: Path, scenario: dict, workspace: Path) -> list[str]:
     )
     if scenario["expect_backlog_rejection"]:
         check(
-            reasons.get("handoff_backlog_full", 0) == rejected > 0,
+            sum(reasons.get(reason, 0) for reason in CAPACITY_REASONS) == rejected > 0,
             f"expected explicit backlog rejections, got {ready.get('rejection_reasons')!r}",
             failures,
         )

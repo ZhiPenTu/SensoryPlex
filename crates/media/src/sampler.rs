@@ -43,6 +43,10 @@ pub enum SkipReason {
     NoChangeYet,
     NonMonotonic,
     MissingSignature,
+    /// 队列背压期间的阶段一降级：这一帧本来会被 keep，但下游有界队列已经在
+    /// `degraded`/`saturated`，于是按放大后的最小间隔放弃它。它与 `RateLimited`
+    /// 分开计数，因为普通限速是策略常数，而这里是被下游压力驱动的、会随压力消失的降速。
+    BackpressureThrottled,
 }
 
 impl SkipReason {
@@ -52,6 +56,7 @@ impl SkipReason {
             Self::NoChangeYet => "no_change_yet",
             Self::NonMonotonic => "non_monotonic_pts",
             Self::MissingSignature => "missing_signature",
+            Self::BackpressureThrottled => "backpressure_throttled",
         }
     }
 }
@@ -212,6 +217,9 @@ pub struct SamplingCounters {
     pub skipped_no_change: u64,
     pub skipped_non_monotonic: u64,
     pub skipped_missing_signature: u64,
+    /// 被背压抑制的 keep。它必须与 `observed`/`dropped_samples` 一起读：
+    /// 少了这些帧不是"内容没变"，而是下游队列在降级。
+    pub skipped_backpressure_throttled: u64,
     /// 观测到的最大相邻 pts 间隔。抽帧的 gap 上界由 `static_hold_ms + 本值` 决定，
     /// 因此它必须可复核，而不是靠"应该不会太大"。
     pub max_frame_interval_ms: i64,
@@ -224,6 +232,7 @@ impl SamplingCounters {
             + self.skipped_no_change
             + self.skipped_non_monotonic
             + self.skipped_missing_signature
+            + self.skipped_backpressure_throttled
     }
 
     /// 出现跳过帧时，必须存在一个 skip reason。
@@ -235,6 +244,10 @@ impl SamplingCounters {
             (
                 SkipReason::MissingSignature.name(),
                 self.skipped_missing_signature,
+            ),
+            (
+                SkipReason::BackpressureThrottled.name(),
+                self.skipped_backpressure_throttled,
             ),
         ]
         .into_iter()
@@ -285,6 +298,22 @@ impl AdaptiveSampler {
     /// 观测一帧视频。当帧布局不可用时 `signature` 为 `None`，
     /// 此时会被作为显式 skip 计入，而不是当作"无变化"。
     pub fn observe(&mut self, pts_ms: i64, signature: Option<FrameSignature>) -> Decision {
+        self.observe_with_pressure(pts_ms, signature, None)
+    }
+
+    /// 带下游压力的观测。`throttle_min_interval_ms` 为 `Some` 时，最小间隔换成这个值
+    /// （它由背压策略从本策略的最小间隔放大而来，因此只可能更大）；被它挡下的 keep
+    /// 计入 `skipped_backpressure_throttled`，与普通 `rate_limited` 分开。
+    pub fn observe_with_pressure(
+        &mut self,
+        pts_ms: i64,
+        signature: Option<FrameSignature>,
+        throttle_min_interval_ms: Option<i64>,
+    ) -> Decision {
+        // 降级只降低 keep 速率：一个小于本策略最小间隔的入参会被忽略，而不是被执行。
+        let min_interval_ms = throttle_min_interval_ms
+            .filter(|throttled| *throttled > self.policy.min_interval_ms)
+            .unwrap_or(self.policy.min_interval_ms);
         self.counters.observed += 1;
         if self.first_pts_ms.is_none() {
             self.first_pts_ms = Some(pts_ms);
@@ -327,6 +356,14 @@ impl AdaptiveSampler {
                     self.counters.skipped_rate_limited += 1;
                     return Decision::Skip {
                         reason: SkipReason::RateLimited,
+                        delta,
+                    };
+                }
+                if elapsed < min_interval_ms {
+                    // 走了基础限速，却还没到背压放宽后的间隔：这一帧是被下游挡下的。
+                    self.counters.skipped_backpressure_throttled += 1;
+                    return Decision::Skip {
+                        reason: SkipReason::BackpressureThrottled,
                         delta,
                     };
                 }
@@ -532,6 +569,47 @@ mod tests {
             2,
             "reasons are reported separately"
         );
+    }
+
+    #[test]
+    fn backpressure_throttles_the_keep_rate_and_says_why() {
+        let mut sampler = AdaptiveSampler::new(SamplingPolicy::default());
+        // 首帧永远保留：降级不能把一条流变成空的。
+        assert!(sampler
+            .observe_with_pressure(0, Some(signature(10)), Some(4_000))
+            .kept());
+        // 2 秒后有内容变化：基础限速（1 秒）已经满足，但背压放宽后的间隔（4 秒）还没到。
+        match sampler.observe_with_pressure(2_000, Some(signature(200)), Some(4_000)) {
+            Decision::Skip { reason, .. } => {
+                assert_eq!(reason, SkipReason::BackpressureThrottled)
+            }
+            other => panic!("expected a backpressure skip, got {other:?}"),
+        }
+        // 压力消失后，同一帧会被正常 keep——降级是随压力可逆的，不是永久丢帧策略。
+        assert!(sampler.observe(3_000, Some(signature(200))).kept());
+        let counters = sampler.counters();
+        assert_eq!(counters.observed, 3);
+        assert_eq!(counters.kept, 2);
+        assert_eq!(counters.skipped_backpressure_throttled, 1);
+        assert_eq!(
+            counters.skipped_rate_limited, 0,
+            "folding them together hides the cause"
+        );
+        assert_eq!(
+            counters.skip_reasons(),
+            vec![("backpressure_throttled", 1)],
+            "the skip reason must be readable from the counters"
+        );
+    }
+
+    #[test]
+    fn a_throttle_below_the_base_interval_is_ignored_not_applied() {
+        let mut sampler = AdaptiveSampler::new(SamplingPolicy::default());
+        sampler.observe(0, Some(signature(10)));
+        // 入参想放宽到 500ms，比策略的 1s 更密：必须被忽略，否则压力会加快采样。
+        let decision = sampler.observe_with_pressure(1_500, Some(signature(200)), Some(500));
+        assert!(decision.kept(), "the base rate limit still governs");
+        assert_eq!(sampler.counters().skipped_backpressure_throttled, 0);
     }
 
     #[test]

@@ -519,3 +519,79 @@ live_handoff `released+expired+retained=32 == retained_total=32`、独立消费�
 - `duration_delta_nonpositive` 在真实流里出现过 1 次（PTS 重复或非单调）：当前按丢弃处理并计数，
   但没有针对 B 帧重排序的专门验证。
 - SRT 加密（`passphrase` / `pbkeylen`）与带凭据的 publish、`linux-x86_64` 侧仍未验证。
+
+### M2 背压与队列可观察：直播实测、两条恒等式与按种类分配（2026-09-23）
+
+本节记录 M2 的验收：把"等待、峰值、丢弃、超时"以**计数 + 原因**暴露，并用**用户自己的 OBS 直播**
+作为真实输入。契约见 `proto/media/v1/media.proto` 的 `BackpressureReport`（装配于
+`DecodedDataPlane.backpressure`），语义写进 [契约文档](contracts/README.md)，决策见
+[ADR-011](adr/ADR-011-保留窗口按种类分配.md)。**本轮新增了一个真实缺陷的修复**（见下），
+不是"补一个指标字段"。
+
+**报告给出的三条有界队列**（`name[unit]=current/peak/capacity`）：`handoff_retained_table[items]`
+（保留表总深度）、`handoff_retained_kind[items]`（**最深的单一种类**）、`handoff_arena_bytes[bytes]`
+（共享段已用）。外加 `state`（`ok|degraded|saturated`）、`degraded_entries`/`saturated_entries`、
+按原因与按种类的丢弃、`timeouts_total`/`residency_*` 的 lease 等待时间、`sampling_throttled_samples`。
+`observed=false` 表示**这次运行没有可测量的有界队列**（例如未暴露数据面的 replay），
+此时其余字段无意义——**不得读成"压力为零"**。
+
+**两条恒等式**（消费者与编排脚本各算一遍，只报"健康"不算证据）：
+
+```
+dropped_total == Σ drop_reasons[].count == Σ drop_kinds[].count   # 每个丢弃都有原因，且能按种类读出来
+retained_total == retained + released_total + expired_total        # 每条保留的 buffer 都有归宿（ADR-010）
+```
+
+**实测暴露的真实缺陷（本轮修掉）：** 保留表是**所有 buffer 种类共用**的一张 FIFO。实时流里音频
+按 ~47 Hz 产生 PCM 段，视频经抽帧后 keep 只有几 Hz，先到的种类几个周期就把整张表占满。
+修复前 10 秒 OBS 直播窗口（`retained_limit=32`）实测：`retained=32/32` **全部是 `audio_pcm`**、
+消费者 `video_buffers=0`、`handoff_worker.py` 退出码 1（`listing.has_video` 失败）、
+`dropped=502` 且 `drop_kinds=audio_pcm:500,video_frame:2`。这不是单进程不变量能发现的：
+"表满了"本身并不违反任何既有约束，只有真实直播输入才把它暴露出来。
+
+**修复（ADR-011 的核心决策）：** 保留表分两层上限——总上限 `retained_limit` 之外，单一种类上限
+`retained_kind_limit = max(1, retained_limit / 2)`，到配额以独立拒绝码 `handoff_kind_quota_full` 拒绝
+（**在** `handoff_backlog_full` **之前**判，两种有界行为在报告里可区分）。`HandoffStats` 增加
+`retained_kind_limit` / `retained_by_kind` / `retained_kind_peak` 说明窗口由谁组成。
+
+**修复后同一路 OBS 直播复测（2026-09-23，10 秒窗口，默认 `retained_limit=32`）：**
+
+- 消费者**真的拿到了视频**：`video_buffers=3 audio_buffers=16`，独立进程
+  `handoff worker ok: 70 checks`（退出码 0）。
+- 三条队列自证有界：`handoff_retained_table[items]=19/19/32`、`handoff_retained_kind[items]=16/16/16`
+  （= 32 的一半，说明第二个种类开始就被配额挡住，而不是把整张表吃干）、
+  `handoff_arena_bytes[bytes]=11190272/11190272/67108864`。
+- 账目：`dropped=544 reasons=544 kinds=544`，原因只有容量类 `handoff_kind_quota_full`；
+  `state=saturated`、`degraded=1 saturated=1`；`throttled=198`（**降级先于拒绝**：先按
+  `throttle_factor=4` 放大采样间隔，再拒保留）；`retained=0`、`arena_live_slabs=0`、
+  `released=18`、`residency_samples=19 max_ms=11635`；
+  `retained_kind_limit=16`（报告与账目一致）、`retained_kind_peak=16`（未越界）、
+  `released+expired+retained=19 == retained_total=19`。
+- 同轮 `steady` 场景：`samples=979`、`descriptors_validated=625`（0 失败）、`stalls=0`、
+  `handoff_state=not_exercised`，报告如实写 `backpressure observed=false state=ok` 而不是一组干净的零。
+
+**不依赖 OBS 的回归（`uv run python tools/verify_backpressure.py`，4/4 PASS）：**
+
+| 场景 | 关键结果 |
+| --- | --- |
+| `motion_queue_saturates` | `table=8/8/8`、`kind=4/4/4`、`dropped=2208`（两种原因）、`throttled=1318`、`degraded=1 saturated=1`，被拒的里面有视频帧（`video_frame:11`） |
+| `static_still_fills` | 静止段也会填满有界队列：`dropped=2513`、`kinds=audio_pcm:2496,video_frame:17`，keep 全部有心跳原因 |
+| `consumer_measures_wait` | 消费者跟得上时 `dropped=0`、`state=ok`、`released=455`、`residency_samples=456`、`retained_peak=456`，三条队列 `4096/2048/512MiB` |
+| `no_retention_control` | 没有保留队列 → `observed=false`、无队列/无水位数，但同趟确实解码了（`descriptors=156`） |
+
+**单元与契约测试：** `cargo test --offline -p sensoryplex-media --features gstreamer` 75 项通过
+（含 `one_kind_cannot_take_the_whole_window`、`the_backlog_and_the_arena_are_both_bounded`）；
+`tests/contracts/test_backpressure_contract.py`（7 项）与 `test_handoff_contract.py` 全绿；
+`make check` 45 项通过。
+
+**仍未验证（不得当作完成）：**
+
+- GStreamer `queue` 元素与 `appsink max_buffers` **没有计数出口**：三条队列覆盖的是 arena 与保留表，
+  不是 GStreamer 内部队列，不能据此宣称"全链路队列都可观察"。
+- 只在本机回环与 `macos-aarch64` 验收；`linux-x86_64`、Mac mini / 跨机未验证。
+- 未验证小时级长直播，也未验证唯一 kind 长时间贴住配额时的尾延迟（当前只观察了 10–20 秒窗口）。
+- **单一种类流只能用一半窗口**（如纯音频直播 `retained_limit=32` 实际 16 条）是 ADR-011 显式接受的代价。
+- 模型 worker 未接入（M8）：本节只证明"视频帧能交出去"，不证明语义链路可用。
+- `make live-check` 五场景因 OBS 直播占用 `live/obs`（`overridePublisher: false`）本轮未复跑；
+  直播侧证据来自上述 OBS 实测与同一条流上的场景函数复跑（`steady`/`live_handoff` 均 PASS）。
+- 运行时解码仍有一条 macOS GL 警告（`GStreamer-GL-WARNING ... NSApplication`），不影响结果。

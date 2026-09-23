@@ -109,6 +109,7 @@ fn error_code(reason: &str) -> ErrorCode {
         "buffer_already_leased"
         | "lease_capacity_exhausted"
         | "handoff_backlog_full"
+        | "handoff_kind_quota_full"
         | "arena_capacity_exceeded" => ErrorCode::ResourceExhausted,
         // lease 消失只有两种解释：已被释放，或 TTL 已过。两种都属于"截止时间已过"。
         "unknown_or_released_lease" | "invalid_or_expired_lease" => ErrorCode::DeadlineExceeded,
@@ -130,7 +131,7 @@ fn retained_to_contract(entry: &RetainedBuffer) -> contract::RetainedBuffer {
     }
 }
 
-fn stats_to_contract(stats: &HandoffStats, arena_capacity_bytes: u64) -> contract::HandoffStats {
+fn stats_to_contract(stats: &HandoffStats) -> contract::HandoffStats {
     contract::HandoffStats {
         retained_limit: stats.retained_limit,
         retained: stats.retained,
@@ -141,11 +142,19 @@ fn stats_to_contract(stats: &HandoffStats, arena_capacity_bytes: u64) -> contrac
         retain_rejections: stats.retain_rejections,
         request_rejections: stats.request_rejections,
         rejection_reasons: stats.rejection_reasons.clone().into_iter().collect(),
-        arena_capacity_bytes,
+        arena_capacity_bytes: stats.arena_capacity_bytes,
         arena_used_bytes: stats.arena_used_bytes,
         arena_peak_bytes: stats.arena_peak_bytes,
         arena_live_slabs: stats.arena_live_slabs,
         offered_total: stats.offered_total,
+        retained_peak: stats.retained_peak,
+        retained_kind_limit: stats.retained_kind_limit,
+        retained_by_kind: stats.retained_by_kind.clone().into_iter().collect(),
+        retained_kind_peak: stats.retained_kind_peak,
+        retain_rejection_reasons: stats.retain_rejection_reasons.clone().into_iter().collect(),
+        residency_samples: stats.residency_samples,
+        residency_max_ms: stats.residency_max_ms,
+        residency_total_ms: stats.residency_total_ms,
     }
 }
 
@@ -158,7 +167,6 @@ impl BufferHandoffService for HandoffService {
         let mut plane = self.plane().map_err(Status::internal)?;
         plane.expire(sensoryplex_media::now_unix_ms());
         let stats = plane.stats();
-        let capacity = plane.arena_capacity_bytes();
         let buffers = plane
             .list()
             .iter()
@@ -166,7 +174,7 @@ impl BufferHandoffService for HandoffService {
             .collect::<Vec<_>>();
         Ok(Response::new(contract::ListRetainedResponse {
             buffers,
-            stats: Some(stats_to_contract(&stats, capacity)),
+            stats: Some(stats_to_contract(&stats)),
             segment_name: plane.segment_name().unwrap_or_default().to_string(),
         }))
     }
@@ -178,9 +186,8 @@ impl BufferHandoffService for HandoffService {
         let mut plane = self.plane().map_err(Status::internal)?;
         plane.expire(sensoryplex_media::now_unix_ms());
         let stats = plane.stats();
-        let capacity = plane.arena_capacity_bytes();
         Ok(Response::new(contract::HandoffStatsResponse {
-            stats: Some(stats_to_contract(&stats, capacity)),
+            stats: Some(stats_to_contract(&stats)),
             segment_name: plane.segment_name().unwrap_or_default().to_string(),
         }))
     }

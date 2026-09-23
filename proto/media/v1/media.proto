@@ -138,6 +138,11 @@ message SamplingReport {
   uint64 max_keeps_bound = 15;
   // Largest observed gap between consecutive pts, used to recompute the max_gap_ms bound.
   int64 max_frame_interval_ms = 16;
+  // Frames the sampler would have kept but suppressed because the downstream bounded queue was
+  // under backpressure. They are counted in `observed` and in the track's `dropped_samples`
+  // with the reason `backpressure_throttled`; this counter is that same suppression, seen from
+  // the sampling side. It is never a silent drop and never a success.
+  uint64 skipped_backpressure_throttled = 17;
 }
 
 // Real data-plane accounting for one replay. All zeros means this build never decoded.
@@ -163,6 +168,78 @@ message DecodedDataPlane {
   // Sampling accounting when this build really decoded. Empty means no sampling ran here;
   // it must never be read as "every frame was kept".
   repeated SamplingReport sampling = 14;
+  // Backpressure accounting for the bounded queue that sits after the descriptor. `observed`
+  // distinguishes "this run measured the queue and saw no pressure" from "this run had no such
+  // queue"; a zero here must never be read as proof that nothing was dropped.
+  BackpressureReport backpressure = 15;
+}
+
+// One bounded queue's water marks. `capacity` and `peak` are always counts of the same unit
+// (`depth` counts items, `bytes` counts bytes), so a peak above capacity is a bug, not a spike.
+message BackpressureQueue {
+  string name = 1; // handoff_retained_table | handoff_retained_kind | handoff_arena_bytes
+  // handoff_retained_kind is the deepest single buffer kind, bounded by
+  // retained_kind_limit = max(1, retained_limit / 2), so one kind cannot take the whole window.
+  string unit = 2; // items | bytes
+  uint64 capacity = 3;
+  uint64 current = 4;
+  // High-water mark over the whole run. It is the largest value actually reached, not an
+  // estimate and not a configured limit.
+  uint64 peak = 5;
+}
+
+// Why a bounded queue refused work, and how much. A refusal is always counted with a reason:
+// the queue is bounded on purpose, so this table is evidence of correct behaviour, not a fault.
+message BackpressureDropReason {
+  string reason = 1;
+  uint64 count = 2;
+}
+
+// What kind of buffer was refused. The bounded queue is shared by every kind on the stream
+// (video frames and audio PCM segment the same retained table), so a bare total cannot be read
+// as "video frames were dropped": this breakdown is what makes the total interpretable.
+message BackpressureDropKind {
+  // video_frame | audio_pcm | audio_segment, the same kind strings the descriptors carry.
+  string kind = 1;
+  uint64 count = 2;
+}
+
+// Backpressure observability for the bounded queue after the descriptor.
+//
+// Accounting identities that a reader may rely on:
+//   dropped_total = sum(drop_reasons[].count)                     (every drop is explained)
+// Residency describes how long a retained buffer waited for its consumer; it is measured only
+// for buffers that ended (released or expired), so `residency_samples` is the sample count of
+// the statistic and can legitimately be smaller than `sampled_total`.
+message BackpressureReport {
+  // False means this run had no bounded post-descriptor queue to measure, for example a
+  // time-based replay that never exposed a data plane. Every other field is then meaningless
+  // and must not be read as zero pressure.
+  bool observed = 1;
+  repeated BackpressureQueue queues = 2;
+  // ok | degraded | saturated. Derived from the queue depth against the policy thresholds,
+  // never from a health check.
+  string state = 3;
+  // How many times the run entered `degraded` and `saturated`. `state` is where it ended.
+  uint64 degraded_entries = 4;
+  uint64 saturated_entries = 5;
+  // Refusals by the bounded queue, with their reasons.
+  uint64 dropped_total = 6;
+  repeated BackpressureDropReason drop_reasons = 7;
+  // Buffers whose consumer never released them inside the lease TTL and that the runtime had to
+  // reclaim. A timeout is a real measured event, not a missing sample.
+  uint64 timeouts_total = 8;
+  // Wait time between retaining a buffer and its release or expiry, in milliseconds.
+  uint64 residency_samples = 9;
+  uint64 residency_max_ms = 10;
+  uint64 residency_avg_ms = 11;
+  // Stage-1 degradation actually applied: keeps the sampler gave up because of backpressure.
+  uint64 sampling_throttled_samples = 12;
+  // The throttle factor applied to the sampling rate limit while the queue was not `ok`.
+  uint64 throttle_factor = 13;
+  // Refusals by buffer kind. `sum(drop_kinds[].count) == dropped_total` holds for the same
+  // reasons `drop_reasons` does.
+  repeated BackpressureDropKind drop_kinds = 14;
 }
 
 // One replay attempt. Counters and reasons stay explicit instead of optimistic defaults.

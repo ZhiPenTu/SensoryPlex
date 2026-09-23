@@ -177,6 +177,11 @@ SENSORYPLEX_SRT_LIVE_URI='srt://127.0.0.1:8890?streamid=read:live/obs' \
 - 视频最终只留下少数帧属抽帧策略：画面静止时按 5 秒心跳保留，`sampling.kept` 与
   `skipped_no_change` 都在报告里，不是丢帧。
 - 详细证据与未验证范围见 [验证记录](../verification.md) 的"M4+"一节。
+- 同一路 OBS 直播也用于 M2 背压验收：10 秒窗口（`--handoff-listen`）下报告给出三条有界队列
+  （`handoff_retained_table=19/19/32`、`handoff_retained_kind=16/16/16`、`handoff_arena_bytes`），
+  `state=saturated`、丢弃 544 条全部是 `handoff_kind_quota_full`（音频侧到配额），
+  独立消费者实际拿到 `video_buffers=3 audio_buffers=16`。这轮实测修掉了"音频块占满共用保留表、
+  视频一帧也交不出去"的缺陷（[ADR-011](../adr/ADR-011-保留窗口按种类分配.md)）。
 
 本地诊断输出位于 Git 忽略的 `.logs/stream-verification/`，包括 `report.json`、
 `rtsp-probe.json`、`gstreamer.log` 与 `active-metrics.txt`，未保存媒体帧或录制文件。

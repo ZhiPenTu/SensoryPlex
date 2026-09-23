@@ -1,10 +1,11 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use prost::Message;
+use sensoryplex_media::backpressure::BackpressurePolicy;
 use sensoryplex_media::handoff::{BufferHandoff, HandoffStats, RetainPolicy};
 use sensoryplex_media::live::{LiveConfig, LiveStats};
 use sensoryplex_media::sampler::SamplingPolicy;
@@ -55,17 +56,21 @@ fn decode_pass(
     media: &str,
     stream_id: &str,
     arena_id: &str,
-    max_samples: usize,
-    audio_segment_ms: u32,
-    sampling: SamplingPolicy,
-    handoff: RetainPolicy,
+    args: &ResolvedRunArgs,
 ) -> Result<(Option<DecodedDataPlane>, Option<BufferHandoff>, bool), String> {
+    // 保留策略在这里成型，而不是在调用方：replay 与 ingest 必须走同一条装配路径。
+    let handoff = match &args.handoff {
+        Some(config) => RetainPolicy::shared(config.arena_bytes, config.retained_limit)
+            .map_err(|error| error.to_string())?,
+        None => RetainPolicy::default(),
+    };
     let run = sensoryplex_media::decode::DecodeRun {
         decode: sensoryplex_media::decode::DecodeConfig::default(),
-        max_samples,
-        audio_segment_ms,
-        sampling,
+        max_samples: args.max_points,
+        audio_segment_ms: args.audio_segment_ms,
+        sampling: args.sampling,
         handoff,
+        backpressure: args.backpressure,
     };
     sensoryplex_media::decode::decode_file(Path::new(media), stream_id, arena_id, &run)
         .map(|outcome| (Some(outcome.plane), outcome.handoff, outcome.truncated))
@@ -78,15 +83,42 @@ fn decode_pass(
     _media: &str,
     _stream_id: &str,
     _arena_id: &str,
-    _max_samples: usize,
-    _audio_segment_ms: u32,
-    _sampling: SamplingPolicy,
-    _handoff: RetainPolicy,
+    args: &ResolvedRunArgs,
 ) -> Result<(Option<DecodedDataPlane>, Option<BufferHandoff>, bool), String> {
+    validate_run_args(args)?;
     Ok((None, None, false))
 }
 
-const REPLAY_USAGE: &str = "usage: sensoryplex-runtime replay <pipeline.yaml> <media-path> --report <report.pb> [--max-points N] [--audio-segment-ms N] [--sampling-min-interval-ms N] [--sampling-static-hold-ms N] [--sampling-change-threshold N] [--handoff-listen 127.0.0.1:PORT] [--handoff-arena-bytes N] [--handoff-retained-limit N] [--handoff-ttl-ms N] [--handoff-wait-timeout-ms N] [--handoff-idle-timeout-ms N]";
+/// 两条解码路径共用的运行参数校验。缺 GStreamer 的构建也要走一遍：
+/// 没有解码器不等于可以把非法配置报成"只是没有解码器"。
+#[cfg(not(feature = "gstreamer"))]
+fn validate_run_args(args: &ResolvedRunArgs) -> Result<(), String> {
+    if args.max_points == 0 {
+        return Err("max_points must be positive".into());
+    }
+    if !(MIN_AUDIO_SEGMENT_MS..=MAX_AUDIO_SEGMENT_MS).contains(&args.audio_segment_ms) {
+        return Err("audio_segment_ms out of range".into());
+    }
+    SamplingPolicy::new(
+        args.sampling.min_interval_ms,
+        args.sampling.static_hold_ms,
+        args.sampling.change_threshold,
+    )
+    .map_err(|error| error.to_string())?;
+    BackpressurePolicy::new(
+        args.backpressure.degraded_percent,
+        args.backpressure.throttle_factor,
+        args.backpressure.throttle_cap_ms,
+    )
+    .map_err(|error| error.to_string())?;
+    if let Some(config) = &args.handoff {
+        RetainPolicy::shared(config.arena_bytes, config.retained_limit)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+const REPLAY_USAGE: &str = "usage: sensoryplex-runtime replay <pipeline.yaml> <media-path> --report <report.pb> [--max-points N] [--audio-segment-ms N] [--sampling-min-interval-ms N] [--sampling-static-hold-ms N] [--sampling-change-threshold N] [--backpressure-degraded-percent N] [--backpressure-throttle-factor N] [--backpressure-throttle-cap-ms N] [--handoff-listen 127.0.0.1:PORT] [--handoff-arena-bytes N] [--handoff-retained-limit N] [--handoff-ttl-ms N] [--handoff-wait-timeout-ms N] [--handoff-idle-timeout-ms N]";
 
 /// 跨进程交接的服务端配置。只有在显式给出 `--handoff-listen` 时才存在：
 /// 不保留字节的运行仍然是合法运行，但它不算"消费方已验证"。
@@ -126,6 +158,9 @@ struct MediaRunArgs {
     sampling_min_interval_ms: i64,
     sampling_static_hold_ms: i64,
     sampling_change_threshold: u32,
+    backpressure_degraded_percent: u32,
+    backpressure_throttle_factor: u32,
+    backpressure_throttle_cap_ms: i64,
     /// `None` 表示本次运行不暴露数据面（也不声称有消费者）。
     handoff_listen: Option<std::net::SocketAddr>,
     handoff_arena_bytes: usize,
@@ -140,6 +175,7 @@ struct ResolvedRunArgs {
     max_points: usize,
     audio_segment_ms: u32,
     sampling: SamplingPolicy,
+    backpressure: BackpressurePolicy,
     handoff: Option<HandoffArgs>,
 }
 
@@ -159,6 +195,10 @@ impl MediaRunArgs {
             sampling_min_interval_ms: sensoryplex_media::sampler::DEFAULT_MIN_INTERVAL_MS,
             sampling_static_hold_ms: sensoryplex_media::sampler::DEFAULT_STATIC_HOLD_MS,
             sampling_change_threshold: sensoryplex_media::sampler::DEFAULT_CHANGE_THRESHOLD,
+            backpressure_degraded_percent:
+                sensoryplex_media::backpressure::DEFAULT_DEGRADED_PERCENT,
+            backpressure_throttle_factor: sensoryplex_media::backpressure::DEFAULT_THROTTLE_FACTOR,
+            backpressure_throttle_cap_ms: sensoryplex_media::backpressure::DEFAULT_THROTTLE_CAP_MS,
             handoff_listen: None,
             handoff_arena_bytes: sensoryplex_media::handoff::DEFAULT_RETAIN_ARENA_BYTES,
             handoff_retained_limit: sensoryplex_media::handoff::DEFAULT_RETAINED_LIMIT,
@@ -186,6 +226,15 @@ impl MediaRunArgs {
             }
             "--sampling-change-threshold" => {
                 self.sampling_change_threshold = parse_arg(flag, args.get(index + 1))?;
+            }
+            "--backpressure-degraded-percent" => {
+                self.backpressure_degraded_percent = parse_arg(flag, args.get(index + 1))?;
+            }
+            "--backpressure-throttle-factor" => {
+                self.backpressure_throttle_factor = parse_arg(flag, args.get(index + 1))?;
+            }
+            "--backpressure-throttle-cap-ms" => {
+                self.backpressure_throttle_cap_ms = parse_arg(flag, args.get(index + 1))?;
             }
             "--handoff-listen" => {
                 let raw: String = parse_arg(flag, args.get(index + 1))?;
@@ -232,6 +281,12 @@ impl MediaRunArgs {
             self.sampling_change_threshold,
         )
         .map_err(|error| error.to_string())?;
+        let backpressure = BackpressurePolicy::new(
+            self.backpressure_degraded_percent,
+            self.backpressure_throttle_factor,
+            self.backpressure_throttle_cap_ms,
+        )
+        .map_err(|error| error.to_string())?;
         let handoff = match self.handoff_listen {
             None => None,
             Some(listen) => {
@@ -270,6 +325,7 @@ impl MediaRunArgs {
             max_points: self.max_points,
             audio_segment_ms: self.audio_segment_ms,
             sampling,
+            backpressure,
             handoff,
         })
     }
@@ -328,7 +384,7 @@ impl ReplayArgs {
     }
 }
 
-const INGEST_USAGE: &str = "usage: sensoryplex-runtime ingest <pipeline.yaml> --report <report.pb> [--duration-ms N] [--stall-threshold-ms N] [--max-stalls N] [--max-points N] [--audio-segment-ms N] [--sampling-min-interval-ms N] [--sampling-static-hold-ms N] [--sampling-change-threshold N] [--handoff-listen 127.0.0.1:PORT] [--handoff-arena-bytes N] [--handoff-retained-limit N] [--handoff-ttl-ms N] [--handoff-wait-timeout-ms N] [--handoff-idle-timeout-ms N]";
+const INGEST_USAGE: &str = "usage: sensoryplex-runtime ingest <pipeline.yaml> --report <report.pb> [--duration-ms N] [--stall-threshold-ms N] [--max-stalls N] [--max-points N] [--audio-segment-ms N] [--sampling-min-interval-ms N] [--sampling-static-hold-ms N] [--sampling-change-threshold N] [--backpressure-degraded-percent N] [--backpressure-throttle-factor N] [--backpressure-throttle-cap-ms N] [--handoff-listen 127.0.0.1:PORT] [--handoff-arena-bytes N] [--handoff-retained-limit N] [--handoff-ttl-ms N] [--handoff-wait-timeout-ms N] [--handoff-idle-timeout-ms N]";
 
 /// 单次实时接入的参数。URI 不在命令行上：它只从环境变量读（见 `ingest`）。
 struct LiveArgs {
@@ -456,20 +512,8 @@ async fn replay(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     // 上面的锚点来自 ffprobe。本步骤对同一文件再做解码，使报告携带真实的 descriptor、
     // 真实的 lease 与真实的 arena；若做不到则给出明确原因。
     let (arena_id, stream_id) = arena_identity(&description);
-    let handoff_policy = match &args.run.handoff {
-        Some(config) => RetainPolicy::shared(config.arena_bytes, config.retained_limit)?,
-        None => RetainPolicy::default(),
-    };
     let retained;
-    match decode_pass(
-        &args.media,
-        &stream_id,
-        &arena_id,
-        args.run.max_points,
-        args.run.audio_segment_ms,
-        args.run.sampling,
-        handoff_policy,
-    ) {
+    match decode_pass(&args.media, &stream_id, &arena_id, &args.run) {
         Ok((plane, handoff, decode_truncated)) => {
             report.decoded = plane;
             retained = handoff;
@@ -522,6 +566,7 @@ async fn replay(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         handoff_note,
         report.blockers.join(",")
     );
+    println!("{}", describe_backpressure(plane));
     match (retained, &args.run.handoff) {
         (Some(handoff), Some(config)) => serve_handoff(handoff, config).await?,
         // 声明要暴露数据面，却拿不到保留的字节：这是失败，不是"跳过"。
@@ -535,6 +580,66 @@ async fn replay(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         (_, None) => {}
     }
     Ok(())
+}
+
+/// 背压的可观察量必须能被一行读出来，而且**没有测量**与"测到零压力"要能区分开：
+/// 前者的 state 后面跟着 `observed=false`，后者才是三条队列水位加计数。
+fn describe_backpressure(plane: Option<&DecodedDataPlane>) -> String {
+    let report = plane.and_then(|plane| plane.backpressure.as_ref());
+    let Some(report) = report else {
+        return "backpressure observed=false reason=no_decoded_plane".to_string();
+    };
+    if !report.observed {
+        return format!("backpressure observed=false state={}", report.state);
+    }
+    let queues = report
+        .queues
+        .iter()
+        .map(|queue| {
+            format!(
+                "{}[{}]={}/{}/{}",
+                queue.name, queue.unit, queue.current, queue.peak, queue.capacity
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let reasons = if report.drop_reasons.is_empty() {
+        "none".to_string()
+    } else {
+        report
+            .drop_reasons
+            .iter()
+            .map(|entry| format!("{}:{}", entry.reason, entry.count))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    // 保留表是所有 buffer 种类共用的：只给总数会让人把它读成"视频帧全丢了"。
+    let kinds = if report.drop_kinds.is_empty() {
+        "none".to_string()
+    } else {
+        report
+            .drop_kinds
+            .iter()
+            .map(|entry| format!("{}:{}", entry.kind, entry.count))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    format!(
+        "backpressure observed=true state={} degraded_entries={} saturated_entries={} queues={} dropped={} reasons={} kinds={} timeouts={} residency_max_ms={} residency_avg_ms={} residency_samples={} throttled={} throttle_factor={}",
+        report.state,
+        report.degraded_entries,
+        report.saturated_entries,
+        queues,
+        report.dropped_total,
+        reasons,
+        kinds,
+        report.timeouts_total,
+        report.residency_max_ms,
+        report.residency_avg_ms,
+        report.residency_samples,
+        report.sampling_throttled_samples,
+        report.throttle_factor
+    )
 }
 
 /// 实时接入：在有限窗口内从 SRT 拉流、解码、写进与离线路径**同一条**数据面，
@@ -639,6 +744,7 @@ async fn ingest(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         report.handoff_state,
         report.blockers.join(",")
     );
+    println!("{}", describe_backpressure(report.decoded.as_ref()));
     match (retained, &args.run.handoff) {
         (Some(handoff), Some(config)) => serve_handoff(handoff, config).await?,
         // 声明要暴露数据面，却拿不到保留的字节：这是失败，不是"跳过"。
@@ -676,6 +782,7 @@ fn live_pass(
         audio_segment_ms: args.audio_segment_ms,
         sampling: args.sampling,
         handoff,
+        backpressure: args.backpressure,
     };
     let outcome = sensoryplex_media::decode::decode_live(uri, stream_id, arena_id, &run, live)
         .map_err(|error| error.to_string())?;
@@ -693,9 +800,10 @@ fn live_pass(
     _uri: &str,
     _stream_id: &str,
     _arena_id: &str,
-    _args: &ResolvedRunArgs,
+    args: &ResolvedRunArgs,
     _live: &LiveConfig,
 ) -> Result<(DecodedDataPlane, Option<BufferHandoff>, LiveStats, bool), String> {
+    validate_run_args(args)?;
     Err("gstreamer_decode_not_implemented".into())
 }
 
@@ -834,15 +942,18 @@ async fn serve_handoff(
     let last_activity = service.last_activity_ms();
     let connected = service.connected();
     println!(
-        "handoff_ready listen={} segment={} arena_capacity_bytes={} retained={} retained_limit={} offered={} retain_rejected={} rejection_reasons={}",
+        "handoff_ready listen={} segment={} arena_capacity_bytes={} retained={} retained_limit={} retained_kind_limit={} offered={} retain_rejected={} rejection_reasons={} residency_samples={}",
         config.listen,
         segment,
         capacity,
         retained.retained,
         retained.retained_limit,
+        retained.retained_kind_limit,
         retained.offered_total,
         retained.retain_rejections,
-        describe_rejections(&retained)
+        describe_rejections(&retained),
+        // 就绪时还没有消费者，因此等待时间一定是 0 个样本——它必须带样本数一起读。
+        retained.residency_samples
     );
     // 两种收尾条件必须分开：等不到消费者（从启动算起）与消费者已离开（从最后一次调用算起）。
     let started_ms = sensoryplex_media::now_unix_ms();
@@ -875,16 +986,24 @@ async fn serve_handoff(
     plane.expire(sensoryplex_media::now_unix_ms());
     let stats = plane.stats();
     println!(
-        "handoff_stats consumer_seen={} retained={} retained_total={} offered={} released={} expired={} retain_rejected={} request_rejected={} rejection_reasons={} arena_live_slabs={} arena_used_bytes={} arena_capacity_bytes={}",
+        "handoff_stats consumer_seen={} retained={} retained_limit={} retained_total={} retained_peak={} retained_kind_peak={} retained_by_kind={} retained_kind_limit={} offered={} released={} expired={} retain_rejected={} request_rejected={} rejection_reasons={} residency_samples={} residency_max_ms={} residency_total_ms={} arena_live_slabs={} arena_used_bytes={} arena_capacity_bytes={}",
         consumer_seen,
         stats.retained,
+        stats.retained_limit,
         stats.retained_total,
+        stats.retained_peak,
+        stats.retained_kind_peak,
+        describe_counts(&stats.retained_by_kind),
+        stats.retained_kind_limit,
         stats.offered_total,
         stats.released_total,
         stats.expired_total,
         stats.retain_rejections,
         stats.request_rejections,
         describe_rejections(&stats),
+        stats.residency_samples,
+        stats.residency_max_ms,
+        stats.residency_total_ms,
         stats.arena_live_slabs,
         stats.arena_used_bytes,
         plane.arena_capacity_bytes(),
@@ -912,13 +1031,17 @@ async fn serve_handoff(
 
 /// 有界性证据的稳定文本形式：原因码 → 次数，按原因码排序。
 fn describe_rejections(stats: &HandoffStats) -> String {
-    if stats.rejection_reasons.is_empty() {
+    describe_counts(&stats.rejection_reasons)
+}
+
+/// 计数表的稳定文本形式：键 → 次数，按键排序。空表写 `none`，不留一个空白的字段。
+fn describe_counts(counts: &BTreeMap<String, u64>) -> String {
+    if counts.is_empty() {
         return "none".to_string();
     }
-    stats
-        .rejection_reasons
+    counts
         .iter()
-        .map(|(reason, count)| format!("{reason}:{count}"))
+        .map(|(key, count)| format!("{key}:{count}"))
         .collect::<Vec<_>>()
         .join(",")
 }

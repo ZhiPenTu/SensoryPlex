@@ -53,6 +53,26 @@ message HandoffStats {
   uint64 arena_live_slabs = 13;
   // 保留请求的累计数（成功 + 被容量拒绝）。
   uint64 offered_total = 14;
+  // 保留表深度的高水位（条数）。它不是配置上限，而是本次运行真正达到过的最大值：
+  // 与 `retained_limit` 一起读出"离触顶有多近"。
+  uint64 retained_peak = 15;
+  // 保留到释放/过期之间的等待时间（毫秒）。只统计**已经结束**的 buffer（released + expired），
+  // 因此 `residency_samples` 是这三个数的样本数，可以小于 released_total + expired_total
+  // （消费者从未连接时，末尾 `expire` 之前的驻留没有观测值）。
+  uint64 residency_samples = 16;
+  uint64 residency_max_ms = 17;
+  uint64 residency_total_ms = 18;
+  // 只统计写侧（保留）拒绝的原因拆分，与 `rejection_reasons`（写侧 + 读侧合并）不同：
+  // 背压报告要用它证明 `retain_rejections = sum(retain_rejection_reasons[].count)`。
+  map<string, uint64> retain_rejection_reasons = 19;
+  // 单一 buffer 种类能占用的槽位数上限：保留表按种类对半分配，防止先到的种类（实时流里是
+  // 每 21 ms 一个的音频块）把整张表占满，让另一类一帧都进不来。
+  uint64 retained_kind_limit = 20;
+  // 当前保留的 buffer 按种类拆分；各值之和等于 `retained`。只看总深度会读成"还有富余"，
+  // 而实际约束常常是某一类已经顶到自己那一半。
+  map<string, uint64> retained_by_kind = 21;
+  // 单一 buffer 种类槽位数的高水位（种类取最大值）。与 `retained_kind_limit` 一起读。
+  uint64 retained_kind_peak = 22;
 }
 
 message ListRetainedRequest {}

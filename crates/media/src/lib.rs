@@ -5,6 +5,7 @@
 use sensoryplex_sdk::{common::BufferDescriptor, validate_digest, validate_range, ContractError};
 
 pub mod arena;
+pub mod backpressure;
 #[cfg(feature = "gstreamer")]
 pub mod decode;
 pub mod descriptor;

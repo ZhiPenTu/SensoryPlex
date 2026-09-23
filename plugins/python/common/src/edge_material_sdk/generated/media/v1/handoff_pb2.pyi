@@ -29,8 +29,22 @@ class RetainedBuffer(_message.Message):
     def __init__(self, buffer_id: _Optional[str] = ..., kind: _Optional[str] = ..., stream_id: _Optional[str] = ..., time_range: _Optional[_Union[_common_pb2.TimeRange, _Mapping]] = ..., format: _Optional[_Union[_common_pb2.BufferFormat, _Mapping]] = ..., offset_bytes: _Optional[int] = ..., length_bytes: _Optional[int] = ..., content_hash: _Optional[str] = ..., lease_id: _Optional[str] = ...) -> None: ...
 
 class HandoffStats(_message.Message):
-    __slots__ = ("retained_limit", "retained", "leased", "retained_total", "released_total", "expired_total", "retain_rejections", "request_rejections", "rejection_reasons", "arena_capacity_bytes", "arena_used_bytes", "arena_peak_bytes", "arena_live_slabs", "offered_total")
+    __slots__ = ("retained_limit", "retained", "leased", "retained_total", "released_total", "expired_total", "retain_rejections", "request_rejections", "rejection_reasons", "arena_capacity_bytes", "arena_used_bytes", "arena_peak_bytes", "arena_live_slabs", "offered_total", "retained_peak", "residency_samples", "residency_max_ms", "residency_total_ms", "retain_rejection_reasons", "retained_kind_limit", "retained_by_kind", "retained_kind_peak")
     class RejectionReasonsEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: int
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[int] = ...) -> None: ...
+    class RetainRejectionReasonsEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: int
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[int] = ...) -> None: ...
+    class RetainedByKindEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
         VALUE_FIELD_NUMBER: _ClassVar[int]
@@ -51,6 +65,14 @@ class HandoffStats(_message.Message):
     ARENA_PEAK_BYTES_FIELD_NUMBER: _ClassVar[int]
     ARENA_LIVE_SLABS_FIELD_NUMBER: _ClassVar[int]
     OFFERED_TOTAL_FIELD_NUMBER: _ClassVar[int]
+    RETAINED_PEAK_FIELD_NUMBER: _ClassVar[int]
+    RESIDENCY_SAMPLES_FIELD_NUMBER: _ClassVar[int]
+    RESIDENCY_MAX_MS_FIELD_NUMBER: _ClassVar[int]
+    RESIDENCY_TOTAL_MS_FIELD_NUMBER: _ClassVar[int]
+    RETAIN_REJECTION_REASONS_FIELD_NUMBER: _ClassVar[int]
+    RETAINED_KIND_LIMIT_FIELD_NUMBER: _ClassVar[int]
+    RETAINED_BY_KIND_FIELD_NUMBER: _ClassVar[int]
+    RETAINED_KIND_PEAK_FIELD_NUMBER: _ClassVar[int]
     retained_limit: int
     retained: int
     leased: int
@@ -65,7 +87,15 @@ class HandoffStats(_message.Message):
     arena_peak_bytes: int
     arena_live_slabs: int
     offered_total: int
-    def __init__(self, retained_limit: _Optional[int] = ..., retained: _Optional[int] = ..., leased: _Optional[int] = ..., retained_total: _Optional[int] = ..., released_total: _Optional[int] = ..., expired_total: _Optional[int] = ..., retain_rejections: _Optional[int] = ..., request_rejections: _Optional[int] = ..., rejection_reasons: _Optional[_Mapping[str, int]] = ..., arena_capacity_bytes: _Optional[int] = ..., arena_used_bytes: _Optional[int] = ..., arena_peak_bytes: _Optional[int] = ..., arena_live_slabs: _Optional[int] = ..., offered_total: _Optional[int] = ...) -> None: ...
+    retained_peak: int
+    residency_samples: int
+    residency_max_ms: int
+    residency_total_ms: int
+    retain_rejection_reasons: _containers.ScalarMap[str, int]
+    retained_kind_limit: int
+    retained_by_kind: _containers.ScalarMap[str, int]
+    retained_kind_peak: int
+    def __init__(self, retained_limit: _Optional[int] = ..., retained: _Optional[int] = ..., leased: _Optional[int] = ..., retained_total: _Optional[int] = ..., released_total: _Optional[int] = ..., expired_total: _Optional[int] = ..., retain_rejections: _Optional[int] = ..., request_rejections: _Optional[int] = ..., rejection_reasons: _Optional[_Mapping[str, int]] = ..., arena_capacity_bytes: _Optional[int] = ..., arena_used_bytes: _Optional[int] = ..., arena_peak_bytes: _Optional[int] = ..., arena_live_slabs: _Optional[int] = ..., offered_total: _Optional[int] = ..., retained_peak: _Optional[int] = ..., residency_samples: _Optional[int] = ..., residency_max_ms: _Optional[int] = ..., residency_total_ms: _Optional[int] = ..., retain_rejection_reasons: _Optional[_Mapping[str, int]] = ..., retained_kind_limit: _Optional[int] = ..., retained_by_kind: _Optional[_Mapping[str, int]] = ..., retained_kind_peak: _Optional[int] = ...) -> None: ...
 
 class ListRetainedRequest(_message.Message):
     __slots__ = ()

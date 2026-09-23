@@ -3,7 +3,7 @@ CARGO ?= cargo
 COMPOSE = docker compose --env-file .env -f deploy/compose/docker-compose.poc.yml
 STREAM_COMPOSE = docker compose -f deploy/compose/docker-compose.stream.yml
 
-.PHONY: setup configure proto check test integration format infra up down migrate gateway runtime pipeline-check runtime-smoke gateway-smoke media-replay media-check handoff-check
+.PHONY: setup configure proto check test integration format infra up down migrate gateway runtime pipeline-check runtime-smoke gateway-smoke media-replay media-check handoff-check backpressure-check
 .PHONY: stream-up stream-down stream-status stream-logs live-check
 setup: configure
 	$(UV) sync --frozen
@@ -96,6 +96,12 @@ media-replay:
 live-check:
 	$(CARGO) build --locked --release -p sensoryplex-runtime --features "$(MEDIA_FEATURES)"
 	$(UV) run python tools/verify_live.py $(if $(SAMPLE),--sample "$(SAMPLE)",)
+
+# 背压与队列可观察验收：描述符之后那条有界队列的水位/丢弃/超时/等待时间。
+# 四个场景都不依赖 OBS：无消费者时队列必须显式拒绝，有消费者时等待时间才有样本。
+backpressure-check:
+	$(CARGO) build --locked --release -p sensoryplex-runtime --features "$(MEDIA_FEATURES)"
+	$(UV) run python tools/verify_backpressure.py
 
 # 跨进程数据面验收：Runtime 保留字节，独立 Python 进程按 lease 读取、校验并释放。
 # 需要真实授权样本，与 media-replay 同一份素材即可。

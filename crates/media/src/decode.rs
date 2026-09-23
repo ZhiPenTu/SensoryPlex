@@ -16,11 +16,12 @@ use sensoryplex_sdk::common::{BufferDescriptor, BufferFormat, TimeRange};
 use sensoryplex_sdk::media;
 
 use crate::arena::{Arena, DEFAULT_ARENA_CAPACITY_BYTES};
+use crate::backpressure::{BackpressurePolicy, BackpressureTracker, QueueWatermarks};
 use crate::descriptor::{hand_off, BufferSpec, HandoffCounters};
 use crate::handoff::{BufferHandoff, RetainPolicy};
 use crate::lease::LeaseRegistry;
 use crate::live::{LiveConfig, LiveStats, StallTracker};
-use crate::sampler::{AdaptiveSampler, Decision, FrameSignature, SamplingPolicy};
+use crate::sampler::{AdaptiveSampler, Decision, FrameSignature, SamplingPolicy, SkipReason};
 use crate::segment::{AudioSegmenter, PendingSegment};
 use crate::MediaError;
 
@@ -55,6 +56,9 @@ pub struct DecodeRun {
     pub sampling: SamplingPolicy,
     /// 保留式交接：打开后字节留在共享内存里等第二个进程领取 lease。
     pub handoff: RetainPolicy,
+    /// 描述符之后那条有界队列的背压策略。阈值与降速倍数都在这里确定，
+    /// 解码会话只负责按它作出决策并计数。
+    pub backpressure: BackpressurePolicy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -595,6 +599,9 @@ pub(crate) struct DecodeSession<'a> {
     segment_report: media::AudioSegmentReport,
     /// 保留式交接的数据面。`None` 表示本次运行不保留字节（进程内自校验路径）。
     handoff: Option<BufferHandoff>,
+    /// 有界队列的压力等级与阶段一降级计数。它不做队列的权威记账：
+    /// 容量/水位/峰值/丢弃都取自 `handoff` 的真实统计，见 `finish`。
+    tracker: BackpressureTracker,
 }
 
 impl<'a> DecodeSession<'a> {
@@ -630,6 +637,7 @@ impl<'a> DecodeSession<'a> {
                 )?),
                 false => None,
             },
+            tracker: BackpressureTracker::new(run.backpressure),
             segmenter: None,
             segment_report: media::AudioSegmentReport {
                 segment_ms: run.audio_segment_ms,
@@ -725,6 +733,11 @@ impl<'a> DecodeSession<'a> {
             return Ok(());
         }
         let end_ms = pts_ms + duration_ms;
+        // 背压观测点：在给这一帧做决定之前读一次下游队列的深度。只有在有界队列真的存在时
+        // 才观测——没有队列就是没有测量，报告里必须写 `observed = false`，而不是写一组零。
+        if let Some(handoff) = self.handoff.as_ref() {
+            self.tracker.observe_queue(watermarks(handoff));
+        }
         // 视频抽帧发生在这里，也就是在字节进入 arena 之前：被跳过的帧根本不交接，
         // 但一定会带原因计数，绝不静默消失。
         if sample.track == TrackKind::Video {
@@ -733,7 +746,18 @@ impl<'a> DecodeSession<'a> {
             } else {
                 None
             };
-            if let Decision::Skip { reason, .. } = self.sampler.observe(pts_ms, signature) {
+            // 阶段一降级：队列降级/饱和时把最小间隔放大，先降低非关键帧的采样率。
+            let throttle = self.tracker.throttle_requested().then(|| {
+                self.tracker
+                    .throttled_min_interval_ms(self.sampler.policy().min_interval_ms)
+            });
+            if let Decision::Skip { reason, .. } = self
+                .sampler
+                .observe_with_pressure(pts_ms, signature, throttle)
+            {
+                if reason == SkipReason::BackpressureThrottled {
+                    self.tracker.record_throttled_keep();
+                }
                 self.drop_sample(index, reason.name());
                 // last_end_ms 描述"这条轨道解码到哪里"，而不是"交接到哪里"：
                 // 抽帧只影响交接，不影响这条轨道是否已经到达流的末尾。
@@ -931,6 +955,18 @@ impl<'a> DecodeSession<'a> {
             }
         }
         let sampling = self.sampling_report();
+        // 收尾前再观测一次：`state` 应当描述运行**结束那一刻**的队列深度，
+        // 而不是最后一个样本到来之前的那一刻。等级只在迁移时计数，多观测一次不会重复计数。
+        if let Some(handoff) = self.handoff.as_ref() {
+            self.tracker.observe_queue(watermarks(handoff));
+        }
+        let handoff_stats = self.handoff.as_ref().map(BufferHandoff::stats);
+        let drop_kinds = self
+            .handoff
+            .as_ref()
+            .map(|handoff| handoff.retain_rejections_by_kind().clone())
+            .unwrap_or_default();
+        let backpressure = self.tracker.report(handoff_stats.as_ref(), &drop_kinds);
         let plane = media::DecodedDataPlane {
             arena_id: self.arena.id().to_string(),
             arena_capacity_bytes: self.arena.capacity() as u64,
@@ -946,6 +982,7 @@ impl<'a> DecodeSession<'a> {
             evidence_descriptors: self.evidence,
             audio_segments: Some(self.segment_report),
             sampling: vec![sampling],
+            backpressure: Some(backpressure),
         };
         // 保留式数据面在 decode 结束后仍然存活：字节必须留到消费者领取并释放。
         Ok((plane, self.handoff.take()))
@@ -970,10 +1007,22 @@ impl<'a> DecodeSession<'a> {
             skipped_no_change: counters.skipped_no_change,
             skipped_non_monotonic: counters.skipped_non_monotonic,
             skipped_missing_signature: counters.skipped_missing_signature,
+            skipped_backpressure_throttled: counters.skipped_backpressure_throttled,
             max_gap_ms: counters.max_gap_ms,
             max_keeps_bound: policy.max_keeps(self.sampler.observed_span_ms()),
             max_frame_interval_ms: counters.max_frame_interval_ms,
         }
+    }
+}
+
+/// 读一次保留队列的水位。它不做任何分配，因此可以在每个样本之前调用。
+fn watermarks(handoff: &BufferHandoff) -> QueueWatermarks {
+    QueueWatermarks {
+        retained: handoff.depth(),
+        retained_limit: handoff.limit(),
+        retained_kind: handoff.deepest_kind(),
+        arena_used_bytes: handoff.arena().used_bytes() as u64,
+        arena_capacity_bytes: handoff.arena_capacity_bytes(),
     }
 }
 
@@ -1153,6 +1202,7 @@ mod tests {
             audio_segment_ms: 5_000,
             sampling: SamplingPolicy::default(),
             handoff: RetainPolicy::default(),
+            backpressure: BackpressurePolicy::default(),
         }
     }
 
@@ -1306,5 +1356,162 @@ mod tests {
             .drop_reasons
             .contains(&"duration_unavailable".to_string()));
         assert!(audio.drop_reasons.contains(&"pts_unavailable".to_string()));
+    }
+
+    /// 打开保留式数据面的运行。`arena_bytes` 就是那条共享区的硬上限。
+    fn retained_run(arena_bytes: usize, limit: usize, policy: BackpressurePolicy) -> DecodeRun {
+        DecodeRun {
+            handoff: RetainPolicy::shared(arena_bytes, limit).expect("retention policy is valid"),
+            backpressure: policy,
+            ..run()
+        }
+    }
+
+    /// 一帧有内容变化的视频。每帧换一个亮度，避免被普通限速先挡下，从而测到背压这条路径。
+    fn changing_video_sample(pts_ms: i64, shade: u8) -> DecodedSample {
+        let mut sample = video_sample(Some(pts_ms), Some(1_000));
+        sample.bytes = vec![shade; 16 * 16 * 4];
+        sample
+    }
+
+    #[test]
+    fn a_half_full_queue_throttles_the_sampler_before_the_arena_ever_overflows() {
+        // 共享区只放得下两帧：50% 的降级阈值恰好是第一帧之后的深度。
+        let run = retained_run(2 * 1024, 8, BackpressurePolicy::default());
+        let mut subject =
+            DecodeSession::new("stream-bp", "bp", "arena-bp-throttle", &run).expect("session");
+        for index in 0..5i64 {
+            subject
+                .push(changing_video_sample(index * 1_000, (index * 40) as u8))
+                .expect("sample is admitted");
+        }
+        let (plane, handoff) = subject.finish().expect("session finishes");
+        let report = plane.backpressure.expect("a report is always attached");
+        assert!(
+            report.observed,
+            "the bounded queue existed and was measured"
+        );
+        assert_eq!(report.degraded_entries, 1, "the run entered degraded once");
+        assert_eq!(
+            report.saturated_entries, 1,
+            "and saturated once the queue really did fill up"
+        );
+        assert_eq!(report.state, "saturated", "state is where the run ended");
+        assert_eq!(
+            report.dropped_total, 0,
+            "no refusal was needed to get there"
+        );
+        let table = &report.queues[0];
+        assert_eq!((table.current, table.peak, table.capacity), (2, 2, 8));
+        let kind = &report.queues[1];
+        assert_eq!(
+            (kind.name.as_str(), kind.current, kind.peak, kind.capacity),
+            ("handoff_retained_kind", 2, 2, 4),
+            "两类共用一张表，因此按种类的上限必须单独读出来"
+        );
+        let arena = &report.queues[2];
+        assert_eq!(
+            (arena.current, arena.peak, arena.capacity),
+            (2_048, 2_048, 2_048),
+            "the arena is the queue that actually fills first"
+        );
+        let sampling = plane.sampling.first().expect("a sampling report");
+        assert_eq!(sampling.skipped_backpressure_throttled, 3);
+        assert_eq!(
+            sampling.kept, 2,
+            "the keep rate fell from one per second to one per throttled interval"
+        );
+        assert_eq!(
+            handoff
+                .expect("retention stays alive for the consumer")
+                .stats()
+                .retained_total,
+            2
+        );
+
+        // 对照实验：同一串样本在没有背压的进程内路径上，五帧全部会被保留。
+        // 没有这个对照，"降速生效了"就只是一句自我判断。
+        let mut control = session();
+        for index in 0..5i64 {
+            control
+                .push(changing_video_sample(index * 1_000, (index * 40) as u8))
+                .expect("sample is admitted");
+        }
+        let (control_plane, _) = control.finish().expect("session finishes");
+        assert_eq!(
+            control_plane
+                .sampling
+                .first()
+                .expect("a sampling report")
+                .kept,
+            5
+        );
+        assert!(
+            !control_plane
+                .backpressure
+                .expect("a report is always attached")
+                .observed
+        );
+    }
+
+    #[test]
+    fn a_full_arena_refuses_retention_and_the_refusal_carries_its_reason() {
+        // 关掉阶段一降速（倍数 1），单独验证"降速也救不了的时候"会发生什么。
+        let policy = BackpressurePolicy::new(50, 1, 10_000).expect("policy is valid");
+        let run = retained_run(1_024, 8, policy);
+        let mut subject =
+            DecodeSession::new("stream-bp", "bp2", "arena-bp-full", &run).expect("session");
+        for index in 0..4i64 {
+            subject
+                .push(changing_video_sample(index * 1_000, (index * 40) as u8))
+                .expect("sample is admitted");
+        }
+        let (plane, _handoff) = subject.finish().expect("session finishes");
+        let report = plane.backpressure.expect("a report is always attached");
+        assert_eq!(report.state, "saturated");
+        assert_eq!(report.dropped_total, 3, "only the first frame fits");
+        let summed: u64 = report.drop_reasons.iter().map(|entry| entry.count).sum();
+        assert_eq!(summed, report.dropped_total, "every drop is explained");
+        assert_eq!(report.drop_reasons[0].reason, "arena_capacity_exceeded");
+        let kinds: u64 = report.drop_kinds.iter().map(|entry| entry.count).sum();
+        assert_eq!(kinds, report.dropped_total, "kind breakdown must add up");
+        assert_eq!(
+            report.drop_kinds[0].kind, "video_frame",
+            "only video frames were offered in this run"
+        );
+        assert_eq!(report.queues[2].peak, 1_024);
+        assert_eq!(report.queues[2].current, 1_024);
+        assert_eq!(
+            (report.queues[1].current, report.queues[1].capacity),
+            (1, 4),
+            "只有一帧进了窗口，按种类的上限还没到"
+        );
+        assert_eq!(
+            report.sampling_throttled_samples, 0,
+            "this policy deliberately does not change the rate"
+        );
+        assert_eq!(
+            report.timeouts_total, 0,
+            "no consumer ever held a lease, so nothing could time out"
+        );
+        assert!(
+            report.residency_samples == 0,
+            "buffers still held at the end have no measured wait time"
+        );
+        assert_eq!(report.saturated_entries, 1);
+    }
+
+    #[test]
+    fn a_run_without_retention_reports_that_the_queue_was_never_measured() {
+        // 进程内自校验路径：没有保留队列，报告必须说"没测过"，而不是给一组干净的零。
+        let mut subject = session();
+        subject
+            .push(changing_video_sample(0, 10))
+            .expect("sample is admitted");
+        let (plane, handoff) = subject.finish().expect("session finishes");
+        assert!(handoff.is_none());
+        let report = plane.backpressure.expect("a report is always attached");
+        assert!(!report.observed);
+        assert!(report.queues.is_empty());
     }
 }

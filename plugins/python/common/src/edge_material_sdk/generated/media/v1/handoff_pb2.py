@@ -25,7 +25,7 @@ _sym_db = _symbol_database.Default()
 from edge_material_sdk.generated.common.v1 import common_pb2 as common_dot_v1_dot_common__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x16media/v1/handoff.proto\x12\x16\x65\x64ge.material.media.v1\x1a\x16\x63ommon/v1/common.proto\"\x87\x02\n\x0eRetainedBuffer\x12\x11\n\tbuffer_id\x18\x01 \x01(\t\x12\x0c\n\x04kind\x18\x02 \x01(\t\x12\x11\n\tstream_id\x18\x03 \x01(\t\x12\x36\n\ntime_range\x18\x04 \x01(\x0b\x32\".edge.material.common.v1.TimeRange\x12\x35\n\x06\x66ormat\x18\x05 \x01(\x0b\x32%.edge.material.common.v1.BufferFormat\x12\x14\n\x0coffset_bytes\x18\x06 \x01(\x04\x12\x14\n\x0clength_bytes\x18\x07 \x01(\x04\x12\x14\n\x0c\x63ontent_hash\x18\x08 \x01(\t\x12\x10\n\x08lease_id\x18\t \x01(\t\"\xd9\x03\n\x0cHandoffStats\x12\x16\n\x0eretained_limit\x18\x01 \x01(\x04\x12\x10\n\x08retained\x18\x02 \x01(\x04\x12\x0e\n\x06leased\x18\x03 \x01(\x04\x12\x16\n\x0eretained_total\x18\x04 \x01(\x04\x12\x16\n\x0ereleased_total\x18\x05 \x01(\x04\x12\x15\n\rexpired_total\x18\x06 \x01(\x04\x12\x19\n\x11retain_rejections\x18\x07 \x01(\x04\x12\x1a\n\x12request_rejections\x18\x08 \x01(\x04\x12U\n\x11rejection_reasons\x18\t \x03(\x0b\x32:.edge.material.media.v1.HandoffStats.RejectionReasonsEntry\x12\x1c\n\x14\x61rena_capacity_bytes\x18\n \x01(\x04\x12\x18\n\x10\x61rena_used_bytes\x18\x0b \x01(\x04\x12\x18\n\x10\x61rena_peak_bytes\x18\x0c \x01(\x04\x12\x18\n\x10\x61rena_live_slabs\x18\r \x01(\x04\x12\x15\n\roffered_total\x18\x0e \x01(\x04\x1a\x37\n\x15RejectionReasonsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\x04:\x02\x38\x01\"\x15\n\x13ListRetainedRequest\"\x9a\x01\n\x14ListRetainedResponse\x12\x37\n\x07\x62uffers\x18\x01 \x03(\x0b\x32&.edge.material.media.v1.RetainedBuffer\x12\x33\n\x05stats\x18\x02 \x01(\x0b\x32$.edge.material.media.v1.HandoffStats\x12\x14\n\x0csegment_name\x18\x03 \x01(\t\"\x15\n\x13HandoffStatsRequest\"a\n\x14HandoffStatsResponse\x12\x33\n\x05stats\x18\x01 \x01(\x0b\x32$.edge.material.media.v1.HandoffStats\x12\x14\n\x0csegment_name\x18\x02 \x01(\t\"e\n\x14\x41\x63quireBufferRequest\x12\x11\n\tbuffer_id\x18\x01 \x01(\t\x12\x14\n\x0coffset_bytes\x18\x02 \x01(\x04\x12\x14\n\x0clength_bytes\x18\x03 \x01(\x04\x12\x0e\n\x06ttl_ms\x18\x04 \x01(\r\"\xd0\x01\n\x15\x41\x63quireBufferResponse\x12\x0f\n\x07granted\x18\x01 \x01(\x08\x12\x39\n\x06\x62uffer\x18\x02 \x01(\x0b\x32).edge.material.common.v1.BufferDescriptor\x12\x14\n\x0csegment_name\x18\x03 \x01(\t\x12\x1c\n\x14\x61rena_capacity_bytes\x18\x04 \x01(\x04\x12\x37\n\x05\x65rror\x18\x05 \x01(\x0b\x32(.edge.material.common.v1.ProcessingError\"(\n\x14ReleaseBufferRequest\x12\x10\n\x08lease_id\x18\x01 \x01(\t\"u\n\x15ReleaseBufferResponse\x12\x10\n\x08released\x18\x01 \x01(\x08\x12\x11\n\tbuffer_id\x18\x02 \x01(\t\x12\x37\n\x05\x65rror\x18\x03 \x01(\x0b\x32(.edge.material.common.v1.ProcessingError2\xad\x03\n\x14\x42ufferHandoffService\x12\x61\n\x04List\x12+.edge.material.media.v1.ListRetainedRequest\x1a,.edge.material.media.v1.ListRetainedResponse\x12\x62\n\x05Stats\x12+.edge.material.media.v1.HandoffStatsRequest\x1a,.edge.material.media.v1.HandoffStatsResponse\x12\x66\n\x07\x41\x63quire\x12,.edge.material.media.v1.AcquireBufferRequest\x1a-.edge.material.media.v1.AcquireBufferResponse\x12\x66\n\x07Release\x12,.edge.material.media.v1.ReleaseBufferRequest\x1a-.edge.material.media.v1.ReleaseBufferResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x16media/v1/handoff.proto\x12\x16\x65\x64ge.material.media.v1\x1a\x16\x63ommon/v1/common.proto\"\x87\x02\n\x0eRetainedBuffer\x12\x11\n\tbuffer_id\x18\x01 \x01(\t\x12\x0c\n\x04kind\x18\x02 \x01(\t\x12\x11\n\tstream_id\x18\x03 \x01(\t\x12\x36\n\ntime_range\x18\x04 \x01(\x0b\x32\".edge.material.common.v1.TimeRange\x12\x35\n\x06\x66ormat\x18\x05 \x01(\x0b\x32%.edge.material.common.v1.BufferFormat\x12\x14\n\x0coffset_bytes\x18\x06 \x01(\x04\x12\x14\n\x0clength_bytes\x18\x07 \x01(\x04\x12\x14\n\x0c\x63ontent_hash\x18\x08 \x01(\t\x12\x10\n\x08lease_id\x18\t \x01(\t\"\xa8\x07\n\x0cHandoffStats\x12\x16\n\x0eretained_limit\x18\x01 \x01(\x04\x12\x10\n\x08retained\x18\x02 \x01(\x04\x12\x0e\n\x06leased\x18\x03 \x01(\x04\x12\x16\n\x0eretained_total\x18\x04 \x01(\x04\x12\x16\n\x0ereleased_total\x18\x05 \x01(\x04\x12\x15\n\rexpired_total\x18\x06 \x01(\x04\x12\x19\n\x11retain_rejections\x18\x07 \x01(\x04\x12\x1a\n\x12request_rejections\x18\x08 \x01(\x04\x12U\n\x11rejection_reasons\x18\t \x03(\x0b\x32:.edge.material.media.v1.HandoffStats.RejectionReasonsEntry\x12\x1c\n\x14\x61rena_capacity_bytes\x18\n \x01(\x04\x12\x18\n\x10\x61rena_used_bytes\x18\x0b \x01(\x04\x12\x18\n\x10\x61rena_peak_bytes\x18\x0c \x01(\x04\x12\x18\n\x10\x61rena_live_slabs\x18\r \x01(\x04\x12\x15\n\roffered_total\x18\x0e \x01(\x04\x12\x15\n\rretained_peak\x18\x0f \x01(\x04\x12\x19\n\x11residency_samples\x18\x10 \x01(\x04\x12\x18\n\x10residency_max_ms\x18\x11 \x01(\x04\x12\x1a\n\x12residency_total_ms\x18\x12 \x01(\x04\x12\x62\n\x18retain_rejection_reasons\x18\x13 \x03(\x0b\x32@.edge.material.media.v1.HandoffStats.RetainRejectionReasonsEntry\x12\x1b\n\x13retained_kind_limit\x18\x14 \x01(\x04\x12R\n\x10retained_by_kind\x18\x15 \x03(\x0b\x32\x38.edge.material.media.v1.HandoffStats.RetainedByKindEntry\x12\x1a\n\x12retained_kind_peak\x18\x16 \x01(\x04\x1a\x37\n\x15RejectionReasonsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\x04:\x02\x38\x01\x1a=\n\x1bRetainRejectionReasonsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\x04:\x02\x38\x01\x1a\x35\n\x13RetainedByKindEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\x04:\x02\x38\x01\"\x15\n\x13ListRetainedRequest\"\x9a\x01\n\x14ListRetainedResponse\x12\x37\n\x07\x62uffers\x18\x01 \x03(\x0b\x32&.edge.material.media.v1.RetainedBuffer\x12\x33\n\x05stats\x18\x02 \x01(\x0b\x32$.edge.material.media.v1.HandoffStats\x12\x14\n\x0csegment_name\x18\x03 \x01(\t\"\x15\n\x13HandoffStatsRequest\"a\n\x14HandoffStatsResponse\x12\x33\n\x05stats\x18\x01 \x01(\x0b\x32$.edge.material.media.v1.HandoffStats\x12\x14\n\x0csegment_name\x18\x02 \x01(\t\"e\n\x14\x41\x63quireBufferRequest\x12\x11\n\tbuffer_id\x18\x01 \x01(\t\x12\x14\n\x0coffset_bytes\x18\x02 \x01(\x04\x12\x14\n\x0clength_bytes\x18\x03 \x01(\x04\x12\x0e\n\x06ttl_ms\x18\x04 \x01(\r\"\xd0\x01\n\x15\x41\x63quireBufferResponse\x12\x0f\n\x07granted\x18\x01 \x01(\x08\x12\x39\n\x06\x62uffer\x18\x02 \x01(\x0b\x32).edge.material.common.v1.BufferDescriptor\x12\x14\n\x0csegment_name\x18\x03 \x01(\t\x12\x1c\n\x14\x61rena_capacity_bytes\x18\x04 \x01(\x04\x12\x37\n\x05\x65rror\x18\x05 \x01(\x0b\x32(.edge.material.common.v1.ProcessingError\"(\n\x14ReleaseBufferRequest\x12\x10\n\x08lease_id\x18\x01 \x01(\t\"u\n\x15ReleaseBufferResponse\x12\x10\n\x08released\x18\x01 \x01(\x08\x12\x11\n\tbuffer_id\x18\x02 \x01(\t\x12\x37\n\x05\x65rror\x18\x03 \x01(\x0b\x32(.edge.material.common.v1.ProcessingError2\xad\x03\n\x14\x42ufferHandoffService\x12\x61\n\x04List\x12+.edge.material.media.v1.ListRetainedRequest\x1a,.edge.material.media.v1.ListRetainedResponse\x12\x62\n\x05Stats\x12+.edge.material.media.v1.HandoffStatsRequest\x1a,.edge.material.media.v1.HandoffStatsResponse\x12\x66\n\x07\x41\x63quire\x12,.edge.material.media.v1.AcquireBufferRequest\x1a-.edge.material.media.v1.AcquireBufferResponse\x12\x66\n\x07Release\x12,.edge.material.media.v1.ReleaseBufferRequest\x1a-.edge.material.media.v1.ReleaseBufferResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -34,28 +34,36 @@ if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
   _globals['_HANDOFFSTATS_REJECTIONREASONSENTRY']._loaded_options = None
   _globals['_HANDOFFSTATS_REJECTIONREASONSENTRY']._serialized_options = b'8\001'
+  _globals['_HANDOFFSTATS_RETAINREJECTIONREASONSENTRY']._loaded_options = None
+  _globals['_HANDOFFSTATS_RETAINREJECTIONREASONSENTRY']._serialized_options = b'8\001'
+  _globals['_HANDOFFSTATS_RETAINEDBYKINDENTRY']._loaded_options = None
+  _globals['_HANDOFFSTATS_RETAINEDBYKINDENTRY']._serialized_options = b'8\001'
   _globals['_RETAINEDBUFFER']._serialized_start=75
   _globals['_RETAINEDBUFFER']._serialized_end=338
   _globals['_HANDOFFSTATS']._serialized_start=341
-  _globals['_HANDOFFSTATS']._serialized_end=814
-  _globals['_HANDOFFSTATS_REJECTIONREASONSENTRY']._serialized_start=759
-  _globals['_HANDOFFSTATS_REJECTIONREASONSENTRY']._serialized_end=814
-  _globals['_LISTRETAINEDREQUEST']._serialized_start=816
-  _globals['_LISTRETAINEDREQUEST']._serialized_end=837
-  _globals['_LISTRETAINEDRESPONSE']._serialized_start=840
-  _globals['_LISTRETAINEDRESPONSE']._serialized_end=994
-  _globals['_HANDOFFSTATSREQUEST']._serialized_start=996
-  _globals['_HANDOFFSTATSREQUEST']._serialized_end=1017
-  _globals['_HANDOFFSTATSRESPONSE']._serialized_start=1019
-  _globals['_HANDOFFSTATSRESPONSE']._serialized_end=1116
-  _globals['_ACQUIREBUFFERREQUEST']._serialized_start=1118
-  _globals['_ACQUIREBUFFERREQUEST']._serialized_end=1219
-  _globals['_ACQUIREBUFFERRESPONSE']._serialized_start=1222
-  _globals['_ACQUIREBUFFERRESPONSE']._serialized_end=1430
-  _globals['_RELEASEBUFFERREQUEST']._serialized_start=1432
-  _globals['_RELEASEBUFFERREQUEST']._serialized_end=1472
-  _globals['_RELEASEBUFFERRESPONSE']._serialized_start=1474
-  _globals['_RELEASEBUFFERRESPONSE']._serialized_end=1591
-  _globals['_BUFFERHANDOFFSERVICE']._serialized_start=1594
-  _globals['_BUFFERHANDOFFSERVICE']._serialized_end=2023
+  _globals['_HANDOFFSTATS']._serialized_end=1277
+  _globals['_HANDOFFSTATS_REJECTIONREASONSENTRY']._serialized_start=1104
+  _globals['_HANDOFFSTATS_REJECTIONREASONSENTRY']._serialized_end=1159
+  _globals['_HANDOFFSTATS_RETAINREJECTIONREASONSENTRY']._serialized_start=1161
+  _globals['_HANDOFFSTATS_RETAINREJECTIONREASONSENTRY']._serialized_end=1222
+  _globals['_HANDOFFSTATS_RETAINEDBYKINDENTRY']._serialized_start=1224
+  _globals['_HANDOFFSTATS_RETAINEDBYKINDENTRY']._serialized_end=1277
+  _globals['_LISTRETAINEDREQUEST']._serialized_start=1279
+  _globals['_LISTRETAINEDREQUEST']._serialized_end=1300
+  _globals['_LISTRETAINEDRESPONSE']._serialized_start=1303
+  _globals['_LISTRETAINEDRESPONSE']._serialized_end=1457
+  _globals['_HANDOFFSTATSREQUEST']._serialized_start=1459
+  _globals['_HANDOFFSTATSREQUEST']._serialized_end=1480
+  _globals['_HANDOFFSTATSRESPONSE']._serialized_start=1482
+  _globals['_HANDOFFSTATSRESPONSE']._serialized_end=1579
+  _globals['_ACQUIREBUFFERREQUEST']._serialized_start=1581
+  _globals['_ACQUIREBUFFERREQUEST']._serialized_end=1682
+  _globals['_ACQUIREBUFFERRESPONSE']._serialized_start=1685
+  _globals['_ACQUIREBUFFERRESPONSE']._serialized_end=1893
+  _globals['_RELEASEBUFFERREQUEST']._serialized_start=1895
+  _globals['_RELEASEBUFFERREQUEST']._serialized_end=1935
+  _globals['_RELEASEBUFFERRESPONSE']._serialized_start=1937
+  _globals['_RELEASEBUFFERRESPONSE']._serialized_end=2054
+  _globals['_BUFFERHANDOFFSERVICE']._serialized_start=2057
+  _globals['_BUFFERHANDOFFSERVICE']._serialized_end=2486
 # @@protoc_insertion_point(module_scope)

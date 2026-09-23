@@ -21,6 +21,12 @@ IDENTITY_FIELDS = (
     "arena_used_bytes",
     "arena_peak_bytes",
     "arena_live_slabs",
+    "retained_peak",
+    "retained_kind_limit",
+    "retained_kind_peak",
+    "residency_samples",
+    "residency_max_ms",
+    "residency_total_ms",
 )
 
 
@@ -67,6 +73,51 @@ def test_stats_express_the_two_accounting_identities():
     assert stats.retain_rejections + stats.request_rejections == sum(
         stats.rejection_reasons.values()
     )
+
+
+def test_the_write_side_rejection_reasons_can_be_reconciled_on_their_own():
+    """背压报告只用写侧的因果表；合并口径会让"丢弃原因之和"对不上 `retain_rejections`。"""
+    stats = handoff_pb2.HandoffStats()
+    assert dict(stats.retain_rejection_reasons) == {}
+    stats.retain_rejection_reasons["handoff_backlog_full"] = 2
+    stats.retain_rejection_reasons["arena_capacity_exceeded"] = 1
+    stats.retain_rejections = 3
+    # 写侧 + 读侧的合并表是另一条口径，读侧的原因不会出现在写侧表里。
+    stats.request_rejections = 1
+    stats.rejection_reasons["unknown_buffer"] = 1
+    assert stats.retain_rejections == sum(stats.retain_rejection_reasons.values())
+    assert stats.retain_rejections + stats.request_rejections == sum(
+        stats.rejection_reasons.values()
+    ) + sum(stats.retain_rejection_reasons.values())
+
+
+def test_the_retained_window_is_split_by_kind():
+    """保留表是所有种类共用的一张表，"按种类对半"这条上限必须单独读得出来。
+
+    只看 `retained / retained_limit` 会把"某一类已满、另一类还进不来"读成"还有富余"：
+    实时流里音频块 47 Hz、视频 keep 只有几 Hz，实测就是这样（32 条窗口里 32 条全是音频）。
+    """
+    stats = handoff_pb2.HandoffStats()
+    assert dict(stats.retained_by_kind) == {}
+    stats.retained = 6
+    stats.retained_kind_limit = 4
+    stats.retained_kind_peak = 4
+    stats.retained_by_kind["audio_pcm"] = 4
+    stats.retained_by_kind["video_frame"] = 2
+    assert sum(stats.retained_by_kind.values()) == stats.retained
+    assert max(stats.retained_by_kind.values()) <= stats.retained_kind_limit
+    assert stats.retained_kind_peak <= stats.retained_kind_limit
+
+
+def test_residency_has_no_value_without_a_sample():
+    """没有样本时驻留统计保持 0，并且由 `residency_samples` 说明它，而不是编一个平均值。"""
+    stats = handoff_pb2.HandoffStats()
+    assert stats.residency_samples == 0
+    assert (stats.residency_max_ms, stats.residency_total_ms) == (0, 0)
+    stats.residency_samples = 2
+    stats.residency_total_ms = 3_000
+    stats.residency_max_ms = 2_000
+    assert stats.residency_total_ms <= stats.residency_max_ms * stats.residency_samples
 
 
 def test_retained_buffer_defaults_describe_nothing():

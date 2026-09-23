@@ -11,10 +11,14 @@ OBS 是否空闲。若 MediaMTX 上已经有别的发布者（例如正在直播
   且明细里至少一条 `stream_gap`；重连归属必须写成解码元素；
 - 无源：没有任何发布者时必须非 0 退出并写出显式原因，绝不"成功但为空"；
 - URI 只从环境变量读：命令行、stdout 与报告里都不出现 URI 或 streamid；
-- 同一趟数据面：`--handoff-listen` 下由**独立进程**按 lease 读取并释放，账目对得上。
+- 同一趟数据面：`--handoff-listen` 下由**独立进程**按 lease 读取并释放，账目对得上；
+- 背压：有保留队列的直播窗口必须报出 `observed=true`、三条队列水位、按种类拆分的拒绝，
+  且拒绝只落在容量类原因码上；没有保留队列的窗口必须写 `observed=false`（没测过，
+  不是"零压力"）。降级（先降低非关键帧采样率）必须早于拒绝出现。
 """
 
 import argparse
+import json
 import os
 import re
 import signal
@@ -68,6 +72,11 @@ STATE_PATTERN = re.compile(r'^paths\{name="' + re.escape(PATH_NAME) + r'",state=
 BYTES_PATTERN = re.compile(
     r'^paths_inbound_bytes\{name="' + re.escape(PATH_NAME) + r'",state="[^"]+"\} (\d+)', re.M
 )
+# 保留期的有界容量拒绝码：保留表满、单一 buffer 种类到配额、共享段满。
+CAPACITY_REASONS = {"handoff_backlog_full", "handoff_kind_quota_full", "arena_capacity_exceeded"}
+RETENTION_QUEUES = {"handoff_retained_table", "handoff_retained_kind", "handoff_arena_bytes"}
+TABLE_QUEUE = "handoff_retained_table"
+KIND_QUEUE = "handoff_retained_kind"
 
 
 def runtime_binary() -> Path:
@@ -265,6 +274,68 @@ def read_report(path: Path) -> tuple[live_pb2.LiveIngestReport, bytes]:
     return report, raw
 
 
+def parse_fields(line: str) -> dict[str, str]:
+    """把运行时打印的一行 `key=value ...` 拆成字典；`=` 之后的内容原样保留。"""
+    return dict(token.split("=", 1) for token in line.split(" ") if "=" in token)
+
+
+def find_line(lines: list[str], prefix: str) -> str | None:
+    return next((line for line in lines if line.startswith(prefix)), None)
+
+
+def read_queues(rendered: str) -> dict[str, tuple[int, int, int]]:
+    """解析 `name[unit]=current/peak/capacity,...`。"""
+    queues: dict[str, tuple[int, int, int]] = {}
+    for entry in filter(None, rendered.split(",")):
+        name, _, watermarks = entry.partition("=")
+        current, peak, capacity = (int(value) for value in watermarks.split("/"))
+        queues[name.split("[")[0]] = (current, peak, capacity)
+    return queues
+
+
+def assert_retention_backpressure(
+    checks: Checks, report: live_pb2.LiveIngestReport
+) -> dict[str, tuple[int, int, int]]:
+    """保留队列的背压可观察量：三条队列、自证有界、拒绝只落在容量类原因码上。"""
+    backpressure = report.decoded.backpressure
+    checks.check(backpressure.observed, "这次直播窗口真的有可测量的有界队列")
+    queues = {
+        queue.name: (queue.current, queue.peak, queue.capacity) for queue in backpressure.queues
+    }
+    checks.check(set(queues) == RETENTION_QUEUES, f"三条队列都给容量与水位：{sorted(queues)}")
+    for name, (current, peak, capacity) in queues.items():
+        checks.check(
+            capacity > 0 and peak > 0 and peak <= capacity and current <= peak,
+            f"{name} 自证有界：current={current} peak={peak} capacity={capacity}",
+        )
+    if TABLE_QUEUE in queues and KIND_QUEUE in queues:
+        checks.check(
+            queues[KIND_QUEUE][2] == max(1, queues[TABLE_QUEUE][2] // 2),
+            "按种类的上限 = 保留表容量的一半：谁也不能独占窗口",
+        )
+    summed = sum(entry.count for entry in backpressure.drop_reasons)
+    by_kind = sum(entry.count for entry in backpressure.drop_kinds)
+    checks.check(
+        summed == backpressure.dropped_total == by_kind,
+        f"丢弃按原因与种类都对得上：dropped={backpressure.dropped_total} "
+        f"reasons={summed} kinds={by_kind}",
+    )
+    reasons = {entry.reason for entry in backpressure.drop_reasons}
+    checks.check(
+        bool(reasons) and reasons <= CAPACITY_REASONS, f"拒绝原因都是容量类：{sorted(reasons)}"
+    )
+    checks.check(
+        backpressure.state in {"degraded", "saturated"},
+        f"结束时的状态不是 ok：{backpressure.state}",
+    )
+    checks.check(
+        backpressure.degraded_entries + backpressure.saturated_entries > 0,
+        f"状态迁移被计数：degraded={backpressure.degraded_entries} "
+        f"saturated={backpressure.saturated_entries}",
+    )
+    return queues
+
+
 def scenario_steady(sample: Path, workspace: Path, duration_ms: int, uri: str) -> bool:
     checks = Checks("steady")
     publisher = Publisher(sample, workspace / "steady-publisher.log")
@@ -337,6 +408,13 @@ def scenario_steady(sample: Path, workspace: Path, duration_ms: int, uri: str) -
         checks.check(report.golden_path_verified is False, "golden_path_verified stays false")
         checks.check(
             report.handoff_state == "not_exercised", f"handoff_state={report.handoff_state!r}"
+        )
+        # 没有保留队列的窗口必须写"没测过"：一组干净的零会被读成"没有压力"。
+        checks.check(
+            report.decoded.backpressure.observed is False
+            and not report.decoded.backpressure.queues,
+            "没有保留队列时写 observed=false，而不是零压力"
+            f"（state={report.decoded.backpressure.state}）",
         )
         checks.check(list(report.blockers) == [], f"blockers={list(report.blockers)}")
         leaked = [token for token in FORBIDDEN_IN_REPORT if token.encode() in raw]
@@ -584,6 +662,18 @@ def scenario_live_handoff(sample: Path, workspace: Path, duration_ms: int, uri: 
         checks.check(
             worker.returncode == 0, f"independent consumer exited 0: {worker.stderr[-400:]}"
         )
+        # 消费者自己的报告说明它真的读到了什么：直播窗口里必须**同时**有视频帧与音频块，
+        # 否则"接进下游"只是音频接进去了（保留表是所有种类共用的一张表）。
+        consumed = json.loads(worker_report.read_text())
+        checks.check(
+            int(consumed.get("video_buffers", 0)) > 0,
+            f"live video frames reached the consumer: video_buffers={consumed.get('video_buffers')}"
+            f" audio_buffers={consumed.get('audio_buffers')}",
+        )
+        checks.check(
+            int(consumed.get("audio_buffers", 0)) > 0,
+            "audio buffers reached the consumer next to the video ones",
+        )
         checks.check(
             ingest.returncode == 0,
             f"ingest exit 0 (got {ingest.returncode}): {remaining_err[-400:]}",
@@ -597,12 +687,30 @@ def scenario_live_handoff(sample: Path, workspace: Path, duration_ms: int, uri: 
             report.stream.samples > 0,
             f"live samples reached the data plane: {report.stream.samples}",
         )
+        queues = assert_retention_backpressure(checks, report)
+        # 命令行与报告必须给出同一组水位：两边不一致就说明有一边在编。
+        printed = find_line(lines, "backpressure ")
+        checks.check(printed is not None, "the runtime printed its backpressure line")
+        if printed is not None:
+            fields = parse_fields(printed)
+            checks.check(
+                fields.get("state") == report.decoded.backpressure.state,
+                f"state 在报告与命令行一致：{report.decoded.backpressure.state}",
+            )
+            checks.check(
+                set(read_queues(fields.get("queues", ""))) == RETENTION_QUEUES,
+                f"命令行与报告列出同一组队列：{fields.get('queues')}",
+            )
+            checks.check(
+                int(fields.get("throttled", 0)) > 0,
+                f"阶段一降级（降低非关键帧采样率）真的生效：throttled={fields.get('throttled')}",
+            )
         stats_line = next((line for line in lines if line.startswith("handoff_stats")), None)
         checks.check(
             stats_line is not None, "the runtime reconciled the lease ledger before exiting"
         )
         if stats_line:
-            fields = dict(token.split("=", 1) for token in stats_line.split(" ") if "=" in token)
+            fields = parse_fields(stats_line)
             checks.check(fields.get("consumer_seen") == "true", "consumer_seen=true")
             checks.check(
                 fields.get("retained") == "0",
@@ -611,6 +719,34 @@ def scenario_live_handoff(sample: Path, workspace: Path, duration_ms: int, uri: 
             checks.check(
                 fields.get("arena_live_slabs") == "0",
                 f"arena has no dangling slab: arena_live_slabs={fields.get('arena_live_slabs')}",
+            )
+            checks.check(
+                int(fields.get("retain_rejected", 0)) > 0,
+                "有界窗口真的触顶过并显式拒绝："
+                f"retain_rejected={fields.get('retain_rejected')} "
+                f"reasons={fields.get('rejection_reasons')}",
+            )
+            checks.check(
+                int(fields.get("released", 0)) > 0,
+                f"消费者真的释放了 buffer：released={fields.get('released')}",
+            )
+            checks.check(
+                int(fields.get("residency_samples", 0)) > 0,
+                "等待时间只在消费者真的领走并释放之后才有样本："
+                f"residency_samples={fields.get('residency_samples')} "
+                f"max_ms={fields.get('residency_max_ms')}",
+            )
+            checks.check(
+                int(fields.get("retained_kind_limit", -1)) == queues[KIND_QUEUE][2],
+                "按种类的上限在账目与报告里一致："
+                f"retained_kind_limit={fields.get('retained_kind_limit')} "
+                f"report={queues[KIND_QUEUE][2]} retained_limit={fields.get('retained_limit')}",
+            )
+            checks.check(
+                int(fields.get("retained_kind_peak", 0))
+                <= int(fields.get("retained_kind_limit", -1)),
+                "单一种类的水位没有越过它自己的上限："
+                f"retained_kind_peak={fields.get('retained_kind_peak')}",
             )
             accounted = (
                 int(fields.get("released", 0))
