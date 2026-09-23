@@ -78,6 +78,22 @@ message BackendCapability {
   string unavailable_reason = 8;
 }
 
+// Residency limits carried by this process from the host tier (ADR-015 / ADR-019).
+//
+// This endpoint only *carries* them: `serve` runs no pipeline, so it has no queue to bound.
+// Enforcing `media_queue_capacity` happens in the media paths, and those runs report it in
+// `ReplayReport.media_queue`. Reporting an injected number here must therefore never be read
+// as "this endpoint already applies it".
+message ResidencyLimits {
+  // Tier name from SENSORYPLEX_RESIDENT_TIER; empty when no tier was injected.
+  string tier = 1;
+  // SENSORYPLEX_MEDIA_QUEUE_CAPACITY; 0 means not injected.
+  uint64 media_queue_capacity = 2;
+  // SENSORYPLEX_MODEL_PARALLELISM; 0 means not injected. No worker reads it yet, so it stays a
+  // declared budget and never a measured concurrency.
+  uint64 model_parallelism = 3;
+}
+
 message DescribeCapabilitiesRequest {}
 message DescribeCapabilitiesResponse {
   // Build target of the running runtime, for example macos-aarch64 or linux-x86_64.
@@ -87,6 +103,9 @@ message DescribeCapabilitiesResponse {
   repeated string unavailable_capabilities = 4;
   // Memory kinds the runtime admits on this platform; media admission must not exceed it.
   repeated string admitted_memory_kinds = 5;
+  // Host tier limits this process was started with (ADR-015). Always present; an absent tier
+  // is reported by an empty `tier` and zero limits, never by omitting the message.
+  ResidencyLimits residency = 6;
 }
 
 service RuntimeService {

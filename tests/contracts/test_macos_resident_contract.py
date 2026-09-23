@@ -154,6 +154,14 @@ def test_templates_render_strictly_and_stay_valid_plists():
     assert runtime["EnvironmentVariables"]["SENSORYPLEX_HANDOFF_RETAINED_LIMIT"] == str(
         tier.handoff_retained_limit
     )
+    # 运行时从环境变量读分级（ADR-019），所以 plist 必须把分级上限一并注入；
+    # 否则常驻进程只能报"未注入"，与安装时的分级脱钩。
+    assert runtime["EnvironmentVariables"]["SENSORYPLEX_MEDIA_QUEUE_CAPACITY"] == str(
+        tier.media_queue_capacity
+    )
+    assert runtime["EnvironmentVariables"]["SENSORYPLEX_MODEL_PARALLELISM"] == str(
+        tier.model_parallelism
+    )
     assert runtime["EnvironmentVariables"]["SENSORYPLEX_MEMORY_SOURCE"] == "sysctl"
     assert runtime["StandardOutPath"].endswith("runtime.out.log")
 
@@ -207,6 +215,9 @@ def test_pipeline_queue_capacity_is_reported_not_rewritten():
     # 工具只报告口径，不替调用方改写配置文件。
     text = (ROOT / "config/pipelines/file-material.yaml").read_text(encoding="utf-8")
     assert text.count("queue_capacity: 32") == 1
+    # 报告的措辞必须说明上限在运行时是**准入条件**，而不是一句"已按分级调整"。
+    lines = resident.summarize(fake_tier(), measured_probe(), resident.DEFAULT_RUNTIME_ADDR)
+    assert any("运行时按分级上限准入" in line for line in lines)
 
 
 def write_wrapper_fixture(tmp_path: pathlib.Path, tier: resident.Tier) -> dict[str, str]:
@@ -216,7 +227,14 @@ def write_wrapper_fixture(tmp_path: pathlib.Path, tier: resident.Tier) -> dict[s
         encoding="utf-8",
     )
     runtime = tmp_path / "fake-runtime"
-    runtime.write_text('#!/bin/sh\nfor a in "$@"; do printf \'%s\\n\' "$a"; done\n')
+    # 既回显参数（检查保留窗口注入），也回显运行时真正读的那三个环境变量（ADR-019）。
+    runtime.write_text(
+        "#!/bin/sh\n"
+        'for a in "$@"; do printf \'%s\\n\' "$a"; done\n'
+        "printf 'tier=%s queue_capacity=%s parallelism=%s\\n'"
+        ' "${SENSORYPLEX_RESIDENT_TIER:-}" "${SENSORYPLEX_MEDIA_QUEUE_CAPACITY:-}"'
+        ' "${SENSORYPLEX_MODEL_PARALLELISM:-}"\n'
+    )
     runtime.chmod(runtime.stat().st_mode | stat.S_IXUSR)
     return {
         "PATH": "/usr/bin:/bin",
@@ -244,6 +262,12 @@ def test_media_wrapper_injects_tier_limits_and_refuses_silent_override(tmp_path)
     )
     assert arguments[arguments.index("--handoff-arena-bytes") + 1] == str(tier.handoff_arena_bytes)
     assert f"分级 {tier.name}" in completed.stderr
+    # 分级上限必须真的进到子进程环境里：wrapper 只打印自己那一行不算证据。
+    assert (
+        f"tier={tier.name} queue_capacity={tier.media_queue_capacity} "
+        f"parallelism={tier.model_parallelism}"
+    ) in completed.stdout
+    assert f"queue_capacity_cap={tier.media_queue_capacity}" in completed.stderr
 
     overridden = subprocess.run(
         [str(WRAPPER), "replay", "pipeline.yaml", "media.mp4", "--handoff-retained-limit", "8"],
@@ -264,6 +288,27 @@ def test_media_wrapper_injects_tier_limits_and_refuses_silent_override(tmp_path)
     )
     assert missing.returncode == 1
     assert "缺少分级文件" in missing.stderr
+
+
+def test_media_wrapper_refuses_a_pre_set_tier_environment(tmp_path):
+    """运行时从环境变量读分级，所以"预置环境变量"与"命令行覆盖"是同一件事。"""
+
+    environment = write_wrapper_fixture(tmp_path, fake_tier())
+    for variable, value in (
+        ("SENSORYPLEX_MEDIA_QUEUE_CAPACITY", "4096"),
+        ("SENSORYPLEX_MODEL_PARALLELISM", "8"),
+        ("SENSORYPLEX_RESIDENT_TIER", "xlarge"),
+    ):
+        blocked = subprocess.run(
+            [str(WRAPPER), "replay", "pipeline.yaml", "media.mp4"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=environment | {variable: value},
+        )
+        assert blocked.returncode == 2, blocked.stderr
+        assert variable in blocked.stderr
+        assert "由常驻分级决定" in blocked.stderr
 
 
 def test_launchctl_print_is_parsed_for_state_pid_and_last_exit():

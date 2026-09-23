@@ -129,9 +129,11 @@
   - [x] 分级上限真实生效：`sensoryplex-media-run` 注入 `retained_limit=64` / `arena=128 MiB`，
     无消费者场景 `handoff_stats` 实测 `retained_limit=64 retained_kind_limit=32`、backpressure `saturated`。
   - [x] 防休眠：`caffeinate -ims` 持有 `PreventUserIdleSystemSleep` + `PreventSystemSleep`。
-  - [ ] **未验证**：队列上限按分级生效——`queue_capacity` 当前只被校验、未被运行时消费（ADR-015 §5）；
-    `small` 档（16 GiB）与 Mac mini 各档位未实跑；模型并发只有配置事实，无并发执行样本；
-    断电重启、休眠唤醒、小时级长稳未验证。这些不得当成已完成。
+  - [x] 队列上限按分级生效：运行时按 `SENSORYPLEX_MEDIA_QUEUE_CAPACITY` 对 pipeline 声明值与真实保留
+    窗口做准入，越界即失败（**不写报告**）并记入 `ReplayReport.media_queue` / `LiveIngestReport.media_queue`
+    （[ADR-019](adr/ADR-019-运行时消费分级队列上限.md)；真机覆盖未注入 / `small` 拒绝 / `medium` 拒绝 / `large` 准入）。
+  - [ ] **未验证**：`small` 档（16 GiB）与 Mac mini 各档位未实跑；模型并发只有配置事实（`MODEL_PARALLELISM`
+    没有任何 worker 限流），无并发执行样本；断电重启、休眠唤醒、小时级长稳未验证。这些不得当成已完成。
 
 ### M6 linux-x86_64 侧验收
 
@@ -331,7 +333,7 @@
 - [ ] 摘要与校验：当前每个 descriptor 一次 SHA-256 + 逐字节比对，可改分块哈希 + 抽样校验。
 - [ ] 音频段与 ASR 窗口对齐、静音切分，替代固定 5 秒切段。
 - [ ] 抽帧策略调参（覆盖率/成本曲线），依据 M1 的覆盖率报告。
-- [ ] 模型量化档位与并发上限按统一内存自适应：**分级表已落地**（M5 / ADR-015），但运行时仍不消费 `MODEL_PARALLELISM`/`queue_capacity`，需要 worker 侧按变量限流后再验收。
+- [ ] 模型量化档位与并发上限按统一内存自适应：**分级表已落地**（M5 / ADR-015），`queue_capacity` 已由运行时消费（M8 / ADR-019，越界即失败）；仍缺 worker 侧按 `MODEL_PARALLELISM` 限流，之后再验收并发上限。
 
 ## 4. 已知差异与取舍记录
 

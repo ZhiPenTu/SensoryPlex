@@ -128,6 +128,7 @@ tools/                  配置、代码生成、迁移、测试与真实媒体�
 - [技术选型 ADR 与 V1 实施蓝图](技术选型ADR与V1实施蓝图.md)
 - [开放式插件开发文档](开放式插件开发文档.md)
 - [素材工作台 MVP 工程设计稿（应用准备流程已实现）](docs/design/console-mvp.md)
+- [ADR-019：运行时消费分级队列上限（准入，而不是改写）](docs/adr/ADR-019-运行时消费分级队列上限.md)
 - [ADR-015：macOS 常驻形态（launchd）与统一内存分级](docs/adr/ADR-015-macOS常驻形态与统一内存分级.md)
 - [ADR-014：ASR 插件与音频样本布局契约](docs/adr/ADR-014-ASR插件与音频样本布局契约.md)
 - [ADR-013：应用 API 模块化合并与部署边界](docs/adr/ADR-013-应用API模块化合并与部署边界.md)

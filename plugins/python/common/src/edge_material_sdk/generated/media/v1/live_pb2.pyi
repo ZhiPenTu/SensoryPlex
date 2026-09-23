@@ -49,7 +49,7 @@ class LiveStreamStats(_message.Message):
     def __init__(self, uri_secret_ref: _Optional[str] = ..., requested_duration_ms: _Optional[int] = ..., elapsed_ms: _Optional[int] = ..., samples: _Optional[int] = ..., stalls: _Optional[int] = ..., stalled_ms: _Optional[int] = ..., max_stall_ms: _Optional[int] = ..., pts_gap_total_ms: _Optional[int] = ..., recovered: bool = ..., ended_by_deadline: bool = ..., reconnect_owner: _Optional[str] = ..., stall_events: _Optional[_Iterable[_Union[StreamStall, _Mapping]]] = ...) -> None: ...
 
 class LiveIngestReport(_message.Message):
-    __slots__ = ("source", "platform", "stream", "decoded", "blockers", "golden_path_verified", "handoff_state")
+    __slots__ = ("source", "platform", "stream", "decoded", "blockers", "golden_path_verified", "handoff_state", "media_queue")
     SOURCE_FIELD_NUMBER: _ClassVar[int]
     PLATFORM_FIELD_NUMBER: _ClassVar[int]
     STREAM_FIELD_NUMBER: _ClassVar[int]
@@ -57,6 +57,7 @@ class LiveIngestReport(_message.Message):
     BLOCKERS_FIELD_NUMBER: _ClassVar[int]
     GOLDEN_PATH_VERIFIED_FIELD_NUMBER: _ClassVar[int]
     HANDOFF_STATE_FIELD_NUMBER: _ClassVar[int]
+    MEDIA_QUEUE_FIELD_NUMBER: _ClassVar[int]
     source: _media_pb2.MediaSourceDescription
     platform: str
     stream: LiveStreamStats
@@ -64,4 +65,5 @@ class LiveIngestReport(_message.Message):
     blockers: _containers.RepeatedScalarFieldContainer[str]
     golden_path_verified: bool
     handoff_state: str
-    def __init__(self, source: _Optional[_Union[_media_pb2.MediaSourceDescription, _Mapping]] = ..., platform: _Optional[str] = ..., stream: _Optional[_Union[LiveStreamStats, _Mapping]] = ..., decoded: _Optional[_Union[_media_pb2.DecodedDataPlane, _Mapping]] = ..., blockers: _Optional[_Iterable[str]] = ..., golden_path_verified: bool = ..., handoff_state: _Optional[str] = ...) -> None: ...
+    media_queue: _media_pb2.MediaQueueAdmission
+    def __init__(self, source: _Optional[_Union[_media_pb2.MediaSourceDescription, _Mapping]] = ..., platform: _Optional[str] = ..., stream: _Optional[_Union[LiveStreamStats, _Mapping]] = ..., decoded: _Optional[_Union[_media_pb2.DecodedDataPlane, _Mapping]] = ..., blockers: _Optional[_Iterable[str]] = ..., golden_path_verified: bool = ..., handoff_state: _Optional[str] = ..., media_queue: _Optional[_Union[_media_pb2.MediaQueueAdmission, _Mapping]] = ...) -> None: ...

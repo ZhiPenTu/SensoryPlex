@@ -40,8 +40,10 @@ uv run python tools/macos_resident.py uninstall --keep-config --purge-logs
   `SENSORYPLEX_TOTAL_MEMORY_BYTES` 的声明值（`source=env`）；都没有则是 `unavailable`——工具**不会**取最近一档。
 - `分级`：`small` 16–24 GiB / `medium` 24–32 GiB / `large` 32–64 GiB / `xlarge` ≥64 GiB（半开区间）。
 - `模型预算`：统一内存的 1/3，是**预算上限**；插件 manifest 里的 `resources.memory` 是**声明值**，不是实测 RSS。
-- `queue_capacity`：只**报告** pipeline 声明值是否与分级一致，不改写配置。
-  **该字段当前只被校验、未被运行时消费**（见 ADR-015 §5），不要读成"队列已按分级调整"。
+- `queue_capacity`：`probe` 只**报告** pipeline 声明值是否与分级一致，不改写配置；**运行时**在
+  `replay`/`ingest` 里按 `SENSORYPLEX_MEDIA_QUEUE_CAPACITY` 对声明值与真实保留窗口做准入，
+  越界即失败（[ADR-019](../adr/ADR-019-运行时消费分级队列上限.md)）。`serve` 只转述分级值，
+  不要把它读成"这个端点已按分级设了队列上限"。
 
 ## 文件位置
 
@@ -92,5 +94,6 @@ pmset -g assertions | grep -i caffeinate             # 核对 caffeinate 确实�
 
 - 只在**本机一台** Apple Silicon 机型（M2 Max / 32 GiB）上验收；Mac mini 各档位与 16 GiB 的 `small`
   档没有实跑过。
-- 模型并发上限与 `queue_capacity` 的分级目前是**配置事实**，没有并发执行的端到端样本。
+- 模型并发上限仍是**配置事实**（没有 worker 按 `SENSORYPLEX_MODEL_PARALLELISM` 限流，也没有并发执行的
+  端到端样本）；`queue_capacity` 已由运行时准入消费（ADR-019），但没有在 `small` 档真机上跑过。
 - 断电重启自启、休眠唤醒、小时级长稳运行均未验证；CI 不跑本手册（runner 上没有用户会话与 `launchctl gui/` 域）。

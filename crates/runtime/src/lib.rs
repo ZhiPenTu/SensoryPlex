@@ -100,13 +100,17 @@ pub mod capability {
         }
     }
 
-    pub fn describe() -> DescribeCapabilitiesResponse {
+    /// `limits` 是本进程启动时的常驻分级（ADR-015）。它被**转述**而不是在此执行：
+    /// `serve` 不跑 pipeline，没有队列可设上限；模型并发也还没有任何 worker 读。
+    /// 真正消费 `media_queue_capacity` 的是 `replay`/`ingest`，它们的报告里带准入结果。
+    pub fn describe(limits: &crate::ResidentLimits) -> DescribeCapabilitiesResponse {
         DescribeCapabilitiesResponse {
             platform: platform(),
             host: Some(host_resources()),
             backends: backends(),
             unavailable_capabilities: unavailable_capabilities(),
             admitted_memory_kinds: admitted_memory_kinds(),
+            residency: Some(limits.describe_residency()),
         }
     }
 
@@ -233,6 +237,172 @@ pub fn bounded_queue<T>(capacity: NonZeroUsize) -> (mpsc::Sender<T>, mpsc::Recei
     mpsc::channel(capacity.get())
 }
 
+/// 常驻分级（ADR-015）注入的执行上限（ADR-019）。
+///
+/// 三个变量都必须区分"未注入"与"注入了坏值"：开发机上没有 `resident.env` 是常态，
+/// 但 `SENSORYPLEX_MEDIA_QUEUE_CAPACITY=0` 不能被读成"没有上限"。
+pub const RESIDENT_TIER_ENV: &str = "SENSORYPLEX_RESIDENT_TIER";
+pub const MEDIA_QUEUE_CAPACITY_ENV: &str = "SENSORYPLEX_MEDIA_QUEUE_CAPACITY";
+pub const MODEL_PARALLELISM_ENV: &str = "SENSORYPLEX_MODEL_PARALLELISM";
+
+/// 分级注入的上限集合。`None` 一律表示**未注入**，不是"某一档"也不是零。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ResidentLimits {
+    /// `resident.env` 的档位名；只用于报告，不参与判定。
+    pub tier: Option<String>,
+    /// pipeline `queue_capacity` 与本次运行保留窗口的上限。
+    pub media_queue_capacity: Option<NonZeroUsize>,
+    /// 模型 worker 的并发预算。当前没有任何 worker 读它，因此只能被报成"已声明"，
+    /// 不得被读成"并发已限流"。
+    pub model_parallelism: Option<NonZeroUsize>,
+}
+
+/// 一个上限变量：缺失是事实，空串与非法值都是坏配置。
+fn parse_resident_limit(name: &str, raw: Option<&str>) -> Result<Option<NonZeroUsize>, String> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let value = raw.trim();
+    if value.is_empty() {
+        return Err(format!("invalid_resident_limit: {name} is set but empty"));
+    }
+    value
+        .parse::<usize>()
+        .ok()
+        .and_then(NonZeroUsize::new)
+        .map(Some)
+        .ok_or_else(|| format!("invalid_resident_limit: {name}={value}"))
+}
+
+impl ResidentLimits {
+    /// 从三个显式取值构造。把取值与解析分开，测试才能在不改宿主环境的情况下覆盖全部分支。
+    pub fn parse(
+        tier: Option<&str>,
+        media_queue_capacity: Option<&str>,
+        model_parallelism: Option<&str>,
+    ) -> Result<Self, String> {
+        let tier = match tier.map(str::trim) {
+            None => None,
+            Some("") => {
+                return Err(format!(
+                    "invalid_resident_limit: {RESIDENT_TIER_ENV} is set but empty"
+                ))
+            }
+            Some(value) => Some(value.to_string()),
+        };
+        Ok(Self {
+            tier,
+            media_queue_capacity: parse_resident_limit(
+                MEDIA_QUEUE_CAPACITY_ENV,
+                media_queue_capacity,
+            )?,
+            model_parallelism: parse_resident_limit(MODEL_PARALLELISM_ENV, model_parallelism)?,
+        })
+    }
+
+    /// 非 UTF-8 的环境变量也是坏配置，不能静默当成"未注入"。
+    pub fn from_env() -> Result<Self, String> {
+        let read = |name: &str| match std::env::var(name) {
+            Ok(value) => Ok(Some(value)),
+            Err(std::env::VarError::NotPresent) => Ok(None),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                Err(format!("invalid_resident_limit: {name} is not valid UTF-8"))
+            }
+        };
+        let tier = read(RESIDENT_TIER_ENV)?;
+        let media_queue_capacity = read(MEDIA_QUEUE_CAPACITY_ENV)?;
+        let model_parallelism = read(MODEL_PARALLELISM_ENV)?;
+        Self::parse(
+            tier.as_deref(),
+            media_queue_capacity.as_deref(),
+            model_parallelism.as_deref(),
+        )
+    }
+
+    /// 契约类型里的分级字段：本进程只**转述**这些值。`serve` 不跑 pipeline，
+    /// 因此这里既不能声称队列上限已生效，也不能声称模型并发已被限流。
+    pub fn describe_residency(&self) -> sensoryplex_sdk::runtime::ResidencyLimits {
+        sensoryplex_sdk::runtime::ResidencyLimits {
+            tier: self.tier.clone().unwrap_or_default(),
+            media_queue_capacity: self
+                .media_queue_capacity
+                .map_or(0, |value| value.get() as u64),
+            model_parallelism: self.model_parallelism.map_or(0, |value| value.get() as u64),
+        }
+    }
+}
+
+/// 一次媒体运行对分级上限的准入结果。
+///
+/// 只有通过准入的运行才拿得到这个值，因此报告里只会出现 `not_injected` 与 `admitted`：
+/// 越界的运行在写报告之前就以显式错误退出。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaQueueAdmission {
+    pub tier: Option<String>,
+    pub declared_capacity: NonZeroUsize,
+    pub tier_capacity: Option<NonZeroUsize>,
+    pub retained_limit: usize,
+}
+
+impl MediaQueueAdmission {
+    pub const STATE_NOT_INJECTED: &'static str = "not_injected";
+    pub const STATE_ADMITTED: &'static str = "admitted";
+
+    /// 分级是**上限**，不是默认值：越界即拒绝，绝不把声明值改写成上限值。改写会让
+    /// 配置文件与实际执行对不上，也会让 `probe` 的"只报告、不改写"语义失效。
+    ///
+    /// 保留窗口（本次运行真正使用的队列深度）同样受上限约束：16GB 机型上照用内置默认值
+    /// 32 条就已经超出 `small` 档的 16，必须显式失败而不是"照跑"。
+    pub fn new(
+        limits: &ResidentLimits,
+        declared_capacity: NonZeroUsize,
+        retained_limit: usize,
+    ) -> Result<Self, String> {
+        if let Some(capacity) = limits.media_queue_capacity {
+            let tier = limits.tier.as_deref().unwrap_or("unknown");
+            if declared_capacity.get() > capacity.get() {
+                return Err(format!(
+                    "queue_capacity_exceeds_tier_cap: declared={declared_capacity} tier_capacity={capacity} tier={tier}"
+                ));
+            }
+            if retained_limit > capacity.get() {
+                return Err(format!(
+                    "retained_limit_exceeds_tier_cap: retained_limit={retained_limit} tier_capacity={capacity} tier={tier}"
+                ));
+            }
+        }
+        Ok(Self {
+            tier: limits.tier.clone(),
+            declared_capacity,
+            tier_capacity: limits.media_queue_capacity,
+            retained_limit,
+        })
+    }
+
+    pub fn state(&self) -> &'static str {
+        match self.tier_capacity {
+            Some(_) => Self::STATE_ADMITTED,
+            None => Self::STATE_NOT_INJECTED,
+        }
+    }
+
+    /// 运行日志里的一行：把声明值、分级上限、档位与实际保留窗口放在一起，
+    /// 读的人不必在三个来源之间自己对账。
+    pub fn describe(&self) -> String {
+        format!(
+            "queue_capacity state={} declared={} tier_capacity={} tier={} retained_limit={}",
+            self.state(),
+            self.declared_capacity,
+            self.tier_capacity
+                .map_or("not_injected".to_string(), |value| value.to_string()),
+            self.tier
+                .clone()
+                .unwrap_or_else(|| "not_injected".to_string()),
+            self.retained_limit
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,6 +428,81 @@ mod tests {
             Pipeline::parse(&example.replace("queue_capacity: 32", "queue_capacity: 0")).is_err()
         );
         assert!(Pipeline::parse(&example.replace("local_only", "cloud")).is_err());
+    }
+
+    #[test]
+    fn resident_limits_split_absent_from_malformed() {
+        // 没有任何变量 = 未注入：开发机上的常态，不是"某一档"。
+        let absent = ResidentLimits::parse(None, None, None).expect("absent is legal");
+        assert_eq!(absent, ResidentLimits::default());
+        assert!(ResidentLimits::parse(Some("large"), None, None)
+            .expect("tier alone is fine")
+            .media_queue_capacity
+            .is_none());
+
+        let values = ResidentLimits::parse(Some(" large "), Some(" 64 "), Some("3"))
+            .expect("values are trimmed");
+        assert_eq!(values.tier.as_deref(), Some("large"));
+        assert_eq!(values.media_queue_capacity.map(NonZeroUsize::get), Some(64));
+        assert_eq!(values.model_parallelism.map(NonZeroUsize::get), Some(3));
+
+        // 空串与非法值都是坏配置：不能读成"未注入"，更不能读成"没有上限"。
+        for (tier, queue, parallelism) in [
+            (Some(""), Some("64"), Some("3")),
+            (Some("large"), Some(""), Some("3")),
+            (Some("large"), Some("0"), Some("3")),
+            (Some("large"), Some("16GiB"), Some("3")),
+            (Some("large"), Some("64"), Some("0")),
+        ] {
+            let error = ResidentLimits::parse(tier, queue, parallelism)
+                .expect_err("malformed limits must fail");
+            assert!(error.starts_with("invalid_resident_limit: "), "{error}");
+        }
+        assert!(ResidentLimits::parse(Some("large"), Some("0"), Some("3"))
+            .expect_err("zero is not a limit")
+            .contains(MEDIA_QUEUE_CAPACITY_ENV));
+    }
+
+    #[test]
+    fn tier_cap_admits_or_rejects_but_never_clips() {
+        let declared = NonZeroUsize::new(32).unwrap();
+        let small = ResidentLimits::parse(Some("small"), Some("16"), Some("1")).expect("legal");
+
+        // 声明值超上限：显式拒绝，且原因里同时给出声明值与上限，便于定位是哪台机器的哪一档。
+        let error =
+            MediaQueueAdmission::new(&small, declared, 16).expect_err("declared exceeds cap");
+        assert!(
+            error.starts_with("queue_capacity_exceeds_tier_cap: "),
+            "{error}"
+        );
+        assert!(error.contains("declared=32") && error.contains("tier_capacity=16"));
+
+        // 保留窗口超上限：这是"没按分级跑"的另一半，不能只看 pipeline 声明值。
+        let error = MediaQueueAdmission::new(&small, NonZeroUsize::new(16).unwrap(), 32)
+            .expect_err("retained window exceeds cap");
+        assert!(
+            error.starts_with("retained_limit_exceeds_tier_cap: "),
+            "{error}"
+        );
+
+        // 声明值正好等于上限：允许运行，且声明值原样保留（允许运行 ≠ 允许改写配置）。
+        let medium = ResidentLimits::parse(Some("medium"), Some("32"), Some("2")).expect("legal");
+        let admitted =
+            MediaQueueAdmission::new(&medium, declared, 16).expect("32 fits the medium tier cap");
+        assert_eq!(admitted.state(), MediaQueueAdmission::STATE_ADMITTED);
+        assert_eq!(admitted.declared_capacity.get(), 32);
+        assert!(admitted.describe().contains("declared=32"));
+        assert!(admitted.describe().contains("tier=medium"));
+        assert!(admitted.describe().contains("retained_limit=16"));
+
+        // 同一条 pipeline 在 `small` 档下就必须被拒：分级确实改变了执行结果。
+        assert!(MediaQueueAdmission::new(&small, declared, 16).is_err());
+
+        // 没有分级时不判定、也不报"通过"：状态必须是 not_injected。
+        let absent = ResidentLimits::default();
+        let ungraded = MediaQueueAdmission::new(&absent, declared, 4_096).expect("no cap, no gate");
+        assert_eq!(ungraded.state(), MediaQueueAdmission::STATE_NOT_INJECTED);
+        assert!(ungraded.describe().contains("tier_capacity=not_injected"));
     }
 }
 
@@ -293,7 +538,7 @@ mod capability_tests {
 
     #[test]
     fn describe_reports_platform_host_and_unknown_state() {
-        let described = describe();
+        let described = describe(&crate::ResidentLimits::default());
         assert_eq!(described.platform, platform());
         let host = described.host.expect("host resources are always reported");
         assert!(host.total_memory_bytes > 0);
@@ -309,6 +554,21 @@ mod capability_tests {
                 .contains(&"unified_memory".to_string()),
             has_unified_memory()
         );
+        // 没有分级时必须显式报零值加空档位名，而不是省略该字段或填一个"看起来合理"的档位。
+        let residency = described.residency.expect("residency is always reported");
+        assert!(residency.tier.is_empty());
+        assert_eq!(residency.media_queue_capacity, 0);
+        assert_eq!(residency.model_parallelism, 0);
+    }
+
+    #[test]
+    fn residency_reports_injected_limits_verbatim() {
+        let limits = crate::ResidentLimits::parse(Some("small"), Some("16"), Some("1"))
+            .expect("legal tier values");
+        let residency = describe(&limits).residency.expect("residency reported");
+        assert_eq!(residency.tier, "small");
+        assert_eq!(residency.media_queue_capacity, 16);
+        assert_eq!(residency.model_parallelism, 1);
     }
 
     #[test]

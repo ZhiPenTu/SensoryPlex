@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # 把常驻分级的上限注入 media 作业（ADR-015）。
 #
-# 为什么需要它：`sensoryplex-runtime replay|ingest` 的上限是**命令行参数**，而常驻形态下
-# 这些值由安装时的统一内存分级决定。与其让每个调用方各写一份数字，不如只认 resident.env：
+# 为什么需要它：`sensoryplex-runtime replay|ingest` 的上限有两个来源——保留窗口是命令行
+# 参数，队列上限是环境变量（ADR-019）——而常驻形态下两者都由安装时的统一内存分级决定。
+# 与其让每个调用方各写一份数字，不如只认 resident.env：
 #   - resident.env 不存在 → 显式失败（不猜默认值，也不退回"看起来能跑"的上限）；
-#   - 调用方自己传了同名上限参数 → 显式失败（不做静默覆盖）；
+#   - 调用方自己传了同名上限参数、或预置了同名环境变量 → 显式失败（不做静默覆盖）；
 #   - 其余参数原样透传。
 #
 # 调用：deploy/macos/bin/sensoryplex-media-run replay <pipeline.yaml> <media> --report <report.pb>
@@ -18,8 +19,21 @@ if [[ ! -f "${RESIDENT_ENV}" ]]; then
     echo "[media-run] 缺少分级文件 ${RESIDENT_ENV}；先运行 tools/macos_resident.py install" >&2
     exit 1
 fi
+
+# 运行时正是从这三个环境变量读分级（见 ADR-019），因此调用方在环境里预置同名变量与在
+# 命令行覆盖是同一件事：会让"上限由分级决定"变成一句假话，一律显式失败。
+# 这项检查必须在 source resident.env 之前做，否则读到的是刚被覆盖过的值。
+for variable in SENSORYPLEX_RESIDENT_TIER SENSORYPLEX_MEDIA_QUEUE_CAPACITY SENSORYPLEX_MODEL_PARALLELISM; do
+    if [[ -n "${!variable+set}" ]]; then
+        echo "[media-run] ${variable} 由常驻分级决定，不要在调用环境里预置" >&2
+        exit 2
+    fi
+done
+
 # shellcheck disable=SC1090
 source "${RESIDENT_ENV}"
+# 与 launchd plist 注入的是同一组变量名：两条路径下运行时看到的分级完全一致。
+export SENSORYPLEX_RESIDENT_TIER SENSORYPLEX_MEDIA_QUEUE_CAPACITY SENSORYPLEX_MODEL_PARALLELISM
 
 if [[ ! -x "${RUNTIME_BINARY}" ]]; then
     echo "[media-run] 找不到可执行的 runtime：${RUNTIME_BINARY}" >&2
@@ -35,7 +49,7 @@ for argument in "$@"; do
     esac
 done
 
-echo "[media-run] 分级 ${SENSORYPLEX_RESIDENT_TIER}: retained_limit=${SENSORYPLEX_HANDOFF_RETAINED_LIMIT} arena_bytes=${SENSORYPLEX_HANDOFF_ARENA_BYTES}" >&2
+echo "[media-run] 分级 ${SENSORYPLEX_RESIDENT_TIER}: retained_limit=${SENSORYPLEX_HANDOFF_RETAINED_LIMIT} arena_bytes=${SENSORYPLEX_HANDOFF_ARENA_BYTES} queue_capacity_cap=${SENSORYPLEX_MEDIA_QUEUE_CAPACITY} model_parallelism=${SENSORYPLEX_MODEL_PARALLELISM}" >&2
 exec "${RUNTIME_BINARY}" "$@" \
     --handoff-retained-limit "${SENSORYPLEX_HANDOFF_RETAINED_LIMIT}" \
     --handoff-arena-bytes "${SENSORYPLEX_HANDOFF_ARENA_BYTES}"

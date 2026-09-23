@@ -6,6 +6,7 @@
 
 import argparse
 import hashlib
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -20,6 +21,9 @@ EXPECTED_BLOCKERS: set[str] = set()
 EXPECTED_HANDOFF_STATE = "not_exercised"
 DECODE_BLOCKER = "gstreamer_decode_not_implemented"
 ADMITTED_MEMORY_KINDS = {"cpu_shared_memory"}
+# pipeline 文件里的队列声明。它是报告里 `declared_capacity` 的唯一来源，
+# 因此这里用与实现同样的正则在同一份文件上重读一遍，而不是相信报告自报的数。
+QUEUE_CAPACITY = re.compile(r"^\s*queue_capacity:\s*(\d+)\s*$", re.MULTILINE)
 # 两条独立实现描述同一段 presentation 时间轴：ffprobe 的 anchor 与 GStreamer 的
 # decode 路径。毫秒级舍入可能不一致，因此区间比较时保留一定 slack。
 TIMELINE_TOLERANCE_MS = 1
@@ -113,6 +117,33 @@ def check_honesty(report, media: Path) -> None:
     assert str(media).encode() not in report.SerializeToString(), (
         "the report must not carry the media path"
     )
+
+
+def check_media_queue(report, pipeline: Path) -> None:
+    """分级准入字段必须自洽（ADR-019）。
+
+    越界的运行在准入阶段就失败、根本写不出报告，所以"有上限却不等于已准入"这种组合
+    不可能成立：这里检查的是报告与 pipeline 文件、与注入与否三者对得上。
+    """
+
+    match = QUEUE_CAPACITY.search(pipeline.read_text(encoding="utf-8"))
+    assert match is not None, f"{pipeline} must declare queue_capacity"
+    declared = int(match.group(1))
+    admission = report.media_queue
+    assert admission.declared_capacity == declared, (
+        f"report declares {admission.declared_capacity} but {pipeline.name} says {declared}"
+    )
+    assert admission.retained_limit >= 1, "the retained window is a real queue, never zero"
+    if admission.tier_capacity == 0:
+        assert admission.state == "not_injected", admission.state
+        assert admission.tier == "", "no tier was injected, so no tier name may be reported"
+    else:
+        assert admission.state == "admitted", admission.state
+        assert admission.tier != "", "an injected cap must come with its tier name"
+        assert admission.declared_capacity <= admission.tier_capacity, (
+            "an exceeded declaration never reaches a report"
+        )
+        assert admission.retained_limit <= admission.tier_capacity
 
 
 def check_decoded_plane(report) -> None:
@@ -379,7 +410,7 @@ def main() -> None:
         if not args.report:
             raise SystemExit("--verify-only needs --report pointing at an existing report")
         report = parse_report(args.report)
-        finish(report, media)
+        finish(report, media, args.pipeline)
         return
     with tempfile.TemporaryDirectory() as workspace:
         report_path = args.report or Path(workspace) / "replay-report.pb"
@@ -395,13 +426,14 @@ def main() -> None:
             check=True,
         )
         report = parse_report(report_path)
-    finish(report, media)
+    finish(report, media, args.pipeline)
 
 
-def finish(report, media: Path) -> None:
+def finish(report, media: Path, pipeline: Path) -> None:
     check_source(report, media)
     check_anchors(report)
     check_honesty(report, media)
+    check_media_queue(report, pipeline)
     offsets = check_decoded_plane(report)
     decoded = report.decoded
     tracks = ", ".join(describe_track(track) for track in report.source.tracks)
@@ -414,6 +446,9 @@ def finish(report, media: Path) -> None:
         f"arena_peak_bytes={decoded.arena_peak_bytes} "
         f"start_offsets=[{','.join(f'{kind}:{value:+d}ms' for kind, value in offsets.items())}] "
         f"{describe_sampling(decoded)} "
+        f"queue_capacity={report.media_queue.state}/declared={report.media_queue.declared_capacity}"
+        f"/tier_capacity={report.media_queue.tier_capacity}"
+        f"/retained_limit={report.media_queue.retained_limit} "
         f"drop_reasons={','.join(report.drop_reasons) or 'none'} "
         f"blockers={','.join(report.blockers)}"
     )

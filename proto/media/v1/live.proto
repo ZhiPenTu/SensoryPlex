@@ -56,4 +56,7 @@ message LiveIngestReport {
   bool golden_path_verified = 6;
   // 与 ReplayReport 同义：`exposed_on=<addr>` 或 `not_exercised`。
   string handoff_state = 7;
+  // Host-tier admission of this window's post-descriptor queue (ADR-019). Same semantics as
+  // ReplayReport.media_queue: `serve`-side reports never carry a clipped declaration.
+  edge.material.media.v1.MediaQueueAdmission media_queue = 8;
 }

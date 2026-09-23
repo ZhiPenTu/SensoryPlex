@@ -329,8 +329,22 @@ class BackpressureReport(_message.Message):
     drop_kinds: _containers.RepeatedCompositeFieldContainer[BackpressureDropKind]
     def __init__(self, observed: bool = ..., queues: _Optional[_Iterable[_Union[BackpressureQueue, _Mapping]]] = ..., state: _Optional[str] = ..., degraded_entries: _Optional[int] = ..., saturated_entries: _Optional[int] = ..., dropped_total: _Optional[int] = ..., drop_reasons: _Optional[_Iterable[_Union[BackpressureDropReason, _Mapping]]] = ..., timeouts_total: _Optional[int] = ..., residency_samples: _Optional[int] = ..., residency_max_ms: _Optional[int] = ..., residency_avg_ms: _Optional[int] = ..., sampling_throttled_samples: _Optional[int] = ..., throttle_factor: _Optional[int] = ..., drop_kinds: _Optional[_Iterable[_Union[BackpressureDropKind, _Mapping]]] = ...) -> None: ...
 
+class MediaQueueAdmission(_message.Message):
+    __slots__ = ("state", "tier", "declared_capacity", "tier_capacity", "retained_limit")
+    STATE_FIELD_NUMBER: _ClassVar[int]
+    TIER_FIELD_NUMBER: _ClassVar[int]
+    DECLARED_CAPACITY_FIELD_NUMBER: _ClassVar[int]
+    TIER_CAPACITY_FIELD_NUMBER: _ClassVar[int]
+    RETAINED_LIMIT_FIELD_NUMBER: _ClassVar[int]
+    state: str
+    tier: str
+    declared_capacity: int
+    tier_capacity: int
+    retained_limit: int
+    def __init__(self, state: _Optional[str] = ..., tier: _Optional[str] = ..., declared_capacity: _Optional[int] = ..., tier_capacity: _Optional[int] = ..., retained_limit: _Optional[int] = ...) -> None: ...
+
 class ReplayReport(_message.Message):
-    __slots__ = ("source", "anchors", "decoded_items", "emitted_anchors", "dropped_items", "out_of_order_items", "gap_items", "platform", "blockers", "drop_reasons", "golden_path_verified", "decoded", "handoff_state")
+    __slots__ = ("source", "anchors", "decoded_items", "emitted_anchors", "dropped_items", "out_of_order_items", "gap_items", "platform", "blockers", "drop_reasons", "golden_path_verified", "decoded", "handoff_state", "media_queue")
     SOURCE_FIELD_NUMBER: _ClassVar[int]
     ANCHORS_FIELD_NUMBER: _ClassVar[int]
     DECODED_ITEMS_FIELD_NUMBER: _ClassVar[int]
@@ -344,6 +358,7 @@ class ReplayReport(_message.Message):
     GOLDEN_PATH_VERIFIED_FIELD_NUMBER: _ClassVar[int]
     DECODED_FIELD_NUMBER: _ClassVar[int]
     HANDOFF_STATE_FIELD_NUMBER: _ClassVar[int]
+    MEDIA_QUEUE_FIELD_NUMBER: _ClassVar[int]
     source: MediaSourceDescription
     anchors: _containers.RepeatedCompositeFieldContainer[TimelineAnchor]
     decoded_items: int
@@ -357,4 +372,5 @@ class ReplayReport(_message.Message):
     golden_path_verified: bool
     decoded: DecodedDataPlane
     handoff_state: str
-    def __init__(self, source: _Optional[_Union[MediaSourceDescription, _Mapping]] = ..., anchors: _Optional[_Iterable[_Union[TimelineAnchor, _Mapping]]] = ..., decoded_items: _Optional[int] = ..., emitted_anchors: _Optional[int] = ..., dropped_items: _Optional[int] = ..., out_of_order_items: _Optional[int] = ..., gap_items: _Optional[int] = ..., platform: _Optional[str] = ..., blockers: _Optional[_Iterable[str]] = ..., drop_reasons: _Optional[_Iterable[str]] = ..., golden_path_verified: bool = ..., decoded: _Optional[_Union[DecodedDataPlane, _Mapping]] = ..., handoff_state: _Optional[str] = ...) -> None: ...
+    media_queue: MediaQueueAdmission
+    def __init__(self, source: _Optional[_Union[MediaSourceDescription, _Mapping]] = ..., anchors: _Optional[_Iterable[_Union[TimelineAnchor, _Mapping]]] = ..., decoded_items: _Optional[int] = ..., emitted_anchors: _Optional[int] = ..., dropped_items: _Optional[int] = ..., out_of_order_items: _Optional[int] = ..., gap_items: _Optional[int] = ..., platform: _Optional[str] = ..., blockers: _Optional[_Iterable[str]] = ..., drop_reasons: _Optional[_Iterable[str]] = ..., golden_path_verified: bool = ..., decoded: _Optional[_Union[DecodedDataPlane, _Mapping]] = ..., handoff_state: _Optional[str] = ..., media_queue: _Optional[_Union[MediaQueueAdmission, _Mapping]] = ...) -> None: ...
