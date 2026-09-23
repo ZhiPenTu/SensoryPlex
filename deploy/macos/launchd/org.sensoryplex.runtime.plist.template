@@ -32,6 +32,10 @@
         <string>{{HANDOFF_RETAINED_LIMIT}}</string>
         <key>SENSORYPLEX_HANDOFF_ARENA_BYTES</key>
         <string>{{HANDOFF_ARENA_BYTES}}</string>
+        <key>SENSORYPLEX_MEDIA_QUEUE_CAPACITY</key>
+        <string>{{MEDIA_QUEUE_CAPACITY}}</string>
+        <key>SENSORYPLEX_MODEL_PARALLELISM</key>
+        <string>{{MODEL_PARALLELISM}}</string>
         <key>RUST_LOG</key>
         <string>info</string>
     </dict>

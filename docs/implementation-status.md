@@ -133,8 +133,10 @@ GLMemory 协商导致多视频轨竞态、容器内 PCM 的源编码采集不到
 都在本机真机验收（崩溃重启、登录自启、`caffeinate -ims` assertion、分级上限在 `handoff_stats` 中实测）。
 决策见 [ADR-015](adr/ADR-015-macOS常驻形态与统一内存分级.md)，操作见
 [运行手册](runbooks/macos-resident.md)，证据见 `docs/verification.md` 的"M5"一节。
-**仍未验证的仍然不得声称可用**：`queue_capacity` 只被校验、**未被运行时消费**，所以"队列已按分级调整"
-不成立；模型并发只有配置事实；`small` 档与 Mac mini 各档位未实跑；断电重启、休眠唤醒、小时级长稳未验证。
+**仍未验证的仍然不得声称可用**：模型并发（`MODEL_PARALLELISM`）只有配置事实——`serve` 只把它转述给
+`DescribeCapabilities`，没有任何 worker 按它限流；`small` 档与 Mac mini 各档位未实跑；断电重启、
+休眠唤醒、小时级长稳未验证。（队列上限那一半已收口：`replay`/`ingest` 按分级上限对声明值与真实保留
+窗口做准入，越界即失败，见 [ADR-019](adr/ADR-019-运行时消费分级队列上限.md)。）
 远端 CI 的 `check-apple-silicon` 早已真实通过（run 35850290513 / 35860979204，`macos-15-arm64`），
 本次新增 `workflow_dispatch`、`uname -m` 硬断言与解码路径单测步骤，并已在远端跑通
 （run 35863597690：`check`/`check-console`/`check-apple-silicon` 三个 job 全绿，runner

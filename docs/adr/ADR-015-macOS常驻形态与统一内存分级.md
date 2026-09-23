@@ -90,25 +90,33 @@ ADR-008 把 Apple Silicon（含"买来当家庭工作站"的 Mac mini）定为�
   `分级 large: retained_limit=64 arena_bytes=134217728`，`handoff_stats` 里实测
   `retained_limit=64`、`retained_kind_limit=32`（默认每类上限减半，ADR-011 的语义随之等比放大）。
 
-## 5. 已知缺口：`queue_capacity` 目前只被校验，未被运行时消费
+## 5. 缺口的收口：`queue_capacity` 已由运行时消费（ADR-019）
 
-`crates/runtime/src/lib.rs` 定义并校验 pipeline 的 `queue_capacity`（≤65536），
-`config/pipelines/{file-material,srt-live}.yaml` 都是 32；但**当前没有代码读取它来设置队列深度**——
-实际队列上限来自执行侧的内置常量。因此 `probe` 只**报告**分级值与 pipeline 声明值是否一致，
-不改写配置、也不声称"队列已按分级调整"。这是本轮明确留下的缺口，**不要**把它读成"队列上限已生效"。
+写下本节时的缺口是：`crates/runtime/src/lib.rs` 定义并校验 pipeline 的 `queue_capacity`（≤65536），
+`config/pipelines/{file-material,srt-live}.yaml` 都是 32；但**没有代码读取它来设置队列深度**——
+实际队列上限来自执行侧的内置常量，`probe` 只**报告**分级值与声明值是否一致。
+
+该缺口已由 [ADR-019](ADR-019-运行时消费分级队列上限.md) 收口：`replay`/`ingest` 现在会读
+`SENSORYPLEX_MEDIA_QUEUE_CAPACITY`，对 **pipeline 声明值**与**本次运行真正的保留窗口**做准入，
+越界即以 `queue_capacity_exceeds_tier_cap` / `retained_limit_exceeds_tier_cap` 显式失败（**不写报告**），
+并在 `ReplayReport.media_queue` / `LiveIngestReport.media_queue` 里记下 `not_injected` 或 `admitted`。
+`probe` 依旧不改写配置，只报告声明值与分级的关系。
+
+仍然**不**成立的是模型并发那一半：`SENSORYPLEX_MODEL_PARALLELISM` 目前只有"已声明"，
+没有任何执行点读它（见 §7）。
 
 ## 6. 验收证据（真机，macOS 26.5.2 / arm64 / M2 Max / 32 GiB）
 
 | # | 验证 | 结果 |
 | --- | --- | --- |
-| 1 | `macos_resident.py probe` | 32.0 GiB / `source=sysctl` / 分级 `large`；`retained_limit=64`（单类 32）、arena 128 MiB、模型并发 3、预算 10.7 GiB；两个 pipeline 的 `queue_capacity=32` 报"匹配"并注明该字段只被校验 |
+| 1 | `macos_resident.py probe` | 32.0 GiB / `source=sysctl` / 分级 `large`；`retained_limit=64`（单类 32）、arena 128 MiB、模型并发 3、预算 10.7 GiB；两个 pipeline 的 `queue_capacity=32` 报"匹配"（该行措辞已由 ADR-019 改为"运行时按分级上限准入，越界即失败，不改写配置"） |
 | 2 | `install` | 打印 `pmset` 现状 **`sleep 1`** 与人工命令（工具不改系统设置）；`org.sensoryplex.runtime` pid=6538 running |
 | 3 | `status --verify-endpoint` | runtime / caffeinate 双 running；gRPC `127.0.0.1:50051` 返回 `state=degraded`、`platform=macos-aarch64`、`unified_memory_bytes=34359738368`（与宿主探测一致）、`unavailable_capabilities=[media_ingestion, model_inference, event_dispatch, semantic_index]`、`admitted_memory_kinds=[cpu_shared_memory, unified_memory]` |
 | 4 | `launchctl print gui/501/org.sensoryplex.runtime` | `environment` 内含 `SENSORYPLEX_HANDOFF_ARENA_BYTES=134217728`、`SENSORYPLEX_UNIFIED_MEMORY_BYTES=34359738368`、`RUST_LOG=info` |
 | 5 | `pmset -g assertions` | pid 6541 的 `caffeinate -ims` 持有 `PreventUserIdleSystemSleep` + `PreventSystemSleep`（asserting forever） |
 | 6 | **崩溃重启** | `kill -9 6538` 后 3 秒 `status` 显示**新 pid 6644** running → `KeepAlive` 生效 |
 | 7 | **重启自启** | `launchctl bootout` → `launchctl print` 确认 not loaded → `launchctl bootstrap gui/501 …`（不 kickstart）→ 2 秒后 running **pid=6997** → `RunAtLoad` 生效 |
-| 8 | **分级上限注入媒体作业** | `sensoryplex-media-run replay config/pipelines/file-material.yaml video/1.mp4`：打印分级值，报告 `anchors=2237 decoded_items=2239 descriptors=1354 rejected=0 leases 1354/1354 segments=7`；再以 `--handoff-listen 127.0.0.1:64555`（无消费者）跑，`handoff_stats` 实测 `retained_limit=64 retained_kind_limit=32 retained_peak=47`、backpressure `state=saturated`，以 `handoff_consumer_never_connected` 退出（预期） |
+| 8 | **分级上限注入媒体作业** | `sensoryplex-media-run replay config/pipelines/file-material.yaml video/1.mp4`：打印分级值，报告 `anchors=2237 decoded_items=2239 descriptors=1354 rejected=0 leases 1354/1354 segments=7`；再以 `--handoff-listen 127.0.0.1:64555`（无消费者）跑，`handoff_stats` 实测 `retained_limit=64 retained_kind_limit=32 retained_peak=47`、backpressure `state=saturated`，以 `handoff_consumer_never_connected` 退出（预期）。包装脚本的 banner 自 ADR-019 起还打印 `queue_capacity_cap` 与 `model_parallelism`（见该 ADR §6） |
 | 9 | `uninstall --purge-logs` | 两个 label 已卸、plist 与 `resident.env` 已删、日志已清；残留检查：无 `serve` 进程、无 `caffeinate -ims`、50051 无监听 |
 
 契约测试 `tests/contracts/test_macos_resident_contract.py`（11 项）锁死上表 §2/§3/§4 的语义：
@@ -121,14 +129,16 @@ ADR-008 把 Apple Silicon（含"买来当家庭工作站"的 Mac mini）定为�
 
 - 分级表是**工程经验值加锚定**，不是压测结果：`large` 的 arena 128 MiB 只在本机以无消费者
   场景验证过（`retained_peak=47`），没有在 16GB 机型上实跑 `small` 档。
-- 模型并发只落在 plist 环境变量里，**运行时目前不消费**它，因此"并发 3"是配置事实而非执行事实；
-  并发执行的实测要等 worker 侧按该变量限流之后。
+- 模型并发上限（`SENSORYPLEX_MODEL_PARALLELISM`）仍然只有配置事实：它落在 plist 与 `resident.env` 里，
+  `serve` 也只是把它**转述**给 `DescribeCapabilities`，没有任何 worker 按它限流。并发执行的实测
+  要等 worker 侧限流之后再补（ADR-019 §4）。
 - 目前只有本机 `macos-aarch64` 一个平台验收；CI 不跑 launchd（runner 上没有用户会话与
   `launchctl gui/` 域），因此本 ADR 的证据**只能**来自真机。
 - 没有验证"机器断电重启后自启"（只验证了 `bootout`+`bootstrap`，等同于登录会话内的拉起）；
   没有验证 App Nap / 休眠唤醒后的端点可用性；`caffeinate` 在纯电池供电下的行为未验证。
-- 未做 `resident.env` 的权限收紧（当前随 `~/Library` 的默认权限），也没有把分级值回写进
-  `DescribeCapabilities`——端点目前只上报 `unified_memory_bytes`。
+- 未做 `resident.env` 的权限收紧（当前随 `~/Library` 的默认权限）。分级值已由 ADR-019 回写进
+  `DescribeCapabilities` 的 `residency`（`tier` / `media_queue_capacity` / `model_parallelism`），
+  但那是**转述**：`serve` 不跑 pipeline，模型并发也还没有 worker 读它。
 
 ## 8. 最小实现清单（当前状态）
 
@@ -138,11 +148,14 @@ ADR-008 把 Apple Silicon（含"买来当家庭工作站"的 Mac mini）定为�
 - [x] `tests/contracts/test_macos_resident_contract.py`（11 项）
 - [x] `Makefile` 的 `resident-probe|resident-install|resident-status|resident-uninstall`（主机例外，不进容器）
 - [x] `docs/runbooks/macos-resident.md`
+- [x] 分级队列上限被运行时消费：`replay`/`ingest` 按上限对声明值与保留窗口做准入，越界即失败并在报告里记录（[ADR-019](ADR-019-运行时消费分级队列上限.md)）
 
 **未验证范围（不得当作已完成）**
 
 - 只有本机一台 Apple Silicon 机型（M2 Max / 32 GiB）验收；Mac mini 各档位与 16GB 的
   `small` 档均未实跑。
-- 模型并发上限、`queue_capacity` 的分级生效都还是**配置事实**，没有并发执行的端到端样本。
+- 模型并发上限仍是**配置事实**（无 worker 限流、无并发执行的端到端样本）。`queue_capacity` 的分级
+  已由 ADR-019 变成执行事实（越界即失败），真机覆盖"未注入 / `small` 拒绝 / `medium` 拒绝 / `large` 准入"
+  四种情形；`xlarge` 档与档位边界值（如 24 GiB、64 GiB 机型）没有实跑。
 - 断电重启自启、休眠唤醒、长稳运行（小时级）、内存压力下的拒绝行为都未验证。
 - `golden_path_verified` 恒为 false；本节不改变这一结论。

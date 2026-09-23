@@ -292,6 +292,26 @@ message BackpressureReport {
   repeated BackpressureDropKind drop_kinds = 14;
 }
 
+// Residency policy (ADR-015 / ADR-019) applied to one run's bounded post-descriptor queue.
+//
+// The tier caps the declaration, it never rewrites it: a pipeline whose `queue_capacity` (or
+// whose retained window) exceeds the injected cap fails before a report is written, so a value
+// that would have been clipped does not appear here as `admitted`.
+message MediaQueueAdmission {
+  // not_injected | admitted. `not_injected` means the host tier was absent, which is a fact
+  // about this run, not a zero limit.
+  string state = 1;
+  // Tier name from SENSORYPLEX_RESIDENT_TIER; empty when the tier was not injected.
+  string tier = 2;
+  // `queue_capacity` exactly as the pipeline file declares it. Never a normalized value.
+  uint64 declared_capacity = 3;
+  // SENSORYPLEX_MEDIA_QUEUE_CAPACITY as injected; 0 means not injected, never an assumed limit.
+  uint64 tier_capacity = 4;
+  // Depth of the retained window this run really used (`--handoff-retained-limit`, else the
+  // built-in default). This is the queue `BackpressureReport` measures.
+  uint64 retained_limit = 5;
+}
+
 // One replay attempt. Counters and reasons stay explicit instead of optimistic defaults.
 message ReplayReport {
   MediaSourceDescription source = 1;
@@ -315,4 +335,6 @@ message ReplayReport {
   // lease consumer ran. "exposed_on=<addr>" means the data plane was served there,
   // and the lease accounting lives in that run's `handoff_stats` line.
   string handoff_state = 13;
+  // Host-tier admission of this run's post-descriptor queue (ADR-019).
+  MediaQueueAdmission media_queue = 14;
 }

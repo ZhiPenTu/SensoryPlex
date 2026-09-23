@@ -10,8 +10,9 @@
 3. **通过 `launchctl` 安装/卸载/查看**，并可对已托管进程做一次真实 gRPC `Health` 调用。
 
 不做什么：不调用 `pmset`（需要 root，只读检查并打印需要人工确认的命令）；不把插件 manifest 里
-**声明**的内存占用当成实测 RSS；不替调用方改写 pipeline 的 `queue_capacity`（该字段当前只被
-校验、未被运行时消费，工具只报告不一致）。分级依据见 ADR-015。
+**声明**的内存占用当成实测 RSS；不替调用方改写 pipeline 的 `queue_capacity`——运行时会在
+`replay`/`ingest` 按分级上限对声明值与保留窗口做准入，越界即显式失败（ADR-019），工具只报告
+声明值。分级依据见 ADR-015。
 """
 
 from __future__ import annotations
@@ -349,6 +350,11 @@ def verify_endpoint(address: str) -> dict[str, object]:
         "platform": describe.platform,
         "unified_memory_bytes": describe.host.unified_memory_bytes,
         "admitted_memory_kinds": list(describe.admitted_memory_kinds),
+        # 分级值由进程从环境读入后原样转述（ADR-019）：这里对账的是"进程实际读到了什么"，
+        # 不是"分级表里写了什么"。
+        "resident_tier": describe.residency.tier,
+        "media_queue_capacity": describe.residency.media_queue_capacity,
+        "model_parallelism": describe.residency.model_parallelism,
     }
 
 
@@ -421,7 +427,7 @@ def summarize(tier: Tier, probe: MemoryProbe, runtime_addr: str) -> list[str]:
         state = "匹配" if capacity <= tier.media_queue_capacity else "超过本档上限"
         lines.append(
             f"  pipeline {pipeline}: queue_capacity={capacity}"
-            f"（{state}；该字段只被校验，未被运行时消费）"
+            f"（{state}；运行时按分级上限准入，越界即失败，不改写配置）"
         )
     return lines
 

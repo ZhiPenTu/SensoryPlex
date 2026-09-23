@@ -1372,3 +1372,54 @@ VLM 走 ollama），`metal` 不作为后端引入。
   "绝不联网"只有 manifest 声明，没有 DNS/egress 强制执行。
 - worker 的 durable 幂等与 lease 崩溃回收仍未做；observation 路径没有 lease，但这不改变 buffer
   路径的结论。
+
+### M8 剩余：运行时消费分级队列上限（ADR-019）（2026-09-24）
+
+**本轮收口的是一条自己写下来的缺口**（ADR-015 §5）：`queue_capacity` 只被校验、**没有被运行时消费**。
+先核实事实再动代码：改动前 `SENSORYPLEX_MEDIA_QUEUE_CAPACITY` 与 `SENSORYPLEX_MODEL_PARALLELISM`
+在全仓**没有任何 crate 读取**；描述符之后的真实有界队列是保留表（`RetainPolicy::default()` 的
+`retained_limit=32`，带 `--handoff-listen` 时取 `config.retained_limit`），分级值只由
+`macos_resident.py probe` 报告。决策与两个稳定失败原因见 [ADR-019](adr/ADR-019-运行时消费分级队列上限.md)。
+
+环境：真机 Apple M2 Max / 32 GiB / macOS 26.x / arm64（`macos-aarch64`）；容器是 Linux aarch64
+（Docker Desktop），因此**运行时的 Rust 侧只能在主机执行**——`target/release/sensoryplex-runtime`
+是 Mach-O，容器内无法 exec；Python 侧校验按要求留在容器里（`docker compose exec -T api`）。
+样本 `video/1.mp4`（hevc 540x960 + aac，真实授权样本）；报告写在 `<worktree>/target/*.pb`，
+容器以 `/workspace/target/*.pb` 读到同一份文件。
+
+| 验证 | 命令 | 结果 |
+| --- | --- | --- |
+| 未注入分级 | `sensoryplex-runtime replay config/pipelines/file-material.yaml …/video/1.mp4 --report target/tier-a.pb` | 运行照常完成；`queue_capacity state=not_injected declared=32 tier_capacity=not_injected tier=not_injected retained_limit=32` |
+| `small` 档拒绝**声明值**越界 | `SENSORYPLEX_RESIDENT_TIER=small SENSORYPLEX_MEDIA_QUEUE_CAPACITY=16 … --report target/tier-b.pb` | `Error: … "queue_capacity_exceeds_tier_cap: declared=32 tier_capacity=16 tier=small"`，exit=1，且 `target/tier-b.pb` **不存在**（准入先于写报告） |
+| `small` 档拒绝**保留窗口**越界 | `sed 's/queue_capacity: 32/queue_capacity: 16/' config/pipelines/file-material.yaml > target/file-material-declared-16.yaml`，再以 `small`/16 跑该 pipeline | 声明值 16 合规，但 `Error: … "retained_limit_exceeds_tier_cap: retained_limit=32 tier_capacity=16 tier=small"` —— **声明合规不等于队列合规** |
+| `medium` 档拒绝数据面注入的窗口 | `SENSORYPLEX_RESIDENT_TIER=medium SENSORYPLEX_MEDIA_QUEUE_CAPACITY=32 … --handoff-listen 127.0.0.1:64555 --handoff-retained-limit 64 --handoff-arena-bytes 67108864 --handoff-wait-timeout-ms 1000` | 立即 `Error: … "retained_limit_exceeds_tier_cap: retained_limit=64 tier_capacity=32 tier=medium"`，exit=1，未打开数据面、未写报告 |
+| `large` 档准入 | `SENSORYPLEX_RESIDENT_TIER=large SENSORYPLEX_MEDIA_QUEUE_CAPACITY=64 … --report target/tier-c.pb` | `queue_capacity state=admitted declared=32 tier_capacity=64 tier=large retained_limit=32`；报告 `media_queue.state=admitted` |
+| 包装脚本注入（真实 `resident.env`） | 容器内 `macos_resident.py render --output /workspace/target/resident-render`（声明 32 GiB，`source=env`）→ 主机 `SENSORYPLEX_RESIDENT_ENV=…/resident.env …/sensoryplex-media-run replay config/pipelines/file-material.yaml …/video/1.mp4 --report target/tier-h.pb` | banner `分级 large: retained_limit=64 arena_bytes=134217728 queue_capacity_cap=64 model_parallelism=3`；运行时报 `tier=large tier_capacity=64` |
+| 调用方预置同名环境变量 | `SENSORYPLEX_MEDIA_QUEUE_CAPACITY=4096 … sensoryplex-media-run replay …` | exit=2，`[media-run] SENSORYPLEX_MEDIA_QUEUE_CAPACITY 由常驻分级决定，不要在调用环境里预置` |
+| plist 带上分级上限 | `render` 产出的 `runtime.plist` | `SENSORYPLEX_MEDIA_QUEUE_CAPACITY=64`、`SENSORYPLEX_MODEL_PARALLELISM=3` 已在 `EnvironmentVariables` 里（此前只有 handoff/内存/RUST_LOG） |
+| 容器内校验报告自洽 | `docker compose exec -T api /app/.venv/bin/python tools/verify_replay.py --verify-only --media /host-media/1.mp4 --pipeline config/pipelines/file-material.yaml --report target/tier-h.pb` | 通过：`Replay verified: … anchors=2237 dropped=2 gaps=0 descriptors=1354 leases=1354/1354 segments=7 … queue_capacity=admitted/declared=32/tier_capacity=64/retained_limit=32` |
+| `make check EXEC_MODE=container` | 见 Makefile | ruff `All checks passed`（117 文件已格式化）、契约 **155 passed**、集成 **24 passed**、`cargo fmt`/`clippy -D warnings`/`test` 全过 |
+| `make media-check` / `make media-test` / `make pipeline-check` | 见 Makefile | `--features gstreamer` 的 clippy 通过；`sensoryplex-media` **105 passed**；`pipeline schema valid` |
+
+**本轮踩到的两点环境事实（写下来避免重复踩）**
+
+- **新增 proto 字段后必须重建 api 镜像**：`edge_material_sdk` 的生成代码是 Dockerfile 在构建时
+  `COPY plugins/python` 装进 venv 的，`PYTHONPATH=/workspace` 不会覆盖它；不重建镜像时容器里的
+  `report.media_queue` 会直接 `AttributeError`（等同于"验证跑的是旧契约"）。重建后与工作区一致。
+- **媒体 E2E 的进程边界**：`verify_replay.py` 会 exec `target/release/sensoryplex-runtime`，
+  而容器是 Linux、二进制是 macOS Mach-O；因此 Rust 侧在主机跑、Python 侧校验在容器跑，
+  两边通过 `<worktree>/target/*.pb` 与 `/host-media/*`（bind mount）共享产物。
+
+**仍未验证（不得当成完成）**
+
+- `SENSORYPLEX_MODEL_PARALLELISM` 仍只有"已声明"这一层：`serve` 把它转述给
+  `DescribeCapabilities.residency`，但没有任何 worker 按它限流，也没有并发执行的端到端样本。
+- 档位覆盖：真机只跑了"未注入 / `small` 拒绝 / `medium` 拒绝 / `large` 准入"四种情形；
+  `xlarge` 档与 24 GiB、64 GiB 之类的档位边界机型未实跑；`linux-x86_64` 未验证。
+- 本轮做的是**准入**，不是"用 pipeline 文件驱动队列深度"：真实队列深度仍来自
+  `--handoff-retained-limit`（包装脚本按分级注入）。`golden_path_verified` 恒为 false。
+
+**一个既有现象（与本轮改动无关，未修复）**：同一套命令用 `sintel-trailer.480p.h264.mp4` 跑时，
+`tools/verify_replay.py` 的 `check_track` 会失败——ffprobe 报 `duration_ms=52208`，解码侧视频
+`last_end_ms=52209`，差 1 ms 使 `last_end_ms <= duration_ms` 不成立（本轮未触及解码与轨道统计路径；
+`video/1.mp4` 无此现象）。登记在此，供后续单独处理。

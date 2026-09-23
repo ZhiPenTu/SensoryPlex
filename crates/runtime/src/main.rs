@@ -12,9 +12,10 @@ use sensoryplex_media::sampler::SamplingPolicy;
 use sensoryplex_media::segment::{MAX_AUDIO_SEGMENT_MS, MIN_AUDIO_SEGMENT_MS};
 use sensoryplex_media::source::{drain_source, FileSource, MediaSource, UnavailableSource};
 use sensoryplex_media::MediaError;
-use sensoryplex_runtime::{capability, Pipeline};
+use sensoryplex_runtime::{capability, MediaQueueAdmission, Pipeline, ResidentLimits};
 use sensoryplex_sdk::media::{
-    DecodedDataPlane, LiveIngestReport, LiveStreamStats, MediaSourceDescription, MediaSourceKind,
+    DecodedDataPlane, LiveIngestReport, LiveStreamStats,
+    MediaQueueAdmission as MediaQueueAdmissionProto, MediaSourceDescription, MediaSourceKind,
     MediaSourceRef, MediaTrack, ReplayReport, StreamStall,
 };
 use sensoryplex_sdk::runtime::{
@@ -177,6 +178,17 @@ struct ResolvedRunArgs {
     sampling: SamplingPolicy,
     backpressure: BackpressurePolicy,
     handoff: Option<HandoffArgs>,
+}
+
+impl ResolvedRunArgs {
+    /// 本次运行实际使用的保留窗口深度。没有 `--handoff-listen` 时取内置默认值——
+    /// 它仍然是这条队列的真实深度，因此同样要过分级准入（ADR-019）。
+    fn retained_limit(&self) -> usize {
+        self.handoff.as_ref().map_or(
+            sensoryplex_media::handoff::DEFAULT_RETAINED_LIMIT,
+            |config| config.retained_limit,
+        )
+    }
 }
 
 /// 取一个带值的选项：缺值或缺值非法都报明确原因，不做默认值兜底。
@@ -457,6 +469,7 @@ async fn replay(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let args = ReplayArgs::parse(args).map_err(std::io::Error::other)?;
     let pipeline = Pipeline::parse(&std::fs::read_to_string(&args.pipeline)?)
         .map_err(std::io::Error::other)?;
+    let media_queue = admit_media_queue(&pipeline, &args.run).map_err(std::io::Error::other)?;
     let mut source = open_source(&pipeline, &args.media).map_err(std::io::Error::other)?;
     let description = source.describe().clone();
     let duration_ms = description.duration_ms;
@@ -467,6 +480,7 @@ async fn replay(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         blockers: replay_blockers(),
         // 只有真正通过媒体验收的运行才允许设置该标志；本次构建无法达成。
         golden_path_verified: false,
+        media_queue: Some(media_queue_admission_field(&media_queue)),
         ..Default::default()
     };
 
@@ -569,6 +583,7 @@ async fn replay(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         handoff_note,
         report.blockers.join(",")
     );
+    println!("{}", media_queue.describe());
     println!("{}", describe_backpressure(plane));
     match (retained, &args.run.handoff) {
         (Some(handoff), Some(config)) => serve_handoff(handoff, config).await?,
@@ -583,6 +598,32 @@ async fn replay(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         (_, None) => {}
     }
     Ok(())
+}
+
+/// 把常驻分级读进一次媒体运行，并按 pipeline 声明值与实际保留窗口做准入（ADR-019）。
+///
+/// 分级是上限而不是默认值：越界就在这里显式失败，运行不会带着一个"被悄悄夹到上限"的
+/// 队列继续跑，也不会把 pipeline 文件里的声明值改写掉。
+fn admit_media_queue(
+    pipeline: &Pipeline,
+    args: &ResolvedRunArgs,
+) -> Result<MediaQueueAdmission, String> {
+    let limits = ResidentLimits::from_env()?;
+    MediaQueueAdmission::new(&limits, pipeline.spec.queue_capacity, args.retained_limit())
+}
+
+/// 报告里的分级准入字段。`state` 只会是 `not_injected` 或 `admitted`：越界的运行在写报告
+/// 之前就以显式错误退出，所以报告里不会出现"夹取后的成功"。
+fn media_queue_admission_field(admission: &MediaQueueAdmission) -> MediaQueueAdmissionProto {
+    MediaQueueAdmissionProto {
+        state: admission.state().to_string(),
+        tier: admission.tier.clone().unwrap_or_default(),
+        declared_capacity: admission.declared_capacity.get() as u64,
+        tier_capacity: admission
+            .tier_capacity
+            .map_or(0, |capacity| capacity.get() as u64),
+        retained_limit: admission.retained_limit as u64,
+    }
 }
 
 /// 背压的可观察量必须能被一行读出来，而且**没有测量**与"测到零压力"要能区分开：
@@ -654,6 +695,7 @@ async fn ingest(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let args = LiveArgs::parse(args).map_err(std::io::Error::other)?;
     let pipeline = Pipeline::parse(&std::fs::read_to_string(&args.pipeline)?)
         .map_err(std::io::Error::other)?;
+    let media_queue = admit_media_queue(&pipeline, &args.run).map_err(std::io::Error::other)?;
     let source = &pipeline.spec.source;
     if source.r#type != "srt" {
         return Err(format!("ingest_requires_srt_source: {}", source.r#type).into());
@@ -681,6 +723,7 @@ async fn ingest(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             uri_secret_ref: uri_secret_ref.clone(),
             ..Default::default()
         }),
+        media_queue: Some(media_queue_admission_field(&media_queue)),
         ..Default::default()
     };
     // 只打印引用名与环境变量名：URI 本身（含 streamid/凭据）不出现在任何输出里。
@@ -748,6 +791,7 @@ async fn ingest(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         report.handoff_state,
         report.blockers.join(",")
     );
+    println!("{}", media_queue.describe());
     println!("{}", describe_backpressure(report.decoded.as_ref()));
     match (retained, &args.run.handoff) {
         (Some(handoff), Some(config)) => serve_handoff(handoff, config).await?,
@@ -1067,7 +1111,13 @@ fn arena_identity(description: &MediaSourceDescription) -> (String, String) {
     (format!("arena-{short}"), stream_id)
 }
 
-struct Runtime;
+/// 控制端点进程读到的常驻分级值。
+///
+/// 这里只**转述**：`serve` 不跑 pipeline，没有队列可以设上限。真正消费
+/// `SENSORYPLEX_MEDIA_QUEUE_CAPACITY` 的是 `replay`/`ingest`，它们的报告里带准入结果。
+struct Runtime {
+    residency: ResidentLimits,
+}
 #[tonic::async_trait]
 impl RuntimeService for Runtime {
     async fn health(&self, _: Request<HealthRequest>) -> Result<Response<HealthResponse>, Status> {
@@ -1081,7 +1131,7 @@ impl RuntimeService for Runtime {
         &self,
         _: Request<DescribeCapabilitiesRequest>,
     ) -> Result<Response<DescribeCapabilitiesResponse>, Status> {
-        Ok(Response::new(capability::describe()))
+        Ok(Response::new(capability::describe(&self.residency)))
     }
 }
 
@@ -1109,6 +1159,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .into(),
         );
     }
+    // 分级值在启动时解析一次：坏配置必须让进程起不来，而不是让端点报一份自己都读不出来的清单。
+    let residency = ResidentLimits::from_env().map_err(std::io::Error::other)?;
     let address = std::env::var("SENSORYPLEX_RUNTIME_ADDR")
         .unwrap_or_else(|_| "127.0.0.1:50051".into())
         .parse()?;
@@ -1116,10 +1168,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         %address,
         platform = %capability::platform(),
         state = capability::state(),
+        tier = residency.tier.as_deref().unwrap_or("not_injected"),
+        media_queue_capacity = residency
+            .media_queue_capacity
+            .map_or(0, |capacity| capacity.get()),
+        model_parallelism = residency.model_parallelism.map_or(0, |value| value.get()),
         "runtime control endpoint started"
     );
     tonic::transport::Server::builder()
-        .add_service(RuntimeServiceServer::new(Runtime))
+        .add_service(RuntimeServiceServer::new(Runtime { residency }))
         .serve_with_shutdown(address, async {
             let _ = tokio::signal::ctrl_c().await;
         })
