@@ -97,5 +97,6 @@ GLMemory 协商导致多视频轨竞态、容器内 PCM 的源编码采集不到
 **仍未验证的仍然不得声称可用**：`queue_capacity` 只被校验、**未被运行时消费**，所以"队列已按分级调整"
 不成立；模型并发只有配置事实；`small` 档与 Mac mini 各档位未实跑；断电重启、休眠唤醒、小时级长稳未验证。
 远端 CI 的 `check-apple-silicon` 早已真实通过（run 35850290513 / 35860979204，`macos-15-arm64`），
-本次新增 `workflow_dispatch`、`uname -m` 硬断言与 `make media-test`，但**加固本身尚未在远端跑过**
-（见 `docs/verification.md` 的"M7"一节）。
+本次新增 `workflow_dispatch`、`uname -m` 硬断言与解码路径单测步骤，并已在远端跑通
+（run 35863597690：`check`/`check-console`/`check-apple-silicon` 三个 job 全绿，runner
+`macos-15-arm64`、`uname -m` 实测 `arm64`、解码路径单测 **105 passed**，见 `docs/verification.md` 的"M7"一节）。

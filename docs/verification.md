@@ -1024,9 +1024,22 @@ M2 Max，32 GiB 统一内存）。
 - `make media-check` 之后增加 `make media-test`（解码路径单测，含保留表 A/B 回归；带 `gstreamer`
   feature 才存在），并把它对应的目标加入 `Makefile`。
 
-**仍未验证**：加固后的 workflow 尚未在远端跑过一次（等下次 push 或手动
-`gh workflow run engineering-checks`）；Windows 与 Linux NVIDIA 侧没有 CI job；
-本节的加固未经远端验证，因此不能声称"加固已在 CI 生效"。
+**加固后的远端验证（2026-09-23，run 35863597690）**：本次 push 触发一次真实 run，三个 job 全绿：
+
+| Job | 耗时 | 结果 |
+| --- | --- | --- |
+| `check` | 2m52s | success |
+| `check-console` | 1m0s | success |
+| `check-apple-silicon` | 3m46s | success（13 个 step 全绿） |
+
+`check-apple-silicon` 的实测要点：runner image 为 **`macos-15-arm64`**（Image Release
+`macos-15-arm64/20260907.0337`），新增的断言 step 输出 `arm64`（`test "$(uname -m)" = "arm64"` 通过）
+并打印 `sysctl -n hw.memsize` = **7,516,192,768（7.0 GiB）**；新增的解码路径单测 step
+`cargo test --locked -p sensoryplex-media --features gstreamer` 输出 **105 passed**；
+`brew install gstreamer`、`make media-check`、`make runtime-smoke` 均通过。
+
+**仍未验证**：Windows 与 Linux NVIDIA 侧没有 CI job；runner 只有 7 GiB 内存、低于 `small` 档下限，
+因此 `launchd` 常驻形态（M5）**不能**在 CI 里验收，只能真机跑（见本节上面 M5 一节）。
 
 ### Console 应用准备流程（2026-09-23）
 

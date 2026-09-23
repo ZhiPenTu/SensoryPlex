@@ -139,8 +139,13 @@
   - [x] `check-apple-silicon` 增加硬断言 step：`test "$(uname -m)" = "arm64"` 并打印 `hw.memsize`。
         若镜像哪天变成 x86，"macOS CI 通过"必须先红，而不是悄悄退化成"在 Intel 上通过"。
   - [x] `make media-check` 之后增加 `make media-test`（解码路径单测，含保留表 A/B 回归；带 feature 才存在）。
-- 仍未验证：加固后的 workflow 尚未在远端跑过一次（等下次 push 或手动 `gh workflow run engineering-checks`）；
-  Windows / Linux NVIDIA 侧没有 CI job。
+- [x] 加固后已在远端验证：push 触发 run **35863597690**，三个 job 全绿——
+  `check` 2m52s（job 107189530260）、`check-console` 1m0s（job 107189529919）、
+  `check-apple-silicon` 3m46s（job 107189530242，13 个 step 全绿；含新增的 `uname -m` 硬断言
+  与 `cargo test -p sensoryplex-media --features gstreamer` → **105 passed**）。
+  runner 为 `macos-15-arm64`（Image 20260907.0337），`uname -m` 实测 `arm64`。
+- 仍未验证：Windows 与 Linux NVIDIA 侧没有 CI job；CI runner 只有 7 GiB 内存，
+  低于 `small` 档下限，所以 `launchd` 常驻形态（M5）**不能**在 CI 里验收，只能真机跑。
 
 ### M8 模型插件（ASR/OCR/VLM/BGE）
 
