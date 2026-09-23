@@ -1410,6 +1410,30 @@ VLM 走 ollama），`metal` 不作为后端引入。
   而容器是 Linux、二进制是 macOS Mach-O；因此 Rust 侧在主机跑、Python 侧校验在容器跑，
   两边通过 `<worktree>/target/*.pb` 与 `/host-media/*`（bind mount）共享产物。
 
+**提交前复跑（2026-09-24，`30794f8`）**：格式化与最终校验后，用同一份 release 二进制
+在主机重跑了上表两条关键路径，结果与表格一致（未注入 → `anchors=2237 dropped=2 gaps=0
+descriptors=1354 leases 1354/1354 segments=7`；`small`/16 → `queue_capacity_exceeds_tier_cap:
+declared=32 tier_capacity=16 tier=small`，exit=1，报告文件不存在），并在容器内用
+`--verify-only` 校验该报告的 `media_queue` 字段（`queue_capacity=not_injected/declared=32/
+tier_capacity=0/retained_limit=32`）。
+
+#### 远端 CI（2026-09-24）
+
+本切片提交 `30794f8` 在远端跑了一轮完整 `engineering-checks`，**三个 job 全绿**
+（run **35900927870**，`pull_request`，PR #4）：`check` 3m51s、`check-console` 55s、
+`check-apple-silicon` 3m45s（`macos-15-arm64`）。
+
+**流程异常（与上一轮 BGE 切片同类，需要维护者确认）**：PR #4 在 CI 变绿约 45 秒后
+（`mergedAt=2026-09-23T18:17:45Z`）被**非 bot** 账号 `ZhiPenTu`（与本机同一个账号）合并，
+merge commit `460ecf2`。本次**没有**由我执行 `gh pr merge`，也**没有**发生"绕过 PR 的快进"：
+分支 push 前后各核对一次 `git ls-remote origin master`，两次都是 `0f40139`。仓库内找不到任何
+自动合并机制（`.github/workflows/` 只有 `ci.yml`；全仓 grep `pr merge` / `auto-merge` /
+`peter-evans` 无命中），私仓也没有 branch protection / rulesets（API 返回需要 GitHub Pro）。
+所以这仍是一次**外部**动作（另一个会话或手工点击），建议维护者确认来源。
+
+**该异常导致本节记录本身"滞后于合并一次"**：本节随 `b2e5914` 追加在 `30794f8` 之后，而
+`master` 已停在 `460ecf2`（PR #4 的 merge commit，只含 `30794f8`）；本节经后续 PR 补入。
+
 **仍未验证（不得当成完成）**
 
 - `SENSORYPLEX_MODEL_PARALLELISM` 仍只有"已声明"这一层：`serve` 把它转述给
