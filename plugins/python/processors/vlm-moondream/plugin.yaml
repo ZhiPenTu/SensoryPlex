@@ -1,0 +1,58 @@
+apiVersion: edge.material.plugin/v1
+kind: ProcessorPlugin
+metadata:
+  name: org.sensoryplex.vlm-moondream
+  version: 0.1.0
+  displayName: VLM 场景描述（本机 ollama）
+  vendor: SensoryPlex
+  license: Apache-2.0
+  description: 读取 Runtime 数据面里的真实视频帧，调用本机 ollama 上的视觉模型产出场景描述 observation。
+spec:
+  sdk:
+    runtime: ">=0.1.0 <0.2.0"
+    protocol: v1
+  entrypoint:
+    transport: grpc
+    command:
+      - uv
+      - run
+      - --frozen
+      - python
+      - -m
+      - edge_material_plugin_vlm_moondream
+    port: 50071
+  capabilities:
+    consumes:
+      - media.video_frame
+    produces:
+      - observation.vision.scene_description
+    acceptsMemoryKinds:
+      - cpu_shared_memory
+    ordering: per_stream
+    supports:
+      batch: false
+      cancellation: true
+      retry: idempotent
+  resources:
+    cpu: "1"
+    memory: 1Gi
+    maxConcurrency: 1
+    maxBatchSize: 1
+    defaultDeadlineMs: 180000
+  config:
+    schema: config.schema.json
+    secretRefs: []
+  security:
+    network: allowlist
+    allowedHosts:
+      - 127.0.0.1:11434
+    dataEgress: local_only
+    filesystem:
+      readOnly: true
+      writablePaths: []
+  artifacts:
+    form: local_native
+    image: local:plugins/python/processors/vlm-moondream
+    digest: sha256:d9dddf2043abba0b7847425ac749799044345cb3d3e8a4be17f587c21cb7205e
+    sbom: sbom.cdx.json
+    signatureUnavailableReason: local_native_plugin_is_not_signed_in_v1

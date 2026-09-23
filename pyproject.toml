@@ -3,15 +3,16 @@ name = "sensoryplex"
 version = "0.1.0"
 description = "Edge multimodal material runtime development workspace"
 requires-python = ">=3.12,<3.13"
-dependencies = ["edge-material-sdk", "sensoryplex-gateway"]
+dependencies = ["edge-material-plugin-vlm-moondream", "edge-material-sdk", "sensoryplex-gateway"]
 
 [tool.uv]
 package = false
 
 [tool.uv.workspace]
-members = ["plugins/python/common", "services/gateway"]
+members = ["plugins/python/common", "plugins/python/processors/vlm-moondream", "services/gateway"]
 
 [tool.uv.sources]
+edge-material-plugin-vlm-moondream = { workspace = true }
 edge-material-sdk = { workspace = true }
 sensoryplex-gateway = { workspace = true }
 

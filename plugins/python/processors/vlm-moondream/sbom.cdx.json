@@ -1,0 +1,36 @@
+{
+  "bomFormat": "CycloneDX",
+  "components": [
+    {
+      "name": "edge-material-sdk",
+      "type": "library",
+      "version": "unspecified"
+    },
+    {
+      "name": "grpcio>=1.71,<1.72",
+      "type": "library",
+      "version": "unspecified"
+    }
+  ],
+  "metadata": {
+    "component": {
+      "name": "edge-material-plugin-vlm-moondream",
+      "properties": [
+        {
+          "name": "sensoryplex:package_digest",
+          "value": "sha256:d9dddf2043abba0b7847425ac749799044345cb3d3e8a4be17f587c21cb7205e"
+        }
+      ],
+      "type": "application",
+      "version": "0.1.0"
+    },
+    "tools": [
+      {
+        "name": "sensoryplex-plugin-artifact",
+        "version": "0.1.0"
+      }
+    ]
+  },
+  "specVersion": "1.5",
+  "version": 1
+}

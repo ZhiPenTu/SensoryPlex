@@ -4,7 +4,7 @@ COMPOSE = docker compose --env-file .env -f deploy/compose/docker-compose.poc.ym
 STREAM_COMPOSE = docker compose -f deploy/compose/docker-compose.stream.yml
 
 .PHONY: setup configure proto check test integration format infra up down migrate gateway runtime pipeline-check runtime-smoke gateway-smoke media-replay media-check handoff-check backpressure-check
-.PHONY: stream-up stream-down stream-status stream-logs live-check
+.PHONY: stream-up stream-down stream-status stream-logs live-check model-check plugin-artifact
 setup: configure
 	$(UV) sync --frozen
 	$(MAKE) proto
@@ -25,6 +25,7 @@ check:
 	$(CARGO) clippy --workspace --all-targets --locked -- -D warnings
 	$(UV) run ruff check .
 	$(UV) run ruff format --check .
+	$(UV) run python tools/plugin_artifact.py --check plugins/python/processors/vlm-moondream
 	$(MAKE) test
 
 test:
@@ -109,3 +110,18 @@ handoff-check:
 	@test -n "$(MEDIA)" || { echo "usage: make handoff-check MEDIA=/absolute/path/to/authorized-sample.mp4"; exit 1; }
 	$(CARGO) build --locked --release -p sensoryplex-runtime --features "$(MEDIA_FEATURES)"
 	$(UV) run python tools/verify_handoff.py --media "$(MEDIA)"
+
+# 插件产物：复算插件包摘要并生成 SBOM。digest 必须与代码一致，不允许占位串（ADR-012）。
+plugin-artifact:
+	$(UV) run python tools/plugin_artifact.py --sbom plugins/python/processors/vlm-moondream
+	$(UV) run python tools/plugin_artifact.py plugins/python/processors/vlm-moondream
+	$(UV) run python tools/plugin_artifact.py --check plugins/python/processors/vlm-moondream
+	$(UV) run python tools/validate_plugin.py plugins/python/processors/vlm-moondream/plugin.yaml
+
+# 模型插件链路验收（M8）：真实帧 → 本机 VLM → 带时间锚点/来源/版本/置信度语义的 observation。
+# 前置：本机模型服务（默认 http://127.0.0.1:11434）与已拉取的视觉模型；不可达即显式失败，不跳过。
+model-check:
+	@test -n "$(MEDIA)" || { echo "usage: make model-check MEDIA=/absolute/path/to/authorized-sample.mp4"; exit 1; }
+	$(CARGO) build --locked --release -p sensoryplex-runtime --features "$(MEDIA_FEATURES)"
+	$(UV) run python tools/plugin_artifact.py --check plugins/python/processors/vlm-moondream
+	$(UV) run python tools/verify_model.py --media "$(MEDIA)" $(if $(MODEL),--model "$(MODEL)",)

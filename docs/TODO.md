@@ -37,8 +37,8 @@
 - 结果：视频帧在进入 arena 前判定，声明 keep（首帧/内容变化/静止心跳）或带原因的 skip；
   `adaptive_sampling_not_implemented` 已从 `blockers` 移除；7 个真实样本（含 `video/1.mp4`）全部通过，
   静止类保留率 0.35%、翻页类 0.87–0.96%、运动类 1.78%。
-- 仍未验证（不要当成已完成）：覆盖率是帧数口径，**语义**覆盖要等 M8 接入模型才能验证；
-  样本仍全是 CFR，VFR 下的抽帧语义没有样本。
+- 仍未验证（不要当成已完成）：覆盖率是**帧数**口径；M8 已接入 VLM，但抽帧的**语义**覆盖
+  （被跳过的帧是否漏掉语义变化）仍没有用模型输出度量；样本仍全是 CFR，VFR 下的抽帧语义没有样本。
 - 注意（保持有效）：不得把"静止段跳过"实现成静默丢帧——跳过必须可计数、可解释。
 
 ### M2 背压与队列可观察
@@ -55,7 +55,8 @@
   用户 OBS 直播实测（10–20 秒窗口）得到非零指标，且消费者真拿到视频帧（`video_buffers=3`）。
 - 仍未验证（不要当成已完成）：GStreamer `queue` 与 `appsink max_buffers` **没有计数出口**，
   不在报告内；只在本机回环与 `macos-aarch64` 验收；未验证小时级长直播与唯一 kind 长期贴住配额的尾延迟；
-  单一种类流只能用一半窗口是显式接受的代价。模型 worker（M8）仍未接入。
+  单一种类流只能用一半窗口是显式接受的代价。模型 worker 已在 M8 接入 VLM 插件（见下方 §M8），
+  但本节结论只覆盖保留表与 arena，不因此改变。
 
 ### M3 lease 消费方（跨进程数据面）
 
@@ -67,7 +68,8 @@
   越界/非法窗口/重复领取/迟到释放/过期 TTL 各得到稳定拒绝码，
   `offered == retained_total + retain_rejections`、`retained_total == retained + released + expired`、
   `arena_live_slabs == 0`，且 `offered` 与 `ReplayReport` 的交接样本数一致。
-- 仍未验证（不要当成已完成）：消费方是**验收脚本不是模型 worker**，语义链路（M8）没有进展；
+- 仍未验证（不要当成已完成）：本节的消费方仍是**验收脚本** `handoff_worker.py`；模型消费方见 §M8
+  （`tools/ai_worker.py` + 插件），但那只证明 lease 路径可承载模型，不改变本节结论；
   同 UID 进程间没有逐 buffer 内存隔离（lease 不是隔离，见 ADR-010）；只在本机回环验证过，
   跨主机不适用；`macos-aarch64` 之外未验收；未验证长时间运行的段清理与强杀后的段残留。
 - 注意（保持有效）：一次没有 `--handoff-listen` 的 replay 必须继续报 `handoff_state=not_exercised`，
@@ -115,9 +117,24 @@
 
 ### M8 模型插件（ASR/OCR/VLM/BGE）
 
-- 现状：完全未接入，CoreML/Metal 报 `execution_backend_not_implemented`。
-- 前置已满足：M1（抽帧）与 M3（跨进程数据面）都已完成；本项仍未开始，没有任何模型被接入。
-- 验收：至少一个模型在真实样本上产出带时间锚点、来源、版本与置信度语义的 observation。
+- 状态：**进行中**——第一个真实端侧模型（VLM）已接入并通过验收；ASR/OCR/BGE 与 CoreML/Metal 仍未做。
+  证据见 `docs/verification.md` "M8 模型插件：真实 VLM 端侧接入与观察语义"；设计决策见
+  [ADR-012](adr/ADR-012-模型插件与端侧推理边界.md)。
+- 已完成（VLM）：`plugins/python/processors/vlm-moondream` 消费 Runtime 数据面里的真实视频帧
+  （经 `LeaseBufferReader` 读字节，非文件名），调用**本机** ollama 的 `moondream:v2` 产出
+  `observation.vision.scene_description`：锚点等于源帧半开区间（`timing_source=media_pts`）、
+  `content_hash` 等于该帧 lease 窗口摘要、`modelArtifactDigest` 等于模型服务实测摘要、
+  `confidence` 显式缺省并写 `model_does_not_report_calibrated_confidence`。
+  `make model-check MEDIA=video/1.mp4` 四进程（编排/生产者/插件/worker）通过：2 帧真实推理，
+  单帧端到端 0.6–2.2 s，账目 `released_total=24 retained=0 arena_live_slabs=0`。
+- 验收暴露并修掉 4 个真实缺陷（GET/POST 误用、空闲超时过短、消费者未归还非视频条目、验收脚本键名），详见 ADR-012 §7。
+- 仍未验证（不要当成已完成）：只有 VLM 一个模型，ASR/OCR/BGE 未接入；CoreML/Metal 仍
+  `execution_backend_not_implemented`；`local_native` 插件**未签名**（只在 manifest 写明原因），
+  签名/SBOM 只有结构预检；未做 worker 的 durable 幂等、lease 崩溃回收、沙箱与无外网策略的强制执行；
+  `golden_path_verified` 恒为 false；只在本机回环 `macos-aarch64` 验收，`linux-x86_64` 与 Mac mini / 跨机未验证。
+- 仍未验证（模型质量）：`moondream:v2` 输出**不稳定**，同一帧两次推理可能不同，本轮实测到一次退化输出。
+  本项只保证**链路语义**正确，不保证**描述可用**。
+- 剩余子项：ASR（音频段 → 文本）、OCR、BGE（向量），以及按机型档位选择模型（依赖 M5）。
 
 ### M9 格式准入与显式拒绝（ADR-009，新增格式之前必须先做）
 

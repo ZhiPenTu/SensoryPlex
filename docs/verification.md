@@ -591,7 +591,80 @@ retained_total == retained + released_total + expired_total        # 每条保�
 - 只在本机回环与 `macos-aarch64` 验收；`linux-x86_64`、Mac mini / 跨机未验证。
 - 未验证小时级长直播，也未验证唯一 kind 长时间贴住配额时的尾延迟（当前只观察了 10–20 秒窗口）。
 - **单一种类流只能用一半窗口**（如纯音频直播 `retained_limit=32` 实际 16 条）是 ADR-011 显式接受的代价。
-- 模型 worker 未接入（M8）：本节只证明"视频帧能交出去"，不证明语义链路可用。
-- `make live-check` 五场景因 OBS 直播占用 `live/obs`（`overridePublisher: false`）本轮未复跑；
-  直播侧证据来自上述 OBS 实测与同一条流上的场景函数复跑（`steady`/`live_handoff` 均 PASS）。
+- 模型 worker 未在本节接入：M2 只证明"视频帧能交出去"。语义链路见下方"M8"一节（已接入 VLM）。
 - 运行时解码仍有一条 macOS GL 警告（`GStreamer-GL-WARNING ... NSApplication`），不影响结果。
+
+**五场景复跑（`make live-check`，OBS 停流后，2026-09-23，全部 PASS）：** 本轮改动的场景函数与断言
+在**脚本自带发布端**（GStreamer `srtsink` 直推）上同样通过，说明直播侧结论不是靠 OBS 会话"恰好成立"：
+
+| 场景 | 结果 |
+| --- | --- |
+| `steady` | `samples=958`、`descriptors_validated=660`（0 失败）、`stalls=0`、`blockers=[]`、`observed=false state=ok` |
+| `videotoolbox_video` | `video samples=3`、`duration_derived_samples=3`、`854x480`，无 `duration_unavailable` |
+| `stall_recovery` | `samples=1232`、`stalls=1`、`stalled_ms=4681`（started=7423 ended=12104，`pts_jump_ms=4674`）、`recovered=true` |
+| `no_source` | exit 1、`live_window_produced_no_samples`、`samples=0`（不制造空成功） |
+| `live_handoff` | `samples=693`、`table=18/18/32`、`kind=16/16/16`、`dropped=473 reasons=473 kinds=473`、`throttled=129`、`released=17`、`residency_samples=18 max_ms=9580`；消费者 `video_buffers=2 audio_buffers=16`，独立进程 70 项通过 |
+
+**再次复跑（2026-09-23，OBS 停流后，5/5 PASS）：** 上述结论可复现。同一轮 `live_handoff` 实测
+`samples=690`、`table=18/18/32`、`kind=16/16/16`、`dropped=470 reasons=470 kinds=470`
+（拒绝原因只有 `handoff_kind_quota_full`）、`throttled=129`、`released=17`、
+`residency_samples=18 max_ms=9568`，消费者 `video_buffers=2 audio_buffers=16`，
+`released+expired+retained=18 == retained_total=18`、`arena_live_slabs=0`；
+其余四场景（`steady`/`videotoolbox_video`/`stall_recovery`/`no_source`）同样 PASS。
+运行后 `live/obs` 回到 `state=notReady`（用户 OBS 已停）。
+
+### M8 模型插件：真实 VLM 端侧接入与观察语义（2026-09-23）
+
+本节记录 M8 的第一步：把**真实模型**接到 M1/M3 之后的链路上。消费方不再只是验收脚本，而是
+一个**独立插件进程** + 一个**只做发现与调用的 worker**。决策与边界见
+[ADR-012](adr/ADR-012-模型插件与端侧推理边界.md)，契约见 [契约文档](contracts/README.md)
+的"模型插件契约"，插件开发说明见 [plugins/python/README.md](../plugins/python/README.md)。
+
+**接入的模型：** 本机 ollama（v0.4.1）上的 `moondream:v2`（VLM，1.7 GB，端侧推理，不出网）。
+模型身份**来自服务本身**：`GET /api/tags` 报告
+`digest=ad0714b7b564d9f658cb78befffffb74d688bfa8e624a557152518aa8bff159e`，插件据此拼出
+`modelArtifactDigest=sha256:ad0714b7…`、`modelReleaseId=ollama:moondream:v2@ad0714b7b564`、
+`executionBackend=ollama-0.4.1`。
+
+**四进程（编排 / 生产者 runtime / 插件 / worker）**，`make model-check MEDIA=video/1.mp4`
+在授权样本 `video/1.mp4` 上通过（`model acceptance: real frames -> local VLM -> anchored observations passed`）：
+
+| 观察项 | 实测值（2 帧） |
+| --- | --- |
+| 帧锚点（`time_range` = 源帧半开区间） | `[0,33)`、`[4000,4033)`，`timing_source=media_pts` |
+| `content_hash`（= 该帧 lease 窗口摘要） | `sha256:beabe84d…`、`sha256:97f95fd2…`，与 `source_digest` 逐位相等 |
+| `observation_id` | `obs_ffe95468…`、`obs_f0437ef0…`（由稳定输入派生，唯一） |
+| `modelArtifactDigest` | `sha256:ad0714b7…`（= ollama 实测摘要） |
+| 置信度语义 | `confidence` 缺省 + `confidence_unavailable_reason=model_does_not_report_calibrated_confidence` |
+| 插件产物摘要 | `sha256:d9dddf20…`（= 本机复算，`plugin_artifact.py --check` 通过） |
+| 单帧端到端耗时 | 0.63 s / 1.13 s（读字节 + 推理 + 归还） |
+| 账目（运行中） | `retained_by_kind={audio_pcm:16, video_frame:8}` |
+| 账目（收尾） | `released_total=24 retained=0 expired=0 retained_total=24`、`arena_live_slabs=0` |
+| 消费者归还 | `drain.discarded=22 failures=[]`（不消费的音频条目显式 `discard`） |
+| 帧字节不外泄 | worker 报告与插件 stdout 中无媒体名/路径/URI/段名/base64 像素（脚本断言） |
+
+**验收暴露并修掉的 4 个真实缺陷**（不是"一次就过"）：
+
+| # | 现象 | 根因 | 修复 |
+| --- | --- | --- | --- |
+| 1 | `model_endpoint_http_404` | `/api/tags`、`/api/version` 是 GET，却被写成 POST | `_request_json(body=None → GET)`，不设"两个都试"的兜底 |
+| 2 | `data_plane_stats_failed:UNAVAILABLE` | 数据面空闲超时 4 s < 单帧推理时间，推理期无 RPC → 数据面中途关闭 | 验收 `IDLE_TIMEOUT_MS=60_000` |
+| 3 | `handoff_lease_accounting_failed: retained_total=24 released=1 expired=0 still_retained=23` | 消费者只归还消费的视频帧，未处理音频条目；数据面要求每条保留有归宿 | worker 增加 drain 循环显式 `reader.discard()`；验收断言 `failures` 空且 `discarded>0` |
+| 4 | 验收误报"无匹配帧 / id 不唯一" | worker 用 proto-JSON 小驼峰 `observationId`，验收脚本按 snake_case 取值 | 验收脚本改读 `observationId` |
+
+**测试与静态检查：** `make check` 通过（含新增 `tests/contracts/test_model_plugin_contract.py` 12 项，
+覆盖插件 manifest 形态、身份探测、buffer 输入拒绝路径、`buffer_reader_not_attached`、
+`unsupported_memory_kind`、observation 锚点/摘要/置信度语义）；`ruff check` / `ruff format --check` 全绿；
+`make check` 内含 `tools/plugin_artifact.py --check`，确保 manifest 的 digest 不是占位串。
+
+**仍未验证（不得当作完成）：**
+
+- 只有 VLM 一个模型：ASR / OCR / BGE **未接入**；CoreML / Metal 仍 `execution_backend_not_implemented`。
+- **模型输出质量不稳定**：`moondream:v2` 是极小 VLM，同一帧两次推理可能给出不同文本，
+  本轮实测到一次明显退化输出（非空、但明显是幻觉）。此项只证明**链路语义**正确，
+  **不**证明描述可用；本节的 `payload.text` 不作为语义质量证据。
+- `local_native` 插件**未签名**（只在 manifest 写 `signatureUnavailableReason`），
+  签名 / SBOM 只有结构预检，没有真实验签。
+- 未做 worker 的 durable 幂等、插件崩溃后的 lease 回收、沙箱与"无外网"策略的强制执行。
+- `golden_path_verified` 恒为 false；2–5 秒语义可见性未测；小时级长直播未测。
+- 只在本机回环 `macos-aarch64` 验收；`linux-x86_64`、Mac mini / 跨机未验证。

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sensoryplex:plugin:vlm-moondream:config:v1",
+  "title": "vlm-moondream Start(config)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["handoff_endpoint"],
+  "properties": {
+    "handoff_endpoint": {
+      "type": "string",
+      "description": "Runtime 数据面 gRPC 地址（只允许 host:port，不含 scheme）"
+    },
+    "endpoint": {
+      "type": "string",
+      "default": "http://127.0.0.1:11434",
+      "description": "本机模型服务地址；必须显式写出 host"
+    },
+    "model": {"type": "string", "default": "moondream:v2"},
+    "prompt": {"type": "string", "default": "Describe what is visible in this image in one sentence."},
+    "ttl_ms": {"type": "integer", "minimum": 50, "maximum": 60000, "default": 30000},
+    "timeout_s": {"type": "number", "exclusiveMinimum": 0, "default": 180}
+  }
+}

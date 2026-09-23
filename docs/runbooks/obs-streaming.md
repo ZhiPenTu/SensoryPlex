@@ -153,7 +153,8 @@ gst-launch-1.0 -e -v \
 - 验收后容器 CPU 0.07%、内存约 45.72 MiB / 128 MiB（单次采样，非压测结论），无 OOM 或重启。
 - `make integration`：3 项通过；`make check` 在 Rust 格式检查处被已有的 arena/handoff/shm/runtime
   未格式化改动阻断，其余检查没有执行；未改动这些工作区文件。Compose 校验与 `git diff --check` 通过。
-- 用户 OBS 的 **SRT 直推**已于同日实测（见下一小节）；SRT 加密、带凭据 publish 与模型链路仍未验证；
+- 用户 OBS 的 **SRT 直推**已于同日实测（见下一小节）；SRT 加密与带凭据 publish 仍未验证；
+  模型链路（VLM）已在 M8 接入并通过验收（见 [验证记录](../verification.md) 的"M8"一节）；
   `golden_path_verified=false`。
 - Runtime 的 SRT 接入与断流重连随后已在同一套接入层上验收（发布端为 GStreamer `srtsink` 直推，
   四个场景见 [验证记录](../verification.md) 的"M4"一节）；本轮记录里的 RTMP 发布路径仍然有效。

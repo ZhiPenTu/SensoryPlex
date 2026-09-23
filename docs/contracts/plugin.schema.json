@@ -4,102 +4,414 @@
   "title": "SensoryPlex Plugin Manifest v1 (preview)",
   "type": "object",
   "additionalProperties": false,
-  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "required": [
+    "apiVersion",
+    "kind",
+    "metadata",
+    "spec"
+  ],
   "properties": {
-    "apiVersion": {"const": "edge.material.plugin/v1"},
-    "kind": {"enum": ["SourcePlugin", "ProcessorPlugin", "SinkPlugin", "ExecutionBackendPlugin", "EnricherPlugin"]},
+    "apiVersion": {
+      "const": "edge.material.plugin/v1"
+    },
+    "kind": {
+      "enum": [
+        "SourcePlugin",
+        "ProcessorPlugin",
+        "SinkPlugin",
+        "ExecutionBackendPlugin",
+        "EnricherPlugin"
+      ]
+    },
     "metadata": {
       "type": "object",
-      "required": ["name", "version", "vendor", "license", "description"],
+      "required": [
+        "name",
+        "version",
+        "vendor",
+        "license",
+        "description"
+      ],
       "additionalProperties": false,
       "properties": {
-        "name": {"type": "string", "pattern": "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*){2,}$"},
-        "version": {"type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?$"},
-        "displayName": {"type": "string"},
-        "vendor": {"type": "string", "minLength": 1},
-        "license": {"type": "string", "minLength": 1},
-        "description": {"type": "string", "minLength": 1},
-        "homepage": {"type": "string"},
-        "source": {"type": "string"},
-        "support": {"type": "string"}
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*){2,}$"
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?$"
+        },
+        "displayName": {
+          "type": "string"
+        },
+        "vendor": {
+          "type": "string",
+          "minLength": 1
+        },
+        "license": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "homepage": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "support": {
+          "type": "string"
+        }
       }
     },
     "spec": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["sdk", "entrypoint", "capabilities", "resources", "security", "artifacts"],
+      "required": [
+        "sdk",
+        "entrypoint",
+        "capabilities",
+        "resources",
+        "security",
+        "artifacts"
+      ],
       "properties": {
         "sdk": {
-          "type": "object", "required": ["runtime", "protocol"], "additionalProperties": false,
-          "properties": {"runtime": {"type": "string", "minLength": 1}, "protocol": {"const": "v1"}}
+          "type": "object",
+          "required": [
+            "runtime",
+            "protocol"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "runtime": {
+              "type": "string",
+              "minLength": 1
+            },
+            "protocol": {
+              "const": "v1"
+            }
+          }
         },
         "entrypoint": {
-          "type": "object", "required": ["transport", "command", "port"], "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "transport",
+            "command",
+            "port"
+          ],
+          "additionalProperties": false,
           "properties": {
-            "transport": {"const": "grpc"},
-            "command": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
-            "port": {"type": "integer", "minimum": 1, "maximum": 65535}
+            "transport": {
+              "const": "grpc"
+            },
+            "command": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            }
           }
         },
         "capabilities": {
-          "type": "object", "required": ["consumes", "produces", "supports"], "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "consumes",
+            "produces",
+            "supports"
+          ],
+          "additionalProperties": false,
           "properties": {
-            "consumes": {"$ref": "#/$defs/strings"},
-            "produces": {"$ref": "#/$defs/strings"},
-            "acceptsMemoryKinds": {"type": "array", "uniqueItems": true, "items": {"enum": ["cpu_shared_memory", "file_object_ref", "cuda_ipc", "dma_buf"]}},
-            "ordering": {"enum": ["none", "per_stream"]},
+            "consumes": {
+              "$ref": "#/$defs/strings"
+            },
+            "produces": {
+              "$ref": "#/$defs/strings"
+            },
+            "acceptsMemoryKinds": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "cpu_shared_memory",
+                  "file_object_ref",
+                  "cuda_ipc",
+                  "dma_buf"
+                ]
+              }
+            },
+            "ordering": {
+              "enum": [
+                "none",
+                "per_stream"
+              ]
+            },
             "supports": {
-              "type": "object", "required": ["cancellation", "retry"], "additionalProperties": false,
-              "properties": {"batch": {"type": "boolean"}, "cancellation": {"const": true}, "retry": {"const": "idempotent"}, "hotReload": {"type": "boolean"}}
+              "type": "object",
+              "required": [
+                "cancellation",
+                "retry"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "batch": {
+                  "type": "boolean"
+                },
+                "cancellation": {
+                  "const": true
+                },
+                "retry": {
+                  "const": "idempotent"
+                },
+                "hotReload": {
+                  "type": "boolean"
+                }
+              }
             }
           }
         },
         "resources": {
-          "type": "object", "required": ["cpu", "memory", "maxConcurrency", "maxBatchSize", "defaultDeadlineMs"], "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "cpu",
+            "memory",
+            "maxConcurrency",
+            "maxBatchSize",
+            "defaultDeadlineMs"
+          ],
+          "additionalProperties": false,
           "properties": {
-            "cpu": {"type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?$", "not": {"pattern": "^0+(\\.0+)?$"}},
-            "memory": {"type": "string", "pattern": "^[1-9][0-9]*(Mi|Gi)$"},
-            "maxConcurrency": {"type": "integer", "minimum": 1, "maximum": 1024},
-            "maxBatchSize": {"type": "integer", "minimum": 1, "maximum": 65536},
-            "defaultDeadlineMs": {"type": "integer", "minimum": 1},
+            "cpu": {
+              "type": "string",
+              "pattern": "^[0-9]+(\\.[0-9]+)?$",
+              "not": {
+                "pattern": "^0+(\\.0+)?$"
+              }
+            },
+            "memory": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*(Mi|Gi)$"
+            },
+            "maxConcurrency": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1024
+            },
+            "maxBatchSize": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65536
+            },
+            "defaultDeadlineMs": {
+              "type": "integer",
+              "minimum": 1
+            },
             "gpu": {
-              "type": "object", "required": ["required", "count"], "additionalProperties": false,
-              "properties": {"required": {"type": "boolean"}, "count": {"type": "integer", "minimum": 0}, "memory": {"type": "string"}},
-              "if": {"properties": {"required": {"const": true}}},
-              "then": {"properties": {"count": {"minimum": 1}}}
+              "type": "object",
+              "required": [
+                "required",
+                "count"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "required": {
+                  "type": "boolean"
+                },
+                "count": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "memory": {
+                  "type": "string"
+                }
+              },
+              "if": {
+                "properties": {
+                  "required": {
+                    "const": true
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "count": {
+                    "minimum": 1
+                  }
+                }
+              }
             }
           }
         },
         "config": {
-          "type": "object", "additionalProperties": false,
-          "properties": {"schema": {"type": "string"}, "secretRefs": {"$ref": "#/$defs/strings"}}
-        },
-        "security": {
-          "type": "object", "required": ["network", "filesystem", "dataEgress"], "additionalProperties": false,
+          "type": "object",
+          "additionalProperties": false,
           "properties": {
-            "network": {"enum": ["none", "allowlist"]},
-            "allowedHosts": {"$ref": "#/$defs/strings"},
-            "dataEgress": {"const": "local_only"},
-            "filesystem": {
-              "type": "object", "required": ["readOnly", "writablePaths"], "additionalProperties": false,
-              "properties": {"readOnly": {"const": true}, "writablePaths": {"$ref": "#/$defs/strings"}}
+            "schema": {
+              "type": "string"
+            },
+            "secretRefs": {
+              "$ref": "#/$defs/strings"
             }
-          },
-          "if": {"properties": {"network": {"const": "allowlist"}}},
-          "then": {"required": ["allowedHosts"], "properties": {"allowedHosts": {"minItems": 1}}}
-        },
-        "artifacts": {
-          "type": "object", "required": ["image", "digest", "sbom", "signature"], "additionalProperties": false,
-          "properties": {
-            "image": {"type": "string", "minLength": 1, "not": {"pattern": ":latest$"}},
-            "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
-            "sbom": {"type": "string", "minLength": 1},
-            "signature": {"type": "string", "minLength": 1}
           }
         },
-        "vendor_extensions": {"type": "object"}
+        "security": {
+          "type": "object",
+          "required": [
+            "network",
+            "filesystem",
+            "dataEgress"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "network": {
+              "enum": [
+                "none",
+                "allowlist"
+              ]
+            },
+            "allowedHosts": {
+              "$ref": "#/$defs/strings"
+            },
+            "dataEgress": {
+              "const": "local_only"
+            },
+            "filesystem": {
+              "type": "object",
+              "required": [
+                "readOnly",
+                "writablePaths"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "readOnly": {
+                  "const": true
+                },
+                "writablePaths": {
+                  "$ref": "#/$defs/strings"
+                }
+              }
+            }
+          },
+          "if": {
+            "properties": {
+              "network": {
+                "const": "allowlist"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "allowedHosts"
+            ],
+            "properties": {
+              "allowedHosts": {
+                "minItems": 1
+              }
+            }
+          }
+        },
+        "artifacts": {
+          "type": "object",
+          "required": [
+            "image",
+            "digest",
+            "sbom"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "form": {
+              "enum": [
+                "container",
+                "local_native"
+              ],
+              "default": "container",
+              "description": "container=镜像形态；local_native=宿主常驻进程（macOS launchd 等），不是镜像"
+            },
+            "image": {
+              "type": "string",
+              "minLength": 1
+            },
+            "digest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "description": "插件产物的规范摘要；local_native 形态下是插件包内容摘要，必须可复算"
+            },
+            "sbom": {
+              "type": "string",
+              "minLength": 1
+            },
+            "signature": {
+              "type": "string",
+              "minLength": 1
+            },
+            "signatureUnavailableReason": {
+              "type": "string",
+              "minLength": 1,
+              "description": "没有签名时写明确原因（例如 local_native 形态本版本不签名），不用占位串冒充签名"
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "form": {
+                    "const": "local_native"
+                  }
+                },
+                "required": [
+                  "form"
+                ]
+              },
+              "then": {
+                "required": [
+                  "signatureUnavailableReason"
+                ],
+                "properties": {
+                  "image": {
+                    "pattern": "^local:"
+                  }
+                }
+              },
+              "else": {
+                "required": [
+                  "signature"
+                ],
+                "properties": {
+                  "image": {
+                    "not": {
+                      "pattern": ":latest$"
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "vendor_extensions": {
+          "type": "object"
+        }
       }
     }
   },
-  "$defs": {"strings": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}}
+  "$defs": {
+    "strings": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
 }

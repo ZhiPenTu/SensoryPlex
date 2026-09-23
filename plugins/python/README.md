@@ -9,7 +9,31 @@
 
 这只是 SDK building block，不会自动启动 gRPC worker 或装载模型。插件实现必须使用
 稳定输入和版本派生输出 ID，并在 worker 中完成 durable 幂等、生命周期、lease 回收。
-CPU/GPU buffer 映射尚未实现，此版本 SDK 对 buffer 输入返回明确不支持。
+
+## buffer 输入
+
+插件只能访问 `cpu_shared_memory`，且 **必须** 经 `edge_material_sdk.LeaseBufferReader`
+读字节，不能直接拿 descriptor 当数据：
+
+```python
+from edge_material_sdk import LeaseBufferReader, ProcessorPlugin
+
+
+class MyPlugin(ProcessorPlugin):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)  # buffer_reader 在 gRPC Start 时按 config 附加
+
+
+# gRPC 服务的 Start 处理里（数据面地址来自 Start(config) 的 handoff_endpoint）：
+plugin.buffer_reader = LeaseBufferReader(config["handoff_endpoint"], ttl_ms=ttl_ms)
+```
+
+reader 走真实路径（gRPC Acquire → `shm_open`+`mmap` → 摘要校验 → Release），并在
+`process()` 里对不消费的条目显式 `discard()`——数据面要求每条保留都有归宿。SDK 未挂
+reader 时对 buffer 输入返回 `buffer_reader_not_attached`；非 `cpu_shared_memory` 的
+descriptor 返回 `unsupported_memory_kind:*`；两者都不静默跳过。GPU / unified memory
+映射尚未实现，因此插件**不得**声明这些 kind。完整工作样例见
+`plugins/python/processors/vlm-moondream`，边界见 [ADR-012](../../docs/adr/ADR-012-模型插件与端侧推理边界.md)。
 
 Manifest 检查：
 

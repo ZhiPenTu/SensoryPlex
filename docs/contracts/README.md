@@ -169,6 +169,27 @@ reserved，破坏语义的修改进入新的协议 major。当前为开发预览
 - 覆盖边界：三条队列覆盖 arena 与保留表；GStreamer `queue` 元素与 `appsink max_buffers`
   **没有计数出口**，不在本报告内，不能据此宣称"全链路队列都可观察"。
 
+模型插件契约（`runtime/v1/plugin.proto` + `docs/contracts/plugin.schema.json`，
+工作样例见 `plugins/python/processors/vlm-moondream`，设计决策见
+[ADR-012](../adr/ADR-012-模型插件与端侧推理边界.md)）：
+
+- 模型身份来自**模型服务实测**（`GET /api/tags` 的 `digest`），不是插件写死的版本号；
+  条目缺失或摘要不可用即拒绝启动（`model_not_available` / `model_artifact_digest_unavailable`）。
+  `provenance.modelArtifactDigest` 必须与模型服务当前报告的摘要逐位相等。
+- 模型不提供校准置信度时，`confidence` **留空**并写 `confidence_unavailable_reason`
+  （本插件为 `model_does_not_report_calibrated_confidence`）；**禁止**填一个看似合理的数字。
+- observation 必须绑定到具体字节：`time_range` 等于源 descriptor 的半开区间（`timing_source=media_pts`，
+  不重新计时）、`content_hash` 等于该帧 lease 窗口摘要、`observation_id` 由稳定输入派生（可复现）。
+- 插件产物摘要必须**可复算**：范围为 `pyproject.toml` + `src/**`（排除 `__pycache__`/`.pyc`），
+  由 `tools/plugin_artifact.py` 生成与 `--check` 校验；manifest 里的 `digest` 不允许占位串，
+  启动时 `--expect-digest` 不匹配即 `exit 2`。`artifacts.form` 为 `container`（缺省，强制 `signature`）
+  或 `local_native`（要求 `image` 以 `local:` 开头且必须写 `signatureUnavailableReason`）。
+- buffer 输入只允许 `cpu_shared_memory`，且必须经 `edge_material_sdk.LeaseBufferReader`
+  （Acquire → `shm_open`+`mmap` → 摘要校验 → Release）；SDK 未挂 reader 时返回
+  `buffer_reader_not_attached`，非该 kind 返回 `unsupported_memory_kind:*`，均不静默跳过。
+- 帧字节不进日志/控制消息/返回 payload；消费方必须为每条保留给出归宿
+  （读完即 Release，不消费的条目显式 `discard`），保证 `released+expired+retained == retained_total`。
+
 媒体格式准入契约（ADR-009，**[媒体格式支持矩阵与拒绝语义](../adr/ADR-009-媒体格式支持矩阵与拒绝语义.md)**，
 以下为待实现要求，当前状态见 [实现状态](../implementation-status.md)）：
 

@@ -8,18 +8,19 @@
 | --- | --- | --- |
 | Rust Core | 6 crate workspace、Proto、配置校验、有界队列、descriptor 校验 | Pipeline 生命周期、调度、进程与 lease 实际管理 |
 | Runtime 服务 | gRPC Health + DescribeCapabilities（平台、宿主内存、允许的 memory kind、每个不可用后端的原因） | NATS JetStream 指令与任务分发 |
-| Python SDK | Proto 绑定、输入校验、deadline、取消 token、并发限制、结构化错误 | worker lifecycle gRPC server、持久幂等与 lease 释放 |
+| Python SDK | Proto 绑定、输入校验、deadline、取消 token、并发限制、结构化错误；worker 侧生命周期 gRPC 服务、`LeaseBufferReader` 读字节与 lease 归还（已在 vlm-moondream 插件落地，见 ADR-012） | 持久幂等、崩溃后的 lease 回收、沙箱与外发策略执行 |
 | Timeline | Material/Observation 校验 | ASR/OCR/VLM 实际融合、冲突判定 |
 | PostgreSQL | 显式迁移、不可变素材与模型版本、来源校验、事务 outbox | 保留与归档策略、outbox 消费与补偿 |
 | Gateway | Bearer 认证、owner 过滤、素材详情、历史版本、关键词/标签/时间查询 | 外部鉴权、语义检索、短期媒体授权 URL |
 | 存储/硬件 | Rust adapter traits，模型与配置 hash 契约 | NAS/MinIO/Milvus、ONNX/TensorRT 实现 |
-| 直播接入基础设施 | 本机 MediaMTX 1.21.1（独立 Compose，仅回环端口）；SRT 直推（GStreamer `srtsink` 与用户自有 OBS）与 Runtime `ingest` 已打通：稳定窗口、断流恢复、无源失败、实时数据面交接四个场景通过，OBS 真实直推亦实测（无 timing 码流的视频时长按 PTS 差分补齐），见 `docs/verification.md` | Mac mini / 跨机部署、SRT 加密与带凭据 publish、`linux-x86_64` 侧验收；服务器上有流不等于模型链路可用 |
-| 媒体与模型 | Pipeline 配置、真实媒体 probe 工具、ffprobe 锚点回放，GStreamer 真实解码 → arena → `BufferDescriptor` → lease 签发/校验/释放 → 音频 5 秒切段，视频自适应抽帧（keep/skip 全部带原因，7 个真实样本通过），跨进程数据面：Runtime 保留字节、独立进程按 lease 读取（3 个样本 × 2 个场景通过，具备有界容量与稳定拒绝码），SRT 实时接入 `ingest`（`make live-check` 四个场景通过），以及背压与队列可观察：三条有界队列的深度/峰值/容量、按原因与按种类的丢弃、lease 等待时间（`verify_backpressure.py` 4 场景 + OBS 直播实测，见 `docs/verification.md`） | **模型 worker**（当前消费方是验收脚本，不是推理进程）、媒体格式准入（ADR-009）；ASR/OCR/VLM/BGE 插件 |
+| 直播接入基础设施 | 本机 MediaMTX 1.21.1（独立 Compose，仅回环端口）；SRT 直推（GStreamer `srtsink` 与用户自有 OBS）与 Runtime `ingest` 已打通：稳定窗口、断流恢复、无源失败、实时数据面交接、VideoToolbox 视频五个场景通过，OBS 真实直推亦实测（无 timing 码流的视频时长按 PTS 差分补齐），见 `docs/verification.md` | Mac mini / 跨机部署、SRT 加密与带凭据 publish、`linux-x86_64` 侧验收；服务器上有流不等于语义链路可用 |
+| 媒体与模型 | Pipeline 配置、真实媒体 probe 工具、ffprobe 锚点回放，GStreamer 真实解码 → arena → `BufferDescriptor` → lease 签发/校验/释放 → 音频 5 秒切段，视频自适应抽帧（keep/skip 全部带原因，7 个真实样本通过），跨进程数据面：Runtime 保留字节、独立进程按 lease 读取（3 个样本 × 2 个场景通过，具备有界容量与稳定拒绝码），SRT 实时接入 `ingest`（`make live-check` 五个场景通过），背压与队列可观察：三条有界队列的深度/峰值/容量、按原因与按种类的丢弃、lease 等待时间（`verify_backpressure.py` 4 场景 + OBS 直播实测，见 `docs/verification.md`），以及第一个**端侧模型插件**：本机 ollama `moondream:v2`（VLM），插件经 `LeaseBufferReader` 读真实视频帧产出带锚点/来源/版本/显式置信度语义的 observation，`tools/ai_worker.py` 只发现与调用不读字节，`make model-check` 四进程通过（见 `docs/verification.md` 的"M8"一节与 ADR-012） | ASR/OCR/BGE 插件与 CoreML/Metal（仍 `execution_backend_not_implemented`）；插件**未签名**（`local_native` 形态，签名/SBOM 只有结构预检）；媒体格式准入（ADR-009） |
 | 工程 | uv/Cargo 锁文件、Docker、检查命令、CI（ubuntu） | 真视频 Golden Path、macOS CI 与 `launchd` 常驻形态、压测、监控仪表盘 |
 
 下一里程碑：**本地文件 → GStreamer → PTS 正确的 frame/audio descriptor**，先完成
-真实样本回放、lease 生命周期和断流测试，再引入实际模型。未具备真实媒体和推理链路前，
-不声明 2–5 秒语义可见性或任何 GPU 吞吐目标已达成。
+真实样本回放、lease 生命周期和断流测试，再引入实际模型。真实媒体、lease 生命周期、断流测试
+与第一个端侧模型（VLM，M8）都已完成；但**语义质量**仍未验收——模型输出不稳定，
+2–5 秒语义可见性与任何 GPU 吞吐目标都**未**验证。
 
 该里程碑需在 `macos-aarch64` 与 `linux-x86_64` 上分别验收：macOS 侧以原生进程运行
 runtime/media-worker（容器无法访问 Metal/CoreML），NVIDIA 侧沿用容器与 CUDA/TensorRT 路径。
@@ -32,7 +33,7 @@ arena，1354 个 `BufferDescriptor` 全部通过校验（0 失败），1354 个 
 
 SRT 实时接入也已落地：`ingest` 在有限窗口内从 SRT 拉流，测量断流与恢复（重连归解码元素
 `srtsrc auto-reconnect`，本进程只测量），并把实时样本交给同一条 arena/descriptor/lease/交接链路；
-`make live-check` 的四个场景（稳定窗口、断流恢复、无源失败、实时数据面交接）全部通过，
+`make live-check` 的五个场景（稳定窗口、断流恢复、无源失败、实时数据面交接、VideoToolbox 视频）全部通过，
 细节与未验证范围见 `docs/verification.md` 的"M4"一节。注意直播**没有 anchor 区间**（没有已知时长）：
 `duration_ms` 恒为 0，`replay` 读 SRT 仍显式拒绝（`srt_source_requires_ingest_command`）。
 用户自有 OBS 的 SRT 直推随后也实测通过（同一次接入就暴露并修掉了"编码器不带 timing 时整条视频轨
@@ -45,9 +46,13 @@ SRT 实时接入也已落地：`ingest` 在有限窗口内从 SRT 拉流，测�
 （[ADR-011](adr/ADR-011-保留窗口按种类分配.md)），消费者实测拿到视频帧。证据见
 `docs/verification.md` 的"M2"一节。
 
-仍未实现：真正消费字节的**模型** worker（当前消费方只是验收脚本）、媒体格式准入。
-因此 `golden_path_verified` 恒为 false，不得把本节读作 Golden Path 已完成。
-抽帧的覆盖率目前只到帧数口径，语义覆盖要等模型接入后才能验证。
+模型链路（M8）已接入：本机 ollama 的 `moondream:v2` 通过插件消费真实视频帧，`tools/ai_worker.py`
+只做发现与调用（不读字节），`make model-check` 四进程通过；边界见
+[ADR-012](adr/ADR-012-模型插件与端侧推理边界.md)。仍未实现的是 **ASR/OCR/BGE 与 CoreML/Metal**
+（仍 `execution_backend_not_implemented`）、插件签名验证与媒体格式准入。
+因此 `golden_path_verified` 恒为 false，不得把本节读作 Golden Path 已完成；
+接入的 VLM 只保证链路语义正确，**不保证描述可用**（模型输出不稳定）。
+抽帧的覆盖率目前只到帧数口径，语义覆盖仍未用模型输出度量。
 共享内存数据面只在本机有意义（且同 UID 进程之间没有逐 buffer 隔离），不是分布式数据面。
 
 媒体格式准入同样未实现（[ADR-009](adr/ADR-009-媒体格式支持矩阵与拒绝语义.md)）：现在没有矩阵判据，
