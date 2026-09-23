@@ -237,7 +237,7 @@ pub fn bounded_queue<T>(capacity: NonZeroUsize) -> (mpsc::Sender<T>, mpsc::Recei
     mpsc::channel(capacity.get())
 }
 
-/// 常驻分级（ADR-015）注入的执行上限（ADR-019）。
+/// 常驻分级（ADR-015）注入的执行上限（ADR-019 / ADR-021）。
 ///
 /// 三个变量都必须区分"未注入"与"注入了坏值"：开发机上没有 `resident.env` 是常态，
 /// 但 `SENSORYPLEX_MEDIA_QUEUE_CAPACITY=0` 不能被读成"没有上限"。
@@ -252,8 +252,9 @@ pub struct ResidentLimits {
     pub tier: Option<String>,
     /// pipeline `queue_capacity` 与本次运行保留窗口的上限。
     pub media_queue_capacity: Option<NonZeroUsize>,
-    /// 模型 worker 的并发预算。当前没有任何 worker 读它，因此只能被报成"已声明"，
-    /// 不得被读成"并发已限流"。
+    /// 模型 worker 的并发预算。运行时只**转述**它：真正的消费方是模型 worker
+    /// （`tools/ai_worker.py`，按 `--model-parallelism` / 本变量与 `residency` 做准入并在飞限流，
+    /// 见 ADR-021）。因此这里报的是"进程读到了什么"，不是"并发已在本进程内限流"。
     pub model_parallelism: Option<NonZeroUsize>,
 }
 
@@ -319,8 +320,9 @@ impl ResidentLimits {
         )
     }
 
-    /// 契约类型里的分级字段：本进程只**转述**这些值。`serve` 不跑 pipeline，
-    /// 因此这里既不能声称队列上限已生效，也不能声称模型并发已被限流。
+    /// 契约类型里的分级字段：本进程只**转述**这些值。`serve` 不跑 pipeline、也不跑模型，
+    /// 因此这里既不能声称队列上限已生效，也不能声称模型并发已被**本进程**限流
+    /// （模型并发的消费方是 worker 进程，见 ADR-021）。
     pub fn describe_residency(&self) -> sensoryplex_sdk::runtime::ResidencyLimits {
         sensoryplex_sdk::runtime::ResidencyLimits {
             tier: self.tier.clone().unwrap_or_default(),

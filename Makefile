@@ -52,7 +52,7 @@ CARGO_HOST    ?= $(CARGO)
 PY_HOST       ?= uv run --frozen python
 
 .PHONY: setup configure proto check test integration format infra up down migrate gateway runtime pipeline-check runtime-smoke gateway-smoke media-replay media-check handoff-check backpressure-check
-.PHONY: stream-up stream-down stream-status stream-logs live-check model-check asr-check ocr-check embed-check index-check plugin-artifact capability-check
+.PHONY: stream-up stream-down stream-status stream-logs live-check model-check asr-check ocr-check embed-check index-check parallelism-check plugin-artifact capability-check
 .PHONY: media-test resident-probe resident-install resident-uninstall resident-status
 .PHONY: lint-ruff test-py test-contracts test-integration proto-generate plugin-artifact-check
 
@@ -345,3 +345,14 @@ embed-check:
 index-check:
 	@test -n "$(EMBEDDINGS)" || { echo "usage: make index-check EMBEDDINGS=/absolute/path/to/ai-worker.json（先跑 uv run --frozen python tools/verify_embed.py --media <sample> --keep-workspace 得到它）"; exit 1; }
 	$(PY_HOST) tools/verify_index.py --embeddings "$(EMBEDDINGS)"
+
+# ── 模型 worker 分级并发上限验收（M8 剩余，ADR-021） ────────────────────────
+# 上游必须是**真实** `ocr_blocks` 观测：每个 MEDIA 跑一次未改动的 tools/verify_ocr.py 真实链路
+# （真实 replay → 真实 OCR 插件 → worker）。文件回放按 1s 抽帧、worker 又在处理前一次性 List，
+# 所以一个样本只交付个位数帧：要凑出 N 路在飞窗口就给多个授权样本（空格分隔）。
+# 本目标跑真实插件进程与真实 `sensoryplex-runtime serve`，以独立进程调用 tools/ai_worker.py。
+# 固定在主机执行的理由同其它 *-check：HF 权重缓存与 CoreML EP 只存在于 macOS 主机（.env 只挂 MEDIA_DIR）。
+parallelism-check:
+	@test -n "$(MEDIA)" || { echo "usage: make parallelism-check MEDIA=\"/abs/sample-a.webm [/abs/sample-b.webm ...]\" [INPUTS=4] [PROVIDER=cpu|coreml] [MODEL_DIR=/path/to/bge-weights] [OCR_MODEL_DIR=/path/to/rapidocr]"; exit 1; }
+	$(CARGO_HOST) build --locked --release -p sensoryplex-runtime --features "$(MEDIA_FEATURES)"
+	$(PY_HOST) tools/verify_model_parallelism.py $(foreach item,$(MEDIA),--media "$(item)") --inputs "$(if $(INPUTS),$(INPUTS),4)" --provider "$(if $(PROVIDER),$(PROVIDER),cpu)" $(if $(MODEL_DIR),--model-dir "$(MODEL_DIR)",) $(if $(OCR_MODEL_DIR),--ocr-model-dir "$(OCR_MODEL_DIR)",)
