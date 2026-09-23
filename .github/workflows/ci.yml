@@ -6,6 +6,11 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+# 远端 CI 没有本项目的 compose 栈（ubuntu runner 上没起容器，macOS runner 根本没有
+# Docker），所以三个 job 都用 EXEC_MODE=host 让 `make <target>` 退回主机命令：
+# 同一组步骤、同一份 Makefile，差别只有在哪执行。容器模式仍是本机默认。
+env:
+  EXEC_MODE: host
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -33,8 +38,9 @@ jobs:
       - run: uv sync --frozen
       - run: make proto
       - run: git diff --exit-code -- plugins/python/common/src/edge_material_sdk/generated
+      # make check = lint-ruff + 契约测试 + 集成测试 + Rust fmt/clippy/test；
+      # tests/integration 需要 SENSORYPLEX_TEST_DATABASE_URL，由上面的 postgres service 提供。
       - run: make check
-      - run: make integration
       - run: make runtime-smoke
 
   check-console:
@@ -78,13 +84,18 @@ jobs:
       - run: uv sync --frozen
       - run: make proto
       - run: git diff --exit-code -- plugins/python/common/src/edge_material_sdk/generated
-      - run: make check
+      # macOS runner 既没有 Docker 也没有 PostgreSQL，所以这里跑 `make check` 里不需要
+      # 数据库的部分（lint + 契约测试），Rust 三条与 check 用同一组命令；集成测试只由
+      # ubuntu 的 check job 覆盖。改 check 的步骤时同步这里（Makefile 里也留了同样的提示）。
+      - run: make lint-ruff test-contracts
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
       # GStreamer 只用于编译解码路径；这里不跑 media-replay，因为 CI 没有真实授权媒体。
       - run: brew install gstreamer
       - run: make media-check
       # 解码路径的单元测试（含保留表按种类分配的 A/B 回归）只在带 gstreamer feature 时存在，
-      # 不跑这一步等于回归锁没进 CI。
-      # 刻意写 cargo 而不是 make：CI 只依赖仓库已提交的 Makefile，不依赖正在进行中的
-      # Makefile 容器化改造（同样命令在主机上也可用 `make media-test`）。
-      - run: cargo test --locked -p sensoryplex-media --features gstreamer
+      # 不跑这一步等于回归锁没进 CI。make media-test 与容器模式同源（EXEC_MODE=host 展开成
+      # 同一条主机 cargo 命令），所以这里用 make 而不是裸 cargo。
+      - run: make media-test
       - run: make runtime-smoke

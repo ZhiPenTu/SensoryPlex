@@ -21,6 +21,12 @@ SRT 实时接入（M4）同样可用：`ingest` 在有限窗口内拉流、解�
 （Apple Silicon，含 Mac mini 端侧部署）与 `linux-x86_64`（NVIDIA 性能主线）；macOS 侧
 加速进程需原生运行，容器无法访问 Metal/CoreML。
 
+开发验证默认在容器内执行（`EXEC_MODE=container`，见 Makefile 顶部）。没有本机 compose
+栈的环境可以用 `EXEC_MODE=host` 把同一组命令退回主机（`uv run --frozen python` + 主机
+`cargo`），例如 `make check EXEC_MODE=host`；远端 CI 的三个 job 都是这样跑的。
+没有 PostgreSQL 的主机（如 macOS runner）改跑 `make lint-ruff test-contracts`，
+集成测试只由带数据库的 job 覆盖。
+
 ```sh
 make setup
 make up

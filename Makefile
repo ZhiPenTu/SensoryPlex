@@ -1,21 +1,46 @@
 # SensoryPlex 开发验证 Makefile
 # ─────────────────────────────────────────────────────────────────────────────
-# 约束：所有开发验证（lint / test / integration / proto / plugin artifact 等）必须
-# 在容器内执行；本机不再依赖 uv / python / node 工具链。Rust 验证 (cargo) 受限于
+# 约束：所有开发验证（lint / test / integration / proto / plugin artifact 等）默认
+# 在容器内执行；本机不需要 uv / python / node 工具链。Rust 验证 (cargo) 受限于
 # 现有 api/gateway/console/postgres/nats 镜像均不携带 rustc/cargo，仍由本机 cargo
 # 执行直到批准专门容器为止；该边界见 README 与 AGENTS.md。
 # ─────────────────────────────────────────────────────────────────────────────
 
+# 执行位置（EXEC_MODE）：
+#   container（默认）—— 在 compose 容器内执行，即上面的约束；
+#   host               —— 同一组命令退回主机（`uv run --frozen python` + 主机 cargo）。
+# host 只服务于没有 Docker 的环境，目前只有远端 CI：ubuntu runner 上没有本项目的
+# compose 栈，macOS runner 上干脆没有 Docker，而 ADR-008 要求 macOS 必须是一等
+# 验证目标（见 .github/workflows/ci.yml，三个 job 都显式 EXEC_MODE=host）。
+# 两种模式的**步骤集合必须一致**，差别只有"在哪执行"：host 不允许少跑任何一步。
+EXEC_MODE     ?= container
+
+ifeq ($(EXEC_MODE),container)
 # 容器入口固定使用同一 compose 文件与 .env；执行时一律 -T 去除 TTY 染色。
 COMPOSE       = docker compose --env-file .env -f deploy/compose/docker-compose.poc.yml
 EXEC_API      = $(COMPOSE) exec -T api
 EXEC_GATEWAY  = $(COMPOSE) exec -T gateway
 EXEC_CONSOLE  = $(COMPOSE) exec -T console
 EXEC_MIGRATE  = $(COMPOSE) run --rm -T migrate
-
+# 集成测试的库地址：容器模式用 compose exec -e 从调用者环境注入，主机模式由调用者自己提供。
+EXEC_TEST     = $(EXEC_API) -e SENSORYPLEX_TEST_DATABASE_URL
 # api / gateway / console 容器里的可执行入口：
 PY_API        = /app/.venv/bin/python
 PY_GATEWAY    = /app/.venv/bin/python
+else ifeq ($(EXEC_MODE),host)
+# 主机模式：EXEC_* 全部退化为空前缀，让 `$(EXEC_API) $(PY_API) <cmd>` 展开成
+# `uv run --frozen python <cmd>`；COMPOSE 仍保留，供有 Docker 的主机执行 up/down/infra。
+COMPOSE       = docker compose --env-file .env -f deploy/compose/docker-compose.poc.yml
+EXEC_API      =
+EXEC_GATEWAY  =
+EXEC_CONSOLE  =
+EXEC_MIGRATE  =
+EXEC_TEST     =
+PY_API        = uv run --frozen python
+PY_GATEWAY    = uv run --frozen python
+else
+$(error EXEC_MODE 只支持 container 或 host，当前为 "$(EXEC_MODE)")
+endif
 
 CARGO         ?= cargo
 # Cargo 必须在主机上调用（没有容器带 rust 工具链）。下游 target 仍依赖此变量。
@@ -54,15 +79,18 @@ lint-ruff:
 	$(EXEC_API) $(PY_API) -m ruff check .
 	$(EXEC_API) $(PY_API) -m ruff format --check .
 
-# test-py 跑 pytest，对 services/api + services/gateway + plugins/python/common + tools。
-# macOS-only plugin 包（asr-whisper-mlx / vlm-moondream）的 contracts 测试在容器内不可
-# 导入（依赖 mlx-whisper），保留在 host-side `make test-contracts-host`。
-test-py:
-	docker compose --env-file .env -f deploy/compose/docker-compose.poc.yml exec -T -e SENSORYPLEX_TEST_DATABASE_URL api $(PY_API) -m pytest tests/contracts tests/integration -q
+# test-contracts 跑 pytest tests/contracts：不依赖外部服务，容器与主机都能跑。
+test-contracts:
+	$(EXEC_TEST) $(PY_API) -m pytest tests/contracts -q
 
-# integration 直接调用 tools/test_integration.py，访问 postgres 与 api 容器。
+# test-integration 跑 tests/integration：需要可写的 PostgreSQL（SENSORYPLEX_TEST_DATABASE_URL），
+# 容器模式由 compose postgres 提供，主机模式由调用者提供。没有数据库的主机会在
+# tests/integration/test_console.py 上**报错而不是跳过** —— 刻意的：漏配数据库必须显式失败。
 test-integration:
-	docker compose --env-file .env -f deploy/compose/docker-compose.poc.yml exec -T -e SENSORYPLEX_TEST_DATABASE_URL api $(PY_API) -m pytest tests/integration -q
+	$(EXEC_TEST) $(PY_API) -m pytest tests/integration -q
+
+# test-py = 契约测试 + 集成测试（services/api + services/gateway + plugins/python/common + tools）。
+test-py: test-contracts test-integration
 
 # check = lint-ruff + test-py + Rust fmt/clippy/test。
 # Rust 部分仍调用主机 cargo，见顶部约束说明。
@@ -70,6 +98,9 @@ check: lint-ruff test-py
 	$(CARGO_HOST) fmt --all -- --check
 	$(CARGO_HOST) clippy --workspace --all-targets --locked -- -D warnings
 	$(CARGO_HOST) test --workspace --locked
+# 改动 check 的步骤时必须同步 .github/workflows/ci.yml 的 check-apple-silicon：
+# macOS runner 既没有 Docker 也没有 PostgreSQL，只能跑 `make lint-ruff test-contracts`
+# 加下面三条主机 cargo，集成测试由 ubuntu 的 check job 覆盖。
 
 test:
 	$(MAKE) test-py
@@ -234,6 +265,7 @@ demo-reset:
 # 以便在迭代 console 源码后立即刷新 /usr/share/nginx/html（容器内 /workspace/apps/console
 # 通过 bind mount 反映主机源文件）。
 console-build:
+	@test "$(EXEC_MODE)" = container || { echo "console-build 只能在容器内执行：/workspace 与镜像自带的 node 只存在于 console 镜像里" >&2; exit 1; }
 	$(EXEC_CONSOLE) sh -lc 'cd /workspace/apps/console && npm ci --no-audit --no-fund && npm run build'
 
 console-check:
@@ -244,6 +276,7 @@ console-check:
 # vite 默认监听 127.0.0.1，容器内执行；为让主机浏览器访问，先 exec console 把 vite
 # 改成 --host 0.0.0.0 并把 5173 端口临时映射（compose 中 console 已暴露 5173）。
 console-dev:
+	@test "$(EXEC_MODE)" = container || { echo "console-dev 只能在容器内执行：/workspace 与镜像自带的 node 只存在于 console 镜像里" >&2; exit 1; }
 	$(EXEC_CONSOLE) sh -lc 'cd /workspace/apps/console && npm ci --no-audit --no-fund && npm run dev -- --host 0.0.0.0 --port 5173'
 
 # console-prepare / console-api：容器内启动 sensoryplex-api 的 prepare / serve 入口；
