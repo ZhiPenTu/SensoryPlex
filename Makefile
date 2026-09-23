@@ -195,6 +195,36 @@ stream-status:
 stream-logs:
 	docker compose -f deploy/compose/docker-compose.stream.yml logs --tail 100 mediamtx
 
+# ── 演示账号种子（一次性） ────────────────────────────────────────────────
+# 在 api 容器内用 sensoryplex-user 创建 demo 账户，密码落到 /workspace/.data/demo-password，
+# 随后主机读这个文件并写入 .env 的 SENSORYPLEX_DEMO_PASSWORD，再 ./deploy/up.sh api 让
+# 容器加载新环境变量；登录页底部会切换为"本地演示可一键填写账号…"并出现
+# 「填入演示账号」按钮。注意 .env 写回是主机例外（容器 bind 是只读视图）。
+.PHONY: demo-seed demo-reset
+demo-seed:
+	@mkdir -p .data
+	$(EXEC_API) sh -lc 'set -e; PWFILE=/workspace/.data/demo-password; rm -f "$$PWFILE"; \
+		/app/.venv/bin/sensoryplex-user demo --display-name "演示账号" --roles admin,operator \
+		--generate-password --password-file "$$PWFILE"'
+	@test -s .data/demo-password || { echo "demo password file missing" >&2; exit 1; }
+	@PW=$$(cat .data/demo-password); \
+	{ grep -v '^SENSORYPLEX_DEMO_' .env > .env.tmp && mv .env.tmp .env; } || true
+	@printf '\nSENSORYPLEX_DEMO_USERNAME=demo\nSENSORYPLEX_DEMO_PASSWORD=%s\n' "$$PW" >> .env
+	@echo "[demo-seed] demo 账号已建，凭据已写入 .env，正在重启 api 容器..."
+	$(COMPOSE) up -d --wait api
+	@echo "[demo-seed] 验证 /auth/v1/demo-account："
+	@curl -fsS -X GET "$${CONSOLE_PORT:+http://127.0.0.1:$$CONSOLE_PORT}/auth/v1/demo-account" \
+		-H "Origin: http://127.0.0.1:$${CONSOLE_PORT:-5173}" \
+		-H "Referer: http://127.0.0.1:$${CONSOLE_PORT:-5173}/" | head -c 200 && echo
+
+demo-reset:
+	$(EXEC_API) /app/.venv/bin/python -c "import os,psycopg; from sensoryplex_api.auth import password_hash; \
+		pw=os.environ['SENSORYPLEX_DEMO_PASSWORD']; \
+		from sensoryplex_api.settings import Settings; s=Settings(); \
+		conn=psycopg.connect(s.database_url.get_secret_value()); \
+		conn.execute('UPDATE console_user SET password_hash=%s,disabled=false WHERE username=%s', (password_hash(pw),'demo')); \
+		conn.commit(); print('demo 密码已重置')"
+
 # ── 前端控制台（容器内执行） ────────────────────────────────────────────
 
 # console 镜像构建内已包含 npm ci + npm run build；运行 console-build 仍会重新跑一遍

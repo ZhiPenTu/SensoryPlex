@@ -117,6 +117,25 @@
 
 - `docker compose logs -f --tail 200`；不带参数等于跟踪所有服务。
 
+## 演示账号
+
+`apps/console` 登录页底部在 **demo 模式**下会出现「填入演示账号」按钮。开启方式：
+
+```
+make demo-seed
+```
+
+执行后 `api` 容器内用 `sensoryplex-user demo` 创建演示账号，密码随机生成到
+`.data/demo-password`（容器 bind 视图，主机也能读），并写入 `.env` 的
+`SENSORYPLEX_DEMO_USERNAME` / `SENSORYPLEX_DEMO_PASSWORD`；最后 `./deploy/up.sh api`
+让 api 容器加载新环境变量，并 curl `/auth/v1/demo-account` 验证 `enabled:true`。
+
+- `make demo-reset` 在 demo 账号被改密码或被禁用时，仅重置密码而不重新发。
+- `.env.example` 已加入 `SENSORYPLEX_DEMO_USERNAME=demo` 与占位
+  `SENSORYPLEX_DEMO_PASSWORD=REPLACE_WITH_GENERATED_PASSWORD`。
+- 演示账号建表时只赋 `admin,operator` 两个角色；生产节点上请把
+  `SENSORYPLEX_DEMO_*` 留空，登录页底部自动回退到「首次使用需由节点管理员创建账户」。
+
 ## Makefile（开发验证）
 
 `make` 顶层目标与执行位置：

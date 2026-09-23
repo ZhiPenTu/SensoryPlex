@@ -76,6 +76,9 @@ services:
       PYTHONPATH: /workspace
       # 授权样本挂载点，media-* / handoff-check / model-check / asr-check 在容器内读取。
       HOST_MEDIA_DIR: /host-media
+      # 演示账号：让登录页出现「填入演示账号」按钮。
+      SENSORYPLEX_DEMO_USERNAME: ${SENSORYPLEX_DEMO_USERNAME:-}
+      SENSORYPLEX_DEMO_PASSWORD: ${SENSORYPLEX_DEMO_PASSWORD:-}
     working_dir: /workspace
     volumes:
       - type: bind
