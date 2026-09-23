@@ -30,6 +30,19 @@ make gateway
 迁移命令使用事务与 PostgreSQL advisory lock，重复运行只校验 checksum，不重复建表。
 已应用迁移被修改时拒绝启动迁移。不要在运行服务中自动建表，也不要手动删改历史迁移。
 
+**新增迁移文件后必须先重建镜像再 `make migrate`。** `migrate` 服务复用 gateway 镜像，
+`db/migrations` 是 `COPY` 进镜像的（不是 bind mount），所以不重建镜像时 `make migrate`
+读的是旧镜像里的迁移集合：它会静默地什么都不应用并**以 0 退出**——"命令成功"不等于"迁移生效"。
+
+```sh
+docker compose --env-file .env -f deploy/compose/docker-compose.poc.yml build gateway
+make migrate   # 看到 Applied 000N_xxx 才算真的应用
+```
+
+同时同步 `services/api/src/sensoryplex_api/app.py` 的 `SCHEMA` 与 `SCHEMA_VERSIONS`：
+`/v1/health` 比对"库里应用的迁移集合"与"镜像认识的集合"，少一条直接 503
+`schema_version_mismatch`。
+
 ```sh
 make check       # Rust fmt/clippy/test + Python lint/format/契约测试
 make integration # 真实 PostgreSQL，随机隔离 schema，结束后只清理该测试 schema
