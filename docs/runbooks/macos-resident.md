@@ -78,6 +78,36 @@ pmset -g assertions | grep -i caffeinate             # 核对 caffeinate 确实�
 `caffeinate -ims` 只在**交流电**下阻止系统睡眠（`PreventSystemSleep` / `PreventUserIdleSystemSleep`），
 不带 `-d`，屏幕仍会按你的省电设置熄灭。
 
+## 模型 worker 的并发上限（ADR-021）
+
+分级表里的"模型并发"由**模型 worker** 消费，不由常驻的 `serve` 消费：`serve` 只把
+`SENSORYPLEX_MODEL_PARALLELISM` 转述给 `DescribeCapabilities.residency`（见
+[ADR-019](../adr/ADR-019-运行时消费分级队列上限.md) §4），真正限流的是
+`tools/ai_worker.py`（见 [ADR-021](../adr/ADR-021-模型worker按分级并发上限限流.md)）。
+
+主机侧一键验收（真实 replay → 真实 OCR → worker，多样本；这是本节的推荐路径）：
+
+```bash
+make parallelism-check MEDIA="/abs/a.webm /abs/b.webm" INPUTS=4
+```
+
+手工调用 worker 时要自己带上插件 SDK 的 `PYTHONPATH`（`tools/ai_worker.py` 不替调用方拼路径）：
+
+```bash
+# 上限的权威永远是运行时：从常驻端点读这一档允许几路（source 记成 runtime）
+PYTHONPATH=plugins/python/common/src uv run --frozen python tools/ai_worker.py \
+  --plugin 127.0.0.1:50052 --observations upstream-observations.json \
+  --runtime 127.0.0.1:50051 --report ai-worker.json
+
+# 或不看运行时、直接按 resident.env 的注入值跑（source 记成 env；两者同时给且不相等会被拒绝）
+set -a; . "$HOME/Library/Application Support/SensoryPlex/resident.env"; set +a
+```
+
+`--model-parallelism` 与 `SENSORYPLEX_MODEL_PARALLELISM` 同时给出且不相等会以
+`model_parallelism_conflict` 拒绝（exit 2）；请求值超过这一档的上限会被
+`model_parallelism_exceeds_tier_cap` 拒绝，**不夹取**。报告里的 `model_concurrency`
+是执行账目（`limit` / `source` / `peak_in_flight` / `retries` / `throttle_events`）。
+
 ## 故障排查
 
 | 现象 | 处理 |
@@ -94,6 +124,8 @@ pmset -g assertions | grep -i caffeinate             # 核对 caffeinate 确实�
 
 - 只在**本机一台** Apple Silicon 机型（M2 Max / 32 GiB）上验收；Mac mini 各档位与 16 GiB 的 `small`
   档没有实跑过。
-- 模型并发上限仍是**配置事实**（没有 worker 按 `SENSORYPLEX_MODEL_PARALLELISM` 限流，也没有并发执行的
-  端到端样本）；`queue_capacity` 已由运行时准入消费（ADR-019），但没有在 `small` 档真机上跑过。
+- 模型并发上限已由模型 worker 消费（`tools/ai_worker.py` 按 `SENSORYPLEX_MODEL_PARALLELISM` /
+  运行时转述的分级上限做准入与在飞调用限流，见 [ADR-021](../adr/ADR-021-模型worker按分级并发上限限流.md)），
+  但没有在 `small` 档真机上跑过，也没有高帧率下的背压样本；`queue_capacity` 已由运行时准入消费
+  （[ADR-019](../adr/ADR-019-运行时消费分级队列上限.md)），同样没有 `small` 档真机样本。
 - 断电重启自启、休眠唤醒、小时级长稳运行均未验证；CI 不跑本手册（runner 上没有用户会话与 `launchctl gui/` 域）。

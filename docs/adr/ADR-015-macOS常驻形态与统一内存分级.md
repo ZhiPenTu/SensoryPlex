@@ -102,8 +102,9 @@ ADR-008 把 Apple Silicon（含"买来当家庭工作站"的 Mac mini）定为�
 并在 `ReplayReport.media_queue` / `LiveIngestReport.media_queue` 里记下 `not_injected` 或 `admitted`。
 `probe` 依旧不改写配置，只报告声明值与分级的关系。
 
-仍然**不**成立的是模型并发那一半：`SENSORYPLEX_MODEL_PARALLELISM` 目前只有"已声明"，
-没有任何执行点读它（见 §7）。
+模型并发那一半也已由 [ADR-021](ADR-021-模型worker按分级并发上限限流.md) 收口：模型 worker
+（`tools/ai_worker.py`）按 `SENSORYPLEX_MODEL_PARALLELISM` / 运行时转述的分级上限做准入与在飞调用限流，
+坏值与越界在连插件之前以 exit 2 失败（见 §7）。
 
 ## 6. 验收证据（真机，macOS 26.5.2 / arm64 / M2 Max / 32 GiB）
 
@@ -129,16 +130,18 @@ ADR-008 把 Apple Silicon（含"买来当家庭工作站"的 Mac mini）定为�
 
 - 分级表是**工程经验值加锚定**，不是压测结果：`large` 的 arena 128 MiB 只在本机以无消费者
   场景验证过（`retained_peak=47`），没有在 16GB 机型上实跑 `small` 档。
-- 模型并发上限（`SENSORYPLEX_MODEL_PARALLELISM`）仍然只有配置事实：它落在 plist 与 `resident.env` 里，
-  `serve` 也只是把它**转述**给 `DescribeCapabilities`，没有任何 worker 按它限流。并发执行的实测
-  要等 worker 侧限流之后再补（ADR-019 §4）。
+- 模型并发上限（`SENSORYPLEX_MODEL_PARALLELISM`）已由 [ADR-021](ADR-021-模型worker按分级并发上限限流.md)
+  从"配置事实"变成**执行事实**：模型 worker 按它（或运行时转述的分级上限）做准入与在飞调用限流，
+  越界与坏值在连插件之前 exit 2，报告 `model_concurrency` 记下实测 `peak_in_flight` 与重试账目。
+  实测覆盖"未注入 / flag 1 / flag 2 / flag 4 / env 4 / 越界拒绝 / 冲突拒绝 / 运行时权威 / 端点不可达"；
+  但**没有** `small` 档真机样本，也没有高帧率下的背压样本（ADR-019 §4 的那条待补项由此关闭）。
 - 目前只有本机 `macos-aarch64` 一个平台验收；CI 不跑 launchd（runner 上没有用户会话与
   `launchctl gui/` 域），因此本 ADR 的证据**只能**来自真机。
 - 没有验证"机器断电重启后自启"（只验证了 `bootout`+`bootstrap`，等同于登录会话内的拉起）；
   没有验证 App Nap / 休眠唤醒后的端点可用性；`caffeinate` 在纯电池供电下的行为未验证。
 - 未做 `resident.env` 的权限收紧（当前随 `~/Library` 的默认权限）。分级值已由 ADR-019 回写进
   `DescribeCapabilities` 的 `residency`（`tier` / `media_queue_capacity` / `model_parallelism`），
-  但那是**转述**：`serve` 不跑 pipeline，模型并发也还没有 worker 读它。
+  但那是**转述**：`serve` 不跑 pipeline、也不跑模型。模型并发的消费方是 worker 进程（ADR-021）。
 
 ## 8. 最小实现清单（当前状态）
 
@@ -149,13 +152,15 @@ ADR-008 把 Apple Silicon（含"买来当家庭工作站"的 Mac mini）定为�
 - [x] `Makefile` 的 `resident-probe|resident-install|resident-status|resident-uninstall`（主机例外，不进容器）
 - [x] `docs/runbooks/macos-resident.md`
 - [x] 分级队列上限被运行时消费：`replay`/`ingest` 按上限对声明值与保留窗口做准入，越界即失败并在报告里记录（[ADR-019](ADR-019-运行时消费分级队列上限.md)）
+- [x] 分级模型并发上限被模型 worker 消费：`tools/ai_worker.py` 按 `SENSORYPLEX_MODEL_PARALLELISM` / 运行时转述的上限做准入与在飞调用限流（坏值、冲突、越界 exit 2），报告 `model_concurrency` 记 `peak_in_flight` 与重试账目（[ADR-021](ADR-021-模型worker按分级并发上限限流.md)）
 
 **未验证范围（不得当作已完成）**
 
 - 只有本机一台 Apple Silicon 机型（M2 Max / 32 GiB）验收；Mac mini 各档位与 16GB 的
   `small` 档均未实跑。
-- 模型并发上限仍是**配置事实**（无 worker 限流、无并发执行的端到端样本）。`queue_capacity` 的分级
-  已由 ADR-019 变成执行事实（越界即失败），真机覆盖"未注入 / `small` 拒绝 / `medium` 拒绝 / `large` 准入"
-  四种情形；`xlarge` 档与档位边界值（如 24 GiB、64 GiB 机型）没有实跑。
+- 模型并发上限已由 ADR-021 变成执行事实（模型 worker 按它做准入与在飞调用限流）；但**没有**在 `small`
+  档真机上跑过，也没有高帧率下的背压样本——ADR-021 的并发压力来自多给样本，不是单样本高吞吐。
+  `queue_capacity` 的分级已由 ADR-019 变成执行事实（越界即失败），真机覆盖"未注入 / `small` 拒绝 /
+  `medium` 拒绝 / `large` 准入"四种情形；`xlarge` 档与档位边界值（如 24 GiB、64 GiB 机型）没有实跑。
 - 断电重启自启、休眠唤醒、长稳运行（小时级）、内存压力下的拒绝行为都未验证。
 - `golden_path_verified` 恒为 false；本节不改变这一结论。

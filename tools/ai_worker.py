@@ -20,6 +20,8 @@ worker 支持契约里的**两条输入路径**，且在报告里写明用的是
 """
 
 import argparse
+import collections
+import concurrent.futures
 import hashlib
 import json
 import os
@@ -37,8 +39,18 @@ from edge_material_sdk.generated.media.v1 import handoff_pb2, handoff_pb2_grpc
 from edge_material_sdk.generated.runtime.v1 import runtime_pb2, runtime_pb2_grpc
 from google.protobuf import json_format, struct_pb2
 
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    # 以脚本方式运行时 `sys.path[0]` 是 tools/ 本身，`tools.model_limits` 需要仓库根。
+    sys.path.insert(0, str(ROOT))
+
+from tools import model_limits  # noqa: E402  - 必须在 sys.path 调整之后
+
 DEFAULT_DEADLINE_MS = 180_000
 DEFAULT_TIMEOUT_S = 300.0
+# 可重试拒绝的重试预算与退避初值；次数有上限（不做无限重试），退避指数增长并封顶 1s。
+DEFAULT_MAX_ATTEMPTS = 3
+DEFAULT_RETRY_BACKOFF_MS = 100
 
 
 def as_struct(config: dict) -> struct_pb2.Struct:
@@ -141,45 +153,178 @@ class Job:
     source_range_ms: tuple
 
 
-def process_inputs(plugin, jobs: list[Job], report: dict, timeout_s: float) -> str | None:
-    """按顺序调用插件；单条失败记进报告并继续，无法确认插件状态的 RPC 失败返回原因串。"""
-    for job in jobs:
-        started = time.time()
+class AdmissionFailure(Exception):
+    """准入阶段的失败：稳定原因串进报告；配置错误用与运行失败不同的退出码。"""
+
+
+def runtime_tier(arguments) -> model_limits.TierCap | None:
+    """运行时是分级上限的权威（ADR-015 §5 / ADR-019 §5）；给了 `--runtime` 就必须拿到答案。"""
+    if not arguments.runtime:
+        return None
+    channel = grpc.insecure_channel(arguments.runtime)
+    try:
+        stub = runtime_pb2_grpc.RuntimeServiceStub(channel)
         try:
-            response = plugin.Process(job.request, timeout=timeout_s)
+            described = stub.DescribeCapabilities(
+                runtime_pb2.DescribeCapabilitiesRequest(), timeout=arguments.timeout_s
+            )
         except grpc.RpcError as error:
-            return f"plugin_process_failed:{error.code().name}"
+            # 连不上不能退化成"没有上限"：那正好是这条链要禁止的静默降级。
+            raise AdmissionFailure(
+                f"runtime_capabilities_unavailable:{error.code().name}"
+            ) from None
+    finally:
+        channel.close()
+    return model_limits.tier_from_residency(described.residency)
+
+
+def process_one(
+    plugin, job: Job, *, ledger, timeout_s: float, deadline_ms: int, base_backoff_ms: int
+) -> tuple[list[dict], list[dict]]:
+    """一次输入：有界重试；返回（报告里的 frames 条目，产出的观测）。
+
+    可重试的拒绝不再是终态。旧实现把它当成单条失败记一行就过去了，于是这条输入**静默消失**
+    而运行照样成功；现在先按 `max_attempts` 重试，预算用尽才落成 `retry_exhausted:<原因>`。
+    """
+    attempt = 0
+    while True:
+        attempt += 1
+        # 每次尝试都刷新 deadline：否则第 2 次会带着一条已经过期的 deadline 上去，
+        # 插件的 `deadline_expired`（可重试）会让"重试"退化成永远失败。
+        job.request.context.deadline_unix_ms = int(time.time() * 1000) + deadline_ms
+        started = time.time()
+        with ledger.call():
+            response = plugin.Process(job.request, timeout=timeout_s)
         elapsed_ms = round((time.time() - started) * 1000, 1)
-        if response.HasField("error"):
-            report["frames"].append(
+        if not response.HasField("error"):
+            if not response.observations:
+                # 契约保证"没有 error 就至少有一条观测"：违反时必须显式失败，
+                # 否则这条输入在账目里既不算成功也不算失败。
+                ledger.record_failed()
+                return (
+                    [
+                        {
+                            **job.frame,
+                            "error": {
+                                "code": common.ErrorCode.Name(common.INTERNAL_PLUGIN_ERROR),
+                                "reason": "empty_plugin_result",
+                                "retryable": False,
+                                "attempts": attempt,
+                            },
+                            "elapsed_ms": elapsed_ms,
+                            "attempts": attempt,
+                        }
+                    ],
+                    [],
+                )
+            entries: list[dict] = []
+            observations: list[dict] = []
+            for observation in response.observations:
+                observations.append(json_format.MessageToDict(observation))
+                entries.append(
+                    {
+                        **job.frame,
+                        "observation_id": observation.observation_id,
+                        "time_range_ms": [
+                            observation.time_range.start_ms,
+                            observation.time_range.end_ms,
+                        ],
+                        "source_time_range_ms": list(job.source_range_ms),
+                        "source_digest": job.source_digest,
+                        "observation_digest": observation.content_hash,
+                        "elapsed_ms": elapsed_ms,
+                        "attempts": attempt,
+                    }
+                )
+            ledger.record_completed()
+            return entries, observations
+        error = response.error
+        if model_limits.should_retry(
+            retryable=error.retryable, attempt=attempt, max_attempts=ledger.max_attempts
+        ):
+            ledger.record_retry(error.reason_code)
+            delay_ms = model_limits.retry_delay_ms(attempt, base_ms=base_backoff_ms)
+            if delay_ms:
+                time.sleep(delay_ms / 1000)
+            continue
+        if error.retryable:
+            ledger.record_exhausted()
+            reason = f"retry_exhausted:{error.reason_code}"
+        else:
+            ledger.record_failed()
+            reason = error.reason_code
+        return (
+            [
                 {
                     **job.frame,
                     "error": {
-                        "code": common.ErrorCode.Name(response.error.code),
-                        "reason": response.error.reason_code,
-                        "retryable": response.error.retryable,
+                        "code": common.ErrorCode.Name(error.code),
+                        "reason": reason,
+                        "retryable": bool(error.retryable),
+                        "attempts": attempt,
                     },
                     "elapsed_ms": elapsed_ms,
+                    "attempts": attempt,
                 }
+            ],
+            [],
+        )
+
+
+def process_inputs(
+    plugin,
+    jobs: list[Job],
+    report: dict,
+    timeout_s: float,
+    *,
+    ledger,
+    deadline_ms: int = DEFAULT_DEADLINE_MS,
+    base_backoff_ms: int = DEFAULT_RETRY_BACKOFF_MS,
+) -> str | None:
+    """有界并发地处理输入：在飞的插件调用与提交窗口都不超过 `ledger.limit`。
+
+    单条失败仍记进报告后继续；无法确认插件状态的 RPC 失败中止整轮（此时"插件到底收没收"
+    不可判定，继续跑只会写出更不可信的报告）。报告里的顺序仍等于输入顺序——并发不该让
+    报告变成不可复盘的东西。
+    """
+    outcomes: list[tuple[list[dict], list[dict]] | None] = [None] * len(jobs)
+    fatal: str | None = None
+    with concurrent.futures.ThreadPoolExecutor(max_workers=ledger.limit) as pool:
+        pending: dict[concurrent.futures.Future, int] = {}
+        queue = collections.deque(range(len(jobs)))
+        while (queue or pending) and fatal is None:
+            while queue and len(pending) < ledger.limit:
+                index = queue.popleft()
+                pending[
+                    pool.submit(
+                        process_one,
+                        plugin,
+                        jobs[index],
+                        ledger=ledger,
+                        timeout_s=timeout_s,
+                        deadline_ms=deadline_ms,
+                        base_backoff_ms=base_backoff_ms,
+                    )
+                ] = index
+            done, _ = concurrent.futures.wait(
+                pending, return_when=concurrent.futures.FIRST_COMPLETED
             )
+            for future in done:
+                index = pending.pop(future)
+                try:
+                    outcomes[index] = future.result()
+                except grpc.RpcError as error:
+                    fatal = f"plugin_process_failed:{error.code().name}"
+        if fatal is not None:
+            for future in pending:
+                future.cancel()
+    for outcome in outcomes:
+        if outcome is None:
             continue
-        for observation in response.observations:
-            report["observations"].append(json_format.MessageToDict(observation))
-            report["frames"].append(
-                {
-                    **job.frame,
-                    "observation_id": observation.observation_id,
-                    "time_range_ms": [
-                        observation.time_range.start_ms,
-                        observation.time_range.end_ms,
-                    ],
-                    "source_time_range_ms": list(job.source_range_ms),
-                    "source_digest": job.source_digest,
-                    "observation_digest": observation.content_hash,
-                    "elapsed_ms": elapsed_ms,
-                }
-            )
-    return None
+        entries, observations = outcome
+        report["observations"].extend(observations)
+        report["frames"].extend(entries)
+    return fatal
 
 
 def main() -> int:
@@ -209,6 +354,28 @@ def main() -> int:
         help="observation 模式：上游观测的 JSON（数组，或含 observations 键的上游报告）",
     )
     parser.add_argument("--timeout-s", type=float, default=DEFAULT_TIMEOUT_S)
+    parser.add_argument(
+        "--runtime",
+        default=None,
+        help="Runtime 控制端点；给出时按 DescribeCapabilities.residency 核对分级并发上限",
+    )
+    parser.add_argument(
+        "--model-parallelism",
+        default=None,
+        help="本次请求的并发路数；缺省时读 SENSORYPLEX_MODEL_PARALLELISM，再缺省按运行时分级",
+    )
+    parser.add_argument(
+        "--max-attempts",
+        type=int,
+        default=DEFAULT_MAX_ATTEMPTS,
+        help="可重试拒绝的重试预算（含首次调用，至少 1）",
+    )
+    parser.add_argument(
+        "--retry-backoff-ms",
+        type=int,
+        default=DEFAULT_RETRY_BACKOFF_MS,
+        help="重试退避初值（毫秒，指数增长并封顶 1s；0 表示不等待）",
+    )
     parser.add_argument("--report", required=True)
     arguments = parser.parse_args()
     max_inputs = arguments.max_inputs if arguments.max_inputs is not None else arguments.max_frames
@@ -229,6 +396,8 @@ def main() -> int:
         # 处理过的输入清单（视频帧或音频段）。保留 `frames` 这个键名，验收脚本依赖它。
         "frames": [],
         "failures": [],
+        # 模型并发准入与账目（ADR-021）；准入结果先写，处理结束后再补结算数字。
+        "model_concurrency": {"state": "pending"},
     }
 
     handoff = None
@@ -242,13 +411,39 @@ def main() -> int:
     plugin_channel = grpc.insecure_channel(arguments.plugin)
     plugin = runtime_pb2_grpc.ProcessorPluginServiceStub(plugin_channel)
 
-    def fail(reason: str) -> int:
+    def fail(reason: str, *, exit_code: int = 1) -> int:
         report["failures"].append(reason)
         pathlib.Path(arguments.report).write_text(
             json.dumps(report, indent=2, sort_keys=True) + "\n"
         )
         print(f"ai worker failed: {reason}")
-        return 1
+        return exit_code
+
+    # 准入在连接插件之前：坏值与越界都不该跑起来，更不该跑了一半才说。
+    try:
+        admission = model_limits.admit(
+            env_value=os.environ.get(model_limits.MODEL_PARALLELISM_ENV),
+            flag_value=arguments.model_parallelism,
+            tier=runtime_tier(arguments),
+        )
+    except (model_limits.ResidentLimitError, AdmissionFailure) as error:
+        # 报告里写明"被拒"而不是留一个看起来像成功的小数字；退出码 2 = 配置错误。
+        report["model_concurrency"] = {"state": "rejected", "reason": str(error)}
+        return fail(str(error), exit_code=2)
+    if arguments.max_attempts < 1:
+        report["model_concurrency"] = {"state": "rejected", "reason": "invalid_max_attempts"}
+        return fail(f"invalid_max_attempts: --max-attempts={arguments.max_attempts}", exit_code=2)
+    if arguments.retry_backoff_ms < 0:
+        report["model_concurrency"] = {
+            "state": "rejected",
+            "reason": "invalid_retry_backoff_ms",
+        }
+        return fail(
+            f"invalid_retry_backoff_ms: --retry-backoff-ms={arguments.retry_backoff_ms}",
+            exit_code=2,
+        )
+    ledger = model_limits.InFlightLedger(limit=admission.limit, max_attempts=arguments.max_attempts)
+    report["model_concurrency"] = {**admission.as_report(), **ledger.as_report(submitted=0)}
 
     try:
         description = plugin.Describe(runtime_pb2.DescribeRequest(), timeout=arguments.timeout_s)
@@ -371,7 +566,16 @@ def main() -> int:
                 )
             )
 
-    failure = process_inputs(plugin, jobs, report, arguments.timeout_s)
+    failure = process_inputs(
+        plugin,
+        jobs,
+        report,
+        arguments.timeout_s,
+        ledger=ledger,
+        base_backoff_ms=arguments.retry_backoff_ms,
+    )
+    # 结算数字统一在最后写入：不管后面哪一步失败，报告里的准入结果与账目都是同一份。
+    report["model_concurrency"] = {**admission.as_report(), **ledger.as_report(submitted=len(jobs))}
     if failure:
         return fail(failure)
 
@@ -423,7 +627,8 @@ def main() -> int:
     pathlib.Path(arguments.report).write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     print(
         f"ai worker ok: observations={len(report['observations'])} "
-        f"frames={len(jobs)} plugin={description.name}"
+        f"frames={len(jobs)} plugin={description.name} "
+        f"model_parallelism={admission.limit} peak_in_flight={ledger.peak_in_flight}"
     )
     return 0
 

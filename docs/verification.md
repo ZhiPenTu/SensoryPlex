@@ -1595,3 +1595,86 @@ emb_1953e314…|failed|milvus://material_text_bge_small_zh_v1_5_d512_v1/emb_1953
 - **服务端 Milvus / `linux-x86_64` / Mac mini 未验证**；`xlarge` 之外的机型档位未跑。
 - 未做 worker 侧的 durable 幂等与崩溃回收（重跑靠确定性 `embedding_id` + upsert，不是靠事务队列）。
 - `golden_path_verified` 仍恒为 false。
+
+### M8 剩余：模型 worker 按分级并发上限限流（ADR-021）（2026-09-24）
+
+ADR-015 §5/§7 与 ADR-019 §4/§7 反复登记的同一条缺口——`SENSORYPLEX_MODEL_PARALLELISM` 只有
+"已声明"，没有任何执行点读它——本轮收口。决策见
+[ADR-021](adr/ADR-021-模型worker按分级并发上限限流.md)。
+
+#### 命令与角色
+
+```bash
+# 主机侧一键验收：未改动的 tools/verify_ocr.py × 3 个真实授权样本 → 真实 replay → 真实 OCR 插件
+#                                    → 本切片改动的 tools/ai_worker.py（13 个场景）
+make parallelism-check MEDIA="/abs/…/screencast-video2commons.480p.vp9.webm \
+  /abs/…/slides-vrt-nodiscussion.480p.vp9.webm \
+  /abs/…/slides-vrt-discussion.480p.vp9.webm" INPUTS=4
+```
+
+四个角色：验收脚本（编排与对账，主机）→ `sensoryplex-runtime replay`（真实解码与抽帧）→
+真实 OCR 插件（`ocr-rapidocr`）→ **模型 worker**（本切片的限流对象）。
+其中 `--runtime` 场景会**真起** `sensoryplex-runtime serve`，先独立 `DescribeCapabilities` 对账，
+再把它交给 worker 的 `--runtime` 当作上限权威。
+
+#### 实测结果
+
+工作区 `/var/folders/.../sensoryplex-parallelism-1wbv1tv7`，耗时 208.7 s。上游批次是 **4 条真实观测**
+（`obs_13bf4277…` / `obs_71d8cfcc…` / `obs_1dbea528…` / `obs_5a9cde84…`，来自
+`screencast-video2commons` 2 条、`slides-vrt-nodiscussion` 1 条、`slides-vrt-discussion` 1 条）。
+
+| # | 场景 | 实测 `model_concurrency`（逐字取自各 `*.json`） |
+| --- | --- | --- |
+| 1 | 什么都不注入 | `state=not_injected limit=1 requested=null source=none tier=not_checked tier_capacity=null peak_in_flight=1 retries=0 throttle_events={}` |
+| 2 | `--model-parallelism 1` | `state=admitted limit=1 source=flag peak_in_flight=1 retries=0`（与改动前的串行语义一致） |
+| 3 | flag 全开（`=4`） | `limit=4 source=flag peak_in_flight=4 attempts=10 completed=4 failed=0 exhausted=0 retries=6 throttle_events={"concurrency_limit": 6}` |
+| 4 | env 全开（`=4`） | 与 #3 同形，仅 `source=env` 不同 |
+| 5 | `--model-parallelism 2` | `limit=2 source=flag peak_in_flight=2 retries=1 throttle_events={"concurrency_limit": 1}` |
+| 6 | env = `0` / 空串 / `abc` / flag = `abc` | `state=rejected`：`invalid_resident_limit: SENSORYPLEX_MODEL_PARALLELISM=0`、`… is set but empty`、`…=abc`、`invalid_resident_limit: --model-parallelism=abc`（各 exit 2，`frames=[]`——一条输入都没跑） |
+| 7 | env=3 且 flag=2 | `state=rejected`：`model_parallelism_conflict: env=3 flag=2` |
+| 8 | `--runtime`（真起 `large` 档 `serve`）、无请求值 | `state=admitted limit=3 source=runtime tier=large tier_capacity=3 peak_in_flight=3 retries=3 throttle_events={"concurrency_limit": 3}` |
+| 9 | 同一次运行里 flag=2 ≤ 档位上限 3 | `limit=2 source=flag tier=large tier_capacity=3 peak_in_flight=2`（请求值不被上限顶掉，但 `tier`/`tier_capacity` 仍被带出） |
+| 10 | 同一次运行里 flag=8 > 档位上限 3 | `state=rejected`：`model_parallelism_exceeds_tier_cap: requested=8 tier_capacity=3 tier=large`（**不夹取**到 3） |
+| 11 | 运行时转述 `medium`（上限 2）、无请求值 | `limit=2 source=runtime tier=medium tier_capacity=2 peak_in_flight=2` |
+| 12 | `--runtime` 指向不可达端点 | `state=rejected`：`runtime_capabilities_unavailable:UNAVAILABLE`（**不**退化成"没有上限"） |
+| 13 | 同一个坏值在 Rust 与 Python 两侧 | `bad_resident_limit_parity: rust==python: invalid_resident_limit: SENSORYPLEX_MODEL_PARALLELISM=abc` |
+
+场景 #3 报告里的关键细节（`flag_all.json`）：
+
+```
+frames[].attempts = [1, 2, 3, 4]                     # 4 条输入各自的重试次数，第 4 条重试了 3 次
+drain = {'discarded': 0, 'failures': [], 'leases': 0}   # observation 路径不接数据面
+runtime_stats_after = {'leased': 0, 'leases': 0}
+attempts=10 completed=4 failed=0 exhausted=0 retries=6 peak_in_flight=4 max_attempts=4
+```
+
+**本轮拿到的关键新证据**：插件侧那道 `concurrency_limit` 闸门**真实发生了**
+（BGE 插件 `max_concurrency=1`，而 worker 侧并发 4），并且被有界重试吸收到 4/4 全产出——
+没有一条输入因为"可重试拒绝"而静默消失。ADR-019 §7 写下"未吃透"的那一点，至此有了实测。
+
+#### 双语对照（同一个坏值在两侧必须是同一个原因串）
+
+`tools/model_limits.py` 刻意**不用裸 `int()`**（`int("３")` 会通过，而 Rust 的 `str::parse::<usize>()` 不认），
+改用 `^\+?[0-9]+$`。场景 #13 是端到端对照：Rust `serve` 与 Python worker 对
+`SENSORYPLEX_MODEL_PARALLELISM=abc` 给出**逐字相同**的 `invalid_resident_limit: SENSORYPLEX_MODEL_PARALLELISM=abc`。
+
+#### 静态与回归检查
+
+| 检查 | 结果 |
+| --- | --- |
+| `make check EXEC_MODE=container` | ruff（`All checks passed!`）、契约 **230 passed**、集成 **31 passed**、cargo fmt / clippy（`-D warnings`）/ test 全过，exit 0 |
+| `make check EXEC_MODE=host`（宿主 `DSN` 注入 `SENSORYPLEX_TEST_DATABASE_URL`） | 同上，exit 0 |
+| `tests/contracts/test_model_limits.py` | **32 passed**：纯判定 + 契约形状替身（`ScriptedPlugin`、用 barrier 验跨线程峰值），不启真实模型 |
+
+#### 仍未验证（不得当成完成）
+
+- **档位覆盖**：真机只跑了"未注入 / flag 1 / flag 2 / flag 4 / env 4 / 坏值 / 冲突 / 运行时权威 /
+  运行时限内请求值 / 运行时越界 / 运行时 medium / 端点不可达"这些情形，全部来自
+  `macos-aarch64` / M2 Max / 32 GiB 一台机器；`small` 档（16 GiB）、Mac mini 各档位与
+  `linux-x86_64` 未实跑。
+- **并发压力来源**：`file-material` 回放按 `min_interval_ms=1000` 抽帧，单样本只交付 1–2 帧，
+  所以 4 路并发的"压力"来自**多给样本**，不是单样本高吞吐；高帧率下的背压（上游满、worker 追不上）
+  仍未验证，`retry_exhausted` 的路径只在契约测试的替身插件里覆盖。
+- **常驻形态未接线**：worker 仍是**验收脚本形态**（CLI），没有常驻服务、没有跨进程队列节流；
+  `MODEL_PARALLELISM` 只约束**单次 worker 进程内**的在飞调用数，不约束"同时起几个 worker"。
+- `golden_path_verified` 恒为 false，本切片不改变这一结论。
