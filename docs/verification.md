@@ -1410,6 +1410,22 @@ VLM 走 ollama），`metal` 不作为后端引入。
   而容器是 Linux、二进制是 macOS Mach-O；因此 Rust 侧在主机跑、Python 侧校验在容器跑，
   两边通过 `<worktree>/target/*.pb` 与 `/host-media/*`（bind mount）共享产物。
 
+**提交前复跑（2026-09-24，`30794f8`）**：格式化与最终校验后，用同一份 release 二进制
+在主机重跑了上表两条关键路径，结果与表格一致（未注入 → `anchors=2237 dropped=2 gaps=0
+descriptors=1354 leases 1354/1354 segments=7`；`small`/16 → `queue_capacity_exceeds_tier_cap:
+declared=32 tier_capacity=16 tier=small`，exit=1，报告文件不存在），并在容器内用
+`--verify-only` 校验该报告的 `media_queue` 字段（`queue_capacity=not_injected/declared=32/
+tier_capacity=0/retained_limit=32`）。
+
+#### 远端 CI（2026-09-24）
+
+本切片提交 `30794f8` 在远端跑了一轮完整 `engineering-checks`，**三个 job 全绿**
+（run **35900927870**，`pull_request`，PR #4）：`check` 3m51s、`check-console` 55s、
+`check-apple-silicon` 3m45s（`macos-15-arm64`）。
+
+**上一轮的流程异常没有复现**：分支 push 之后 `master` 仍停在 `0f40139`（push 前后各核对一次
+`git ls-remote origin master`），本轮改动**没有**绕过 PR 直推 `master`。
+
 **仍未验证（不得当成完成）**
 
 - `SENSORYPLEX_MODEL_PARALLELISM` 仍只有"已声明"这一层：`serve` 把它转述给
