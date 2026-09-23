@@ -106,6 +106,13 @@ reserved，破坏语义的修改进入新的协议 major。当前为开发预览
   `ingest` 与 `replay` 共用同一条 arena / descriptor / lease / 交接链路与同一套运行参数解析。
 - `replay` 读不了 SRT：anchor 路径要求已知时长，遇到 `type: srt` 的 pipeline 会以
   `srt_source_requires_ingest_command` 显式拒绝，绝不返回一条被清空的、看起来正常的时间轴。
+- 样本时长按**来源**区分，不许混为一谈：buffer 自带的时长照用；缺失时由驱动用**同一轨下一个
+  样本的 PTS 差分**补出（真实测量值），并计入 `DecodedTrackStat.duration_derived_samples`。
+  差分 ≤ 0 记 `duration_delta_nonpositive`，超过 `MAX_DERIVED_DURATION_MS`（5000 ms）记
+  `duration_delta_out_of_range`，窗口/流结束时仍挂起的最后一个样本记
+  `duration_unresolved_at_end`——三条都是显式丢弃并计数，不是静默消失。
+  这条路径来自真实采集端：OBS（Apple VideoToolbox H.264）的码流不带 timing，接收端 buffer
+  没有 duration，按"缺时长就丢"会把整条视频轨丢掉。
 
 跨进程数据面契约（`media/v1/handoff.proto`，**BufferHandoffService**；安全边界见
 [ADR-010](../adr/ADR-010-跨进程数据面的安全边界.md)）：

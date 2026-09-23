@@ -81,6 +81,10 @@ message DecodedTrackStat {
   // Buffers whose interval repeats the previous one, which millisecond rounding can produce at
   // the end of a stream. They are kept, never deleted, and always counted here.
   uint64 overlapping_samples = 15;
+  // Handed-off samples whose duration was not carried by the buffer and was derived from the
+  // measured PTS gap to the next sample on the same track. Zero means every handed-off sample
+  // carried its own duration; it is never a claim that timing metadata was present.
+  uint64 duration_derived_samples = 16;
 }
 
 // One audio segment cut from decoded PCM. The range covers exactly the samples it carries,

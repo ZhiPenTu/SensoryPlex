@@ -42,6 +42,25 @@ METRICS_URL = "http://127.0.0.1:9998/metrics"
 PATH_NAME = "live/obs"
 READY_TIMEOUT_S = 45.0
 STOP_TIMEOUT_S = 10.0
+# 发布端视频编码器。`videotoolbox` 用的是 OBS 同类的 Apple 硬件编码器：
+# 现场 OBS 直推暴露的失败模式（码流不带 timing → 接收端 buffer 没有 duration →
+# 旧实现把整条视频轨丢掉）必须在脚本里能复现，否则只能靠手工回归。
+VIDEO_ENCODERS = {
+    "x264": [
+        "x264enc",
+        "tune=zerolatency",
+        "speed-preset=ultrafast",
+        "key-int-max=60",
+        "bitrate=2500",
+    ],
+    "videotoolbox": [
+        "vtenc_h264",
+        "realtime=true",
+        "allow-frame-reordering=false",
+        "max-keyframe-interval=60",
+        "bitrate=2500",
+    ],
+}
 # 报告里绝不允许出现的字符串：URI 可能带凭据，只能以引用名出现。
 FORBIDDEN_IN_REPORT = ("srt://", "127.0.0.1", "streamid", ":8890")
 
@@ -107,9 +126,10 @@ def metrics() -> tuple[str, int]:
 class Publisher:
     """用 GStreamer `srtsink` 把授权样本**直推** SRT（不经 RTMP、不经 MediaMTX 转码）。"""
 
-    def __init__(self, sample: Path, log_path: Path):
+    def __init__(self, sample: Path, log_path: Path, encoder: str = "x264"):
         self.sample = sample
         self.log_path = log_path
+        self.encoder = encoder
         self.process: subprocess.Popen | None = None
         self.log = None
 
@@ -139,11 +159,7 @@ class Publisher:
                 "!",
                 "video/x-raw,format=I420",
                 "!",
-                "x264enc",
-                "tune=zerolatency",
-                "speed-preset=ultrafast",
-                "key-int-max=60",
-                "bitrate=2500",
+                *VIDEO_ENCODERS[self.encoder],
                 "!",
                 "h264parse",
                 "!",
@@ -322,6 +338,78 @@ def scenario_steady(sample: Path, workspace: Path, duration_ms: int, uri: str) -
         checks.check(
             report.handoff_state == "not_exercised", f"handoff_state={report.handoff_state!r}"
         )
+        checks.check(list(report.blockers) == [], f"blockers={list(report.blockers)}")
+        leaked = [token for token in FORBIDDEN_IN_REPORT if token.encode() in raw]
+        checks.check(not leaked, f"report leaks no URI material (found {leaked})")
+        checks.check(uri not in result.stdout, "stdout leaks no URI")
+    finally:
+        publisher.stop()
+    return checks.finish()
+
+
+def scenario_videotoolbox_video(sample: Path, workspace: Path, duration_ms: int, uri: str) -> bool:
+    """OBS 同类的 Apple 硬件编码器直推：没有容器 timing 的视频轨也必须进入数据面。
+
+    现场那次 OBS SRT 直推里 video buffer 不带 duration，旧实现按 `duration_unavailable`
+    丢掉了整条视频轨（20 秒窗口 0 帧）。本场景把"整条轨消失"钉成回归断言，并要求
+    时长推导被显式计数，而不是冒充容器声明的时长。
+    """
+    checks = Checks("videotoolbox_video")
+    publisher = Publisher(sample, workspace / "videotoolbox-publisher.log", encoder="videotoolbox")
+    publisher.start()
+    try:
+        publisher.wait_ready()
+        report_path = workspace / "videotoolbox-report.pb"
+        result = run_ingest(report_path, duration_ms, uri)
+        checks.check(
+            result.returncode == 0,
+            f"ingest exit 0 (got {result.returncode}): {result.stderr[-400:]}",
+        )
+        report, raw = read_report(report_path)
+        video = next(
+            (track for track in report.decoded.tracks if track.track_kind == "video"), None
+        )
+        checks.check(video is not None, "the report carries a video track stat")
+        if video is not None:
+            checks.check(
+                video.samples > 0,
+                f"video samples={video.samples} > 0: decoded frames reach the data plane",
+            )
+            checks.check(
+                "duration_unavailable" not in video.drop_reasons,
+                f"video drop_reasons={list(video.drop_reasons)}: missing buffer durations "
+                "are resolved from the PTS delta, not dropped",
+            )
+            checks.check(
+                video.duration_derived_samples <= video.samples,
+                f"duration_derived_samples={video.duration_derived_samples} "
+                f"<= samples={video.samples}",
+            )
+            checks.check(
+                video.width > 0 and video.height > 0,
+                f"video layout={video.width}x{video.height} is measured, not assumed",
+            )
+            print(
+                f"[videotoolbox_video] duration_derived_samples={video.duration_derived_samples} "
+                f"video_samples={video.samples} drops={list(video.drop_reasons)}"
+            )
+        audio = next(
+            (track for track in report.decoded.tracks if track.track_kind == "audio"), None
+        )
+        checks.check(
+            audio is not None and audio.samples > 0,
+            "the audio track keeps flowing next to the video one",
+        )
+        described = [
+            track
+            for track in report.source.tracks
+            if track.track_kind == "video" and track.width > 0
+        ]
+        checks.check(
+            len(described) == 1,
+            f"observed video source tracks carrying a real size: {len(described)}",
+        )
+        checks.check(report.golden_path_verified is False, "golden_path_verified stays false")
         checks.check(list(report.blockers) == [], f"blockers={list(report.blockers)}")
         leaked = [token for token in FORBIDDEN_IN_REPORT if token.encode() in raw]
         checks.check(not leaked, f"report leaks no URI material (found {leaked})")
@@ -573,6 +661,9 @@ def main() -> int:
 
     scenarios = {
         "steady": lambda workspace: scenario_steady(
+            args.sample, workspace, args.steady_duration_ms, args.uri
+        ),
+        "videotoolbox_video": lambda workspace: scenario_videotoolbox_video(
             args.sample, workspace, args.steady_duration_ms, args.uri
         ),
         "stall_recovery": lambda workspace: scenario_stall_recovery(

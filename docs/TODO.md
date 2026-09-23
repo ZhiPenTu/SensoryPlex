@@ -72,9 +72,14 @@
   实时数据面交接（独立进程 63 项检查通过、账目对得上）。
 - 重连归属：重连由解码元素负责（`srtsrc auto-reconnect=true`）；本进程只**测量**断流与恢复，
   报告里 `reconnect_owner` 如实写 `srtsrc auto-reconnect`，不声称自己控制重连。
-- 仍未验证（不要当成已完成）：没有用户自有采集端（OBS / Mac mini）的 SRT 直推记录；
-  SRT 加密与带凭据的 publish 未验证；只在本机回环与 `macos-aarch64` 上验收；
-  小时级长直播、连续多次断流、VFR/设备直出/720p 屏幕文字的直播样本都没有。
+- 用户自有采集端：OBS 直推 SRT 已实测通过（见 `docs/verification.md` "M4+"），并因此修掉一个
+  真实缺陷——OBS 的 Apple VT H.264 不带 timing，旧实现会把整条视频轨按 `duration_unavailable`
+  丢掉；现在用同一轨下一个样本的 PTS 差分补时长并计入 `duration_derived_samples`。
+  新增的 `videotoolbox_video` 场景已随五场景 `make live-check` 通过（该发布端同样不带 timing，
+  `duration_derived_samples=3` 三帧全靠差分定时）。仍未验证：Mac mini / 跨机部署、OBS 之外的采集端。
+- 仍未验证（不要当成已完成）：SRT 加密与带凭据的 publish；只在本机回环与 `macos-aarch64` 上验收；
+  小时级长直播、连续多次断流、VFR/设备直出/720p 屏幕文字的直播样本都没有；
+  真实流里出现过 1 次 `duration_delta_nonpositive`（PTS 重复/非单调），B 帧重排序没有专门验证。
 - 注意（保持有效）：没有样本的窗口必须以 `live_window_produced_no_samples` 失败，不得报成
   "成功但为空"；`replay` 读 SRT 仍必须显式拒绝（`srt_source_requires_ingest_command`）；
   直播没有 anchor 区间，因此 M1 的覆盖率结论不适用于直播。
@@ -124,8 +129,10 @@
 
 - [x] 断流重连样本（最小覆盖）：登记在册的 552 秒授权长样本经 GStreamer `srtsink` 直推 SRT，
       主动断流后重启发布端（`make live-check` 的 `stall_recovery` 场景）。
-- [ ] 用户自有采集端的 SRT 直推样本：OBS 或 Mac mini 用 `srtsink` 直推（OBS 默认推 RTMP，需单独配置）；
-      未提供前不得声称"用户实际直播链路已验收"。
+- [x] 用户自有采集端的 SRT 直推样本（OBS）：本机 OBS 自定义服务直推
+      `srt://127.0.0.1:8890?streamid=publish:live/obs`（密钥留空），MediaMTX 报 `state="ready"`，
+      Runtime `ingest` 20 秒窗口 samples=1604 / descriptors=1013（0 失败）；同轮修掉"无 timing 码流
+      被整轨丢弃"的缺陷（证据：`docs/verification.md` "M4+"）。Mac mini 与跨机部署仍待补。
 - [ ] SRT 加密（`passphrase`）与带凭据 publish 的样本。
 - [ ] 容器级 VFR 长间隙样本：现有 6 个样本都是 CFR，"长间隙"只由内容静止段近似（最长 57.8s）。
 - [ ] 720p/原始分辨率屏幕文字样本：现有 480p 转码下 OCR 可辨识度有限，不能据此下 OCR 结论。

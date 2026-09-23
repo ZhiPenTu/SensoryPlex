@@ -32,6 +32,9 @@ pub const DEFAULT_STATE_TIMEOUT_S: u64 = 15;
 pub const LIVE_STATE_TIMEOUT_S: u64 = 3;
 /// 连续多次 pull 都没有进展即视为卡住（stalled），而不是慢。
 pub const MAX_IDLE_ROUNDS: u32 = 2_000;
+/// 由 PTS 差分推导出的时长上限。更大的间隔说明中间丢了样本或者换了段，
+/// 把整段空白当成一帧的时间长度会失真，因此按“不可用”处理并显式计数。
+pub const MAX_DERIVED_DURATION_MS: i64 = 5_000;
 /// 证据保持精简：报告只证明交接契约，不是 buffer 转储。
 pub const MAX_EVIDENCE_DESCRIPTORS: usize = 4;
 pub const MAX_LISTED_SEGMENTS: usize = 64;
@@ -97,6 +100,9 @@ pub struct DecodedSample {
     pub pts_ms: Option<i64>,
     /// buffer 不携带 duration 时为 `None`；驱动随后需要下一个样本才能确定时长。
     pub duration_ms: Option<i64>,
+    /// `true` 表示上面的时长不是 buffer 自带的，而是由同轨下一个样本的 PTS 差分得来。
+    /// 报告按此计数，绝不把推导值伪装成容器声明的时长。
+    pub duration_derived: bool,
     pub width: u32,
     pub height: u32,
     pub pixel_format: String,
@@ -433,6 +439,7 @@ fn decode_sample(
         origin_ms,
         pts_ms,
         duration_ms,
+        duration_derived: false,
         width: get_i32("width"),
         height: get_i32("height"),
         pixel_format: get_string("format"),
@@ -518,6 +525,7 @@ struct TrackState {
     last_end_ms: i64,
     dropped_samples: u64,
     overlapping_samples: u64,
+    duration_derived_samples: u64,
     origin_ms: Option<i64>,
     drop_reasons: BTreeSet<&'static str>,
     next_index: u64,
@@ -535,6 +543,7 @@ impl TrackState {
             last_end_ms: -1,
             dropped_samples: 0,
             overlapping_samples: 0,
+            duration_derived_samples: 0,
             origin_ms: None,
             drop_reasons: BTreeSet::new(),
             next_index: 0,
@@ -551,6 +560,7 @@ impl TrackState {
             last_end_ms: self.last_end_ms,
             dropped_samples: self.dropped_samples,
             overlapping_samples: self.overlapping_samples,
+            duration_derived_samples: self.duration_derived_samples,
             timeline_offset_ms: self.origin_ms.unwrap_or(0),
             width: self.layout.width,
             height: self.layout.height,
@@ -576,6 +586,9 @@ pub(crate) struct DecodeSession<'a> {
     leases: LeaseRegistry,
     counters: HandoffCounters,
     tracks: Vec<TrackState>,
+    /// 每条轨道最多挂起一个“等下一个样本才能定时长”的样本：它不进 arena、不进统计，
+    /// 差分成功才落地，差分失败则带原因计数丢弃。
+    pending: [Option<DecodedSample>; 2],
     evidence: Vec<BufferDescriptor>,
     sampler: AdaptiveSampler,
     segmenter: Option<AudioSegmenter>,
@@ -603,6 +616,7 @@ impl<'a> DecodeSession<'a> {
                 TrackState::new(TrackKind::Video),
                 TrackState::new(TrackKind::Audio),
             ],
+            pending: [None, None],
             evidence: Vec::new(),
             sampler: AdaptiveSampler::new(run.sampling),
             handoff: match run.handoff.enabled {
@@ -638,6 +652,56 @@ impl<'a> DecodeSession<'a> {
     fn drop_sample(&mut self, index: usize, reason: &'static str) {
         self.tracks[index].dropped_samples += 1;
         self.tracks[index].drop_reasons.insert(reason);
+    }
+
+    /// 驱动入口。buffer 自带时长的样本立即落地；时长缺失的样本按轨道挂起一个，
+    /// 由同一轨下一个样本的 PTS 差分补齐（真实测量值，不是估计）。
+    /// 补不出来时显式丢弃并记原因，绝不静默。
+    pub(crate) fn push(&mut self, sample: DecodedSample) -> Result<(), MediaError> {
+        let index = track_index(sample.track);
+        if let Some(pending) = self.pending[index].take() {
+            self.resolve_pending(index, pending, sample.pts_ms)?;
+        }
+        // 时长未知但时间戳已知的样本要等下一个样本；连时间戳都没有的样本
+        // 走 accept 的既有路径，在那里记 `pts_unavailable`。
+        if sample
+            .duration_ms
+            .filter(|duration| *duration > 0)
+            .is_none()
+            && sample.pts_ms.filter(|pts| *pts >= 0).is_some()
+        {
+            self.pending[index] = Some(sample);
+            return Ok(());
+        }
+        self.accept(sample)
+    }
+
+    /// 用下一个样本的 PTS 给挂起的样本补时长；补不出来就带原因丢弃。
+    fn resolve_pending(
+        &mut self,
+        index: usize,
+        mut pending: DecodedSample,
+        next_pts_ms: Option<i64>,
+    ) -> Result<(), MediaError> {
+        let previous_pts_ms = pending.pts_ms.unwrap_or(-1);
+        let Some(next_pts_ms) = next_pts_ms.filter(|pts| *pts >= 0) else {
+            // 下一个样本没有时间戳，差分无从谈起。
+            self.drop_sample(index, "duration_unavailable");
+            return Ok(());
+        };
+        let delta_ms = next_pts_ms - previous_pts_ms;
+        if delta_ms <= 0 {
+            self.drop_sample(index, "duration_delta_nonpositive");
+            return Ok(());
+        }
+        if delta_ms > MAX_DERIVED_DURATION_MS {
+            // 间隔过大说明中间丢了样本或换了段，不能把空白算成一帧的长度。
+            self.drop_sample(index, "duration_delta_out_of_range");
+            return Ok(());
+        }
+        pending.duration_ms = Some(delta_ms);
+        pending.duration_derived = true;
+        self.accept(pending)
     }
 
     /// 把一个解码后的样本转换为已校验的 descriptor、一条轨道统计，
@@ -744,6 +808,9 @@ impl<'a> DecodeSession<'a> {
                     audio_format: sample.audio_format.clone(),
                 };
             }
+            if sample.duration_derived {
+                track.duration_derived_samples += 1;
+            }
             track.samples += 1;
             track.bytes += sample.bytes.len() as u64;
             track.last_end_ms = end_ms;
@@ -839,6 +906,12 @@ impl<'a> DecodeSession<'a> {
     pub(crate) fn finish(
         mut self,
     ) -> Result<(media::DecodedDataPlane, Option<BufferHandoff>), MediaError> {
+        // 流/窗口结束时仍挂起的样本补不出时长：显式计入丢弃，不让它静默消失。
+        for index in 0..self.pending.len() {
+            if self.pending[index].take().is_some() {
+                self.drop_sample(index, "duration_unresolved_at_end");
+            }
+        }
         let flushed = self.segmenter.as_mut().map(|segmenter| {
             (
                 segmenter.sample_rate(),
@@ -957,7 +1030,7 @@ pub fn decode_file(
             };
             progressed = true;
             consumed += 1;
-            session.accept(sample)?;
+            session.push(sample)?;
         }
         if truncated || !running {
             break;
@@ -1042,7 +1115,7 @@ pub fn decode_live(
                 if first_pts.is_none() {
                     first_pts = sample.pts_ms;
                 }
-                session.accept(sample)?;
+                session.push(sample)?;
             }
         }
         let now_ms = started.elapsed().as_millis() as u64;
@@ -1067,4 +1140,171 @@ pub fn decode_live(
         stats,
         truncated,
     })
+}
+
+#[cfg(all(test, feature = "gstreamer"))]
+mod tests {
+    use super::*;
+
+    fn run() -> DecodeRun {
+        DecodeRun {
+            decode: DecodeConfig::default(),
+            max_samples: 16,
+            audio_segment_ms: 5_000,
+            sampling: SamplingPolicy::default(),
+            handoff: RetainPolicy::default(),
+        }
+    }
+
+    fn session() -> DecodeSession<'static> {
+        DecodeSession::new("stream-live-test", "live-test", "arena-live-test", &run())
+            .expect("session builds")
+    }
+
+    fn audio_sample(pts_ms: Option<i64>, duration_ms: Option<i64>) -> DecodedSample {
+        DecodedSample {
+            track: TrackKind::Audio,
+            origin_ms: 0,
+            pts_ms,
+            duration_ms,
+            duration_derived: false,
+            width: 0,
+            height: 0,
+            pixel_format: String::new(),
+            sample_rate: 48_000,
+            channels: 2,
+            audio_format: "F32LE".into(),
+            bytes: vec![0u8; 64],
+        }
+    }
+
+    fn video_sample(pts_ms: Option<i64>, duration_ms: Option<i64>) -> DecodedSample {
+        DecodedSample {
+            track: TrackKind::Video,
+            origin_ms: 0,
+            pts_ms,
+            duration_ms,
+            duration_derived: false,
+            width: 16,
+            height: 16,
+            pixel_format: VIDEO_PIXEL_FORMAT.into(),
+            sample_rate: 0,
+            channels: 0,
+            audio_format: String::new(),
+            bytes: vec![7u8; 16 * 16 * 4],
+        }
+    }
+
+    fn stat(plane: &media::DecodedDataPlane, kind: TrackKind) -> &media::DecodedTrackStat {
+        plane
+            .tracks
+            .iter()
+            .find(|track| track.track_kind == kind.name())
+            .expect("track stat is always present")
+    }
+
+    /// 复现真实 OBS 输入：码流不写 VUI timing，h264parse 因此不给 buffer duration。
+    /// 时长必须由同一轨下一个样本的 PTS 差分补上，且这个推导要显式计算。
+    #[test]
+    fn video_without_buffer_duration_is_timed_by_the_next_sample() {
+        let mut session = session();
+        session.push(video_sample(Some(0), None)).expect("push");
+        session.push(video_sample(Some(33), None)).expect("push");
+        let (plane, _) = session.finish().expect("finish");
+
+        let video = stat(&plane, TrackKind::Video);
+        assert_eq!(video.samples, 1, "首帧由 PTS 差分定时后被交接");
+        assert_eq!(video.duration_derived_samples, 1);
+        assert_eq!(video.dropped_samples, 1, "窗口末尾那一帧补不出时长");
+        assert!(video
+            .drop_reasons
+            .contains(&"duration_unresolved_at_end".to_string()));
+        assert_eq!(video.width, 16);
+        assert_eq!(video.height, 16);
+        let evidence = &plane.evidence_descriptors[0];
+        let range = evidence.time_range.as_ref().expect("range");
+        assert_eq!((range.start_ms, range.end_ms), (0, 33));
+    }
+
+    /// 时长由 buffer 自带时不许计入推导数，否则报告会把容器声明的时长和推导值混为一谈。
+    #[test]
+    fn declared_duration_is_never_counted_as_derived() {
+        let mut session = session();
+        session.push(audio_sample(Some(0), Some(21))).expect("push");
+        let (plane, _) = session.finish().expect("finish");
+
+        let audio = stat(&plane, TrackKind::Audio);
+        assert_eq!(audio.samples, 1);
+        assert_eq!(audio.duration_derived_samples, 0);
+        assert_eq!(audio.dropped_samples, 0);
+        assert!(audio.drop_reasons.is_empty());
+    }
+
+    /// 间隔过大说明中间丢了样本或换了段：不推导，显式丢弃并记原因。
+    #[test]
+    fn oversized_gap_is_dropped_instead_of_becoming_a_frame_duration() {
+        let mut session = session();
+        session.push(audio_sample(Some(0), None)).expect("push");
+        session
+            .push(audio_sample(Some(MAX_DERIVED_DURATION_MS + 1), Some(21)))
+            .expect("push");
+        let (plane, _) = session.finish().expect("finish");
+
+        let audio = stat(&plane, TrackKind::Audio);
+        assert_eq!(audio.samples, 1, "带自带时长的那一个照常落地");
+        assert_eq!(audio.duration_derived_samples, 0);
+        assert_eq!(audio.dropped_samples, 1);
+        assert!(audio
+            .drop_reasons
+            .contains(&"duration_delta_out_of_range".to_string()));
+    }
+
+    /// 非正间隔不是时长，同样按不可用处理。
+    #[test]
+    fn nonpositive_gap_is_dropped_with_a_reason() {
+        let mut session = session();
+        session.push(audio_sample(Some(100), None)).expect("push");
+        session
+            .push(audio_sample(Some(100), Some(21)))
+            .expect("push");
+        let (plane, _) = session.finish().expect("finish");
+
+        let audio = stat(&plane, TrackKind::Audio);
+        assert_eq!(audio.dropped_samples, 1);
+        assert!(audio
+            .drop_reasons
+            .contains(&"duration_delta_nonpositive".to_string()));
+    }
+
+    /// 没有下一个样本就没有差分：窗口结束时仍挂起的样本必须显式计数。
+    #[test]
+    fn pending_sample_at_window_end_is_reported_not_silently_lost() {
+        let mut session = session();
+        session.push(audio_sample(Some(0), None)).expect("push");
+        let (plane, _) = session.finish().expect("finish");
+
+        let audio = stat(&plane, TrackKind::Audio);
+        assert_eq!(audio.samples, 0);
+        assert_eq!(audio.dropped_samples, 1);
+        assert!(audio
+            .drop_reasons
+            .contains(&"duration_unresolved_at_end".to_string()));
+    }
+
+    /// 下一个样本连时间戳都没有时差分无从谈起：挂起的样本按不可用丢弃。
+    #[test]
+    fn pending_sample_is_dropped_when_the_next_one_has_no_timestamp() {
+        let mut session = session();
+        session.push(audio_sample(Some(0), None)).expect("push");
+        session.push(audio_sample(None, Some(21))).expect("push");
+        let (plane, _) = session.finish().expect("finish");
+
+        let audio = stat(&plane, TrackKind::Audio);
+        assert_eq!(audio.samples, 0);
+        assert_eq!(audio.dropped_samples, 2);
+        assert!(audio
+            .drop_reasons
+            .contains(&"duration_unavailable".to_string()));
+        assert!(audio.drop_reasons.contains(&"pts_unavailable".to_string()));
+    }
 }

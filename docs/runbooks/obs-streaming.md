@@ -17,9 +17,26 @@ OBS → 设置 → 直播（Stream）→ 服务选择「自定义」：
 | 串流密钥 | `obs` |
 | 使用身份验证 | 关闭（仅本机接入） |
 
+想验证**真正的 SRT 直出**（不经 RTMP 转封装），把服务改成 SRT 形式：
+
+| 字段 | 填写值 |
+| --- | --- |
+| 服务器 | `srt://127.0.0.1:8890?streamid=publish:live/obs` |
+| 串流密钥 | **留空**（OBS 会把密钥拼到 URL 后面，拼上就找不到路径） |
+| 使用身份验证 | 关闭（仅本机接入） |
+
+两类常见失败都能在 `make stream-logs` 里看到真实回执：
+
+| OBS 现象 | MediaMTX 日志 | 原因 |
+| --- | --- | --- |
+| 无法连接 | `closed: path 'live' is not configured` | 只填了服务器地址（或 `streamid=publish:live`）：接入层只登记 `live/obs` 一个路径，不会自动创建 |
+| 无法连接 | `closed: no stream is available on path 'live/obs'` 或 `invalid stream ID` | streamid 不完整/前缀不对，被当成读取请求 |
+
 输出建议：Apple VT H.264 硬件编码、AAC 音频、关键帧间隔 2 秒、720p/30 FPS、视频码率 2500–4000 Kbps。
 添加有授权的媒体源后点击「开始直播」。`obs` 是流路径标识，不是安全凭证。
 仅支持同一台 Mac 上的 OBS；这些地址没有开放到局域网或公网。
+注意：Apple VT H.264 **不写 VUI timing**，接收端 buffer 没有 duration；`ingest` 会用同一轨下一个
+样本的 PTS 差分补时长并计入 `duration_derived_samples`（见 `docs/verification.md` 的 "M4+"）。
 
 ## 读取同一条流
 
@@ -136,10 +153,30 @@ gst-launch-1.0 -e -v \
 - 验收后容器 CPU 0.07%、内存约 45.72 MiB / 128 MiB（单次采样，非压测结论），无 OOM 或重启。
 - `make integration`：3 项通过；`make check` 在 Rust 格式检查处被已有的 arena/handoff/shm/runtime
   未格式化改动阻断，其余检查没有执行；未改动这些工作区文件。Compose 校验与 `git diff --check` 通过。
-- 尚未验证用户 OBS 的 **SRT 直推**场景（OBS 默认推 RTMP）、SRT 加密与带凭据 publish 或模型链路；
+- 用户 OBS 的 **SRT 直推**已于同日实测（见下一小节）；SRT 加密、带凭据 publish 与模型链路仍未验证；
   `golden_path_verified=false`。
 - Runtime 的 SRT 接入与断流重连随后已在同一套接入层上验收（发布端为 GStreamer `srtsink` 直推，
   四个场景见 [验证记录](../verification.md) 的"M4"一节）；本轮记录里的 RTMP 发布路径仍然有效。
+
+### OBS 自有采集端 SRT 直推（2026-09-23）
+
+用上面那张 SRT 表格（服务器 `srt://127.0.0.1:8890?streamid=publish:live/obs`、密钥留空）推流后：
+
+```sh
+curl -s http://127.0.0.1:9998/metrics | grep -E '^paths\{'   # 期望 state="ready"
+SENSORYPLEX_SRT_LIVE_URI='srt://127.0.0.1:8890?streamid=read:live/obs' \
+  target/release/sensoryplex-runtime ingest config/pipelines/srt-live.yaml \
+  --report /tmp/live-obs.pb --duration-ms 20000
+```
+
+- 实测（20 秒窗口）：`samples=1604 descriptors=1013`（0 失败）、`leases_released=1013`、`stalls=0`、
+  `golden_path_verified=false`；video 1280×720 RGBA、audio 48 kHz/2ch。
+- 期间发现并修复：OBS 的 Apple VT H.264 码流不带 timing，接收端 buffer 没有 duration，
+  旧实现会把**整条视频轨**按 `duration_unavailable` 丢掉（601 次丢弃、0 帧）。现在由同一轨下一个
+  样本的 PTS 差分补时长，并在 `DecodedTrackStat.duration_derived_samples` 里单独计数。
+- 视频最终只留下少数帧属抽帧策略：画面静止时按 5 秒心跳保留，`sampling.kept` 与
+  `skipped_no_change` 都在报告里，不是丢帧。
+- 详细证据与未验证范围见 [验证记录](../verification.md) 的"M4+"一节。
 
 本地诊断输出位于 Git 忽略的 `.logs/stream-verification/`，包括 `report.json`、
 `rtsp-probe.json`、`gstreamer.log` 与 `active-metrics.txt`，未保存媒体帧或录制文件。

@@ -77,7 +77,7 @@ class TimelineAnchor(_message.Message):
     def __init__(self, anchor_id: _Optional[str] = ..., track_kind: _Optional[str] = ..., time_range: _Optional[_Union[_common_pb2.TimeRange, _Mapping]] = ..., pts_ms: _Optional[int] = ..., keyframe: bool = ...) -> None: ...
 
 class DecodedTrackStat(_message.Message):
-    __slots__ = ("track_kind", "samples", "bytes", "first_pts_ms", "last_end_ms", "width", "height", "pixel_format", "sample_rate", "channels", "audio_format", "dropped_samples", "drop_reasons", "timeline_offset_ms", "overlapping_samples")
+    __slots__ = ("track_kind", "samples", "bytes", "first_pts_ms", "last_end_ms", "width", "height", "pixel_format", "sample_rate", "channels", "audio_format", "dropped_samples", "drop_reasons", "timeline_offset_ms", "overlapping_samples", "duration_derived_samples")
     TRACK_KIND_FIELD_NUMBER: _ClassVar[int]
     SAMPLES_FIELD_NUMBER: _ClassVar[int]
     BYTES_FIELD_NUMBER: _ClassVar[int]
@@ -93,6 +93,7 @@ class DecodedTrackStat(_message.Message):
     DROP_REASONS_FIELD_NUMBER: _ClassVar[int]
     TIMELINE_OFFSET_MS_FIELD_NUMBER: _ClassVar[int]
     OVERLAPPING_SAMPLES_FIELD_NUMBER: _ClassVar[int]
+    DURATION_DERIVED_SAMPLES_FIELD_NUMBER: _ClassVar[int]
     track_kind: str
     samples: int
     bytes: int
@@ -108,7 +109,8 @@ class DecodedTrackStat(_message.Message):
     drop_reasons: _containers.RepeatedScalarFieldContainer[str]
     timeline_offset_ms: int
     overlapping_samples: int
-    def __init__(self, track_kind: _Optional[str] = ..., samples: _Optional[int] = ..., bytes: _Optional[int] = ..., first_pts_ms: _Optional[int] = ..., last_end_ms: _Optional[int] = ..., width: _Optional[int] = ..., height: _Optional[int] = ..., pixel_format: _Optional[str] = ..., sample_rate: _Optional[int] = ..., channels: _Optional[int] = ..., audio_format: _Optional[str] = ..., dropped_samples: _Optional[int] = ..., drop_reasons: _Optional[_Iterable[str]] = ..., timeline_offset_ms: _Optional[int] = ..., overlapping_samples: _Optional[int] = ...) -> None: ...
+    duration_derived_samples: int
+    def __init__(self, track_kind: _Optional[str] = ..., samples: _Optional[int] = ..., bytes: _Optional[int] = ..., first_pts_ms: _Optional[int] = ..., last_end_ms: _Optional[int] = ..., width: _Optional[int] = ..., height: _Optional[int] = ..., pixel_format: _Optional[str] = ..., sample_rate: _Optional[int] = ..., channels: _Optional[int] = ..., audio_format: _Optional[str] = ..., dropped_samples: _Optional[int] = ..., drop_reasons: _Optional[_Iterable[str]] = ..., timeline_offset_ms: _Optional[int] = ..., overlapping_samples: _Optional[int] = ..., duration_derived_samples: _Optional[int] = ...) -> None: ...
 
 class AudioSegment(_message.Message):
     __slots__ = ("segment_id", "time_range", "sample_rate", "channels", "bytes", "partial")

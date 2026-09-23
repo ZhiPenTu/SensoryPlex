@@ -448,8 +448,8 @@ SENSORYPLEX_SRT_LIVE_URI='srt://127.0.0.1:8890?streamid=read:live/obs' \
 
 **未验证范围（不得当作完成）：**
 
-- 没有用户自有采集端（OBS / Mac mini）的 SRT 直推记录：本轮发布端是 GStreamer 脚本 + 已登记的
-  公有许可样本；OBS 默认推 RTMP，SRT 直推需要单独配置。
+- 用户自有采集端（OBS）的 SRT 直推已于同日实测，见下文"M4+ OBS 自有采集端直推与视频时长缺口"；
+  Mac mini、以及"发布端与消费端不同机"仍未验证（本轮两者都在同一台 Mac 上）。
 - SRT 加密（`passphrase` / `pbkeylen`）与"需要凭据的 publish"未验证：当前 publish 走 `user: any`。
 - 只在本机回环与 `macos-aarch64` 上验收；`linux-x86_64` 侧未执行。
 - 直播没有 anchor 区间（没有已知时长），M1 的覆盖率口径在直播下只有 `sampling.observed/kept` 数字。
@@ -458,3 +458,64 @@ SENSORYPLEX_SRT_LIVE_URI='srt://127.0.0.1:8890?streamid=read:live/obs' \
 - 运行时解码仍会出现一条 macOS GL 警告（`GStreamer-GL-WARNING ... NSApplication`）：VideoToolbox
   解码出 GLMemory，`videoconvert` 负责下载。实测不影响结果（0 descriptor 失败），但无头常驻形态
   （M5）下是否稳定未验证。
+
+### M4+ OBS 自有采集端直推与视频时长缺口（2026-09-23）
+
+上一节的发布端是脚本；这一节记录**用户自己的 OBS** 直推 SRT，以及它暴露出的一个真实缺陷。
+
+**OBS 侧填写（用户实测通过的形态）：** 设置 → 直播 → 服务=自定义，服务器
+`srt://127.0.0.1:8890?streamid=publish:live/obs`，串流密钥**留空**（见
+[OBS 推流手册](runbooks/obs-streaming.md)）。
+
+**先记下两次失败形态（都是 MediaMTX 的真实回执，不是猜测）：**
+
+| 发布端配置 | MediaMTX 日志 | 结论 |
+| --- | --- | --- |
+| `srt://127.0.0.1:8890?streamid=publish:live` + 密钥 `obs` | `closed: invalid stream ID` / `no stream is available on path 'live/obs'` | streamid 必须精确写成 `publish:live/obs` |
+| 同上，去掉 `?streamid=` 只留服务器地址 | `closed: path 'live' is not configured` | 接入层只登记了 `live/obs` 一个路径，不会自动创建其他路径 |
+
+**接入侧实测：** `paths{name="live/obs",state="ready"}`、日志
+`[SRT] [conn …] is publishing to path 'live/obs'`，2 条轨道（H264、MPEG-4 Audio）；
+`ingest` 20 秒窗口得到 `samples=1586`、`descriptors=990`（0 失败）、`leases_released=990`、
+`stalls=0`、`pts_gap_total=0`、`ended_by_deadline=true`、`blockers` 为空、
+`golden_path_verified=false`，报告原始字节里没有 URI/`streamid`/`127.0.0.1`。
+
+**发现的缺陷（真实输入才暴露）：** 同一次接入里视频轨 **0 帧**，`dropped_samples=601`、
+`drop_reasons=['duration_unavailable']`。根因不是接入层丢包，而是**编码器不带 timing**：
+OBS 的 Apple VideoToolbox H.264 直推过来后，接收端 caps 只有
+`video/x-h264, stream-format=(string)byte-stream`（没有 framerate），因此 `h264parse` 不给
+buffer 设置 duration；旧实现在 `DecodeSession::accept()` 里"没有正时长就丢"，等于按编码器
+实现差异把整条视频轨丢掉。MP4 回放与 x264 脚本发布端都带 timing，所以之前没有暴露。
+
+**修复（`crates/media/src/decode.rs` + `proto/media/v1/media.proto`）：** 驱动入口改为
+`push()`：时长缺失但时间戳可用的样本按轨道挂起一个，由**同一轨下一个样本的 PTS 差分**补出时长
+（真实测量值）；差分 ≤ 0、超过 5000 ms、以及窗口结束时仍未补出的样本都**显式丢弃并记原因**。
+新增 `DecodedTrackStat.duration_derived_samples` 区分"容器声明"与"差分推导"，两者不许混算。
+
+**修复后对同一路真实 OBS 流复测（20 秒窗口）：** video `samples=4`、`1280x720 RGBA`
+（3.6 MB/帧）、`duration_derived_samples=4`、`descriptor_failures=0`；source tracks 现在报出
+`video 1280x720, timing_known=true`；596 次丢弃里 594 次是抽帧跳过（`rate_limited=117`、
+`no_change_yet=477`——现场画面基本静止，心跳 5 秒），只有 2 次与时长有关
+（`duration_delta_nonpositive`、`duration_unresolved_at_end` 各 1）。audio `samples=1004`、
+48 kHz/2ch、5 个段（1 个 partial）。视频只留 4 帧是抽帧策略的结果，不是丢帧。
+
+**回归覆盖：** 新增 6 个单测（`crates/media/src/decode.rs` 的 `decode::tests`，59 个 media
+测试全通过）覆盖"差分补时长/自带时长不计入推导/超范围丢弃/非正丢弃/窗口末尾挂起/下一个样本
+无时间戳"；`tools/verify_live.py` 新增 `videotoolbox_video` 场景（用 OBS 同类的 `vtenc_h264`
+直推），把"整条视频轨消失"钉成断言。
+
+**五场景复跑（`make live-check`，OBS 停流后，2026-09-23）：** 五个场景全部 PASS。新增的
+`videotoolbox_video` 自己的发布端**同样不带 timing**——`video samples=3`、
+`duration_derived_samples=3`（三帧全部由 PTS 差分定时，修复前这一整轨会被丢掉）、854x480、
+`duration_unavailable` 不再出现。其余场景：steady `samples=960` / `descriptors=662`（0 失败）；
+stall_recovery `samples=1158`、`stalls=1`、`stalled_ms=4797`（`started=7432ms ended=12229ms`）、
+`recovered=true`；no_source exit 1（`live_window_produced_no_samples`，`samples=0`）；
+live_handoff `released+expired+retained=32 == retained_total=32`、独立消费者 63 项检查通过。
+同一脚本连跑两次的 `samples` 会差百分之几（发布端不是实时 paced），属吞吐差异，不是数据面差异。
+
+**仍未验证（不得当作完成）：**
+
+- 采集端只测了本机 OBS；Mac mini 与跨机部署、OBS 之外的采集端未验证。
+- `duration_delta_nonpositive` 在真实流里出现过 1 次（PTS 重复或非单调）：当前按丢弃处理并计数，
+  但没有针对 B 帧重排序的专门验证。
+- SRT 加密（`passphrase` / `pbkeylen`）与带凭据的 publish、`linux-x86_64` 侧仍未验证。

@@ -13,7 +13,7 @@
 | PostgreSQL | 显式迁移、不可变素材与模型版本、来源校验、事务 outbox | 保留与归档策略、outbox 消费与补偿 |
 | Gateway | Bearer 认证、owner 过滤、素材详情、历史版本、关键词/标签/时间查询 | 外部鉴权、语义检索、短期媒体授权 URL |
 | 存储/硬件 | Rust adapter traits，模型与配置 hash 契约 | NAS/MinIO/Milvus、ONNX/TensorRT 实现 |
-| 直播接入基础设施 | 本机 MediaMTX 1.21.1（独立 Compose，仅回环端口）；SRT 直推（GStreamer `srtsink`）与 Runtime `ingest` 已打通：稳定窗口、断流恢复、无源失败、实时数据面交接四个场景通过，见 `docs/verification.md` | 用户自有采集端（OBS / Mac mini）的 SRT 直推、SRT 加密与带凭据 publish、`linux-x86_64` 侧验收；服务器上有流不等于模型链路可用 |
+| 直播接入基础设施 | 本机 MediaMTX 1.21.1（独立 Compose，仅回环端口）；SRT 直推（GStreamer `srtsink` 与用户自有 OBS）与 Runtime `ingest` 已打通：稳定窗口、断流恢复、无源失败、实时数据面交接四个场景通过，OBS 真实直推亦实测（无 timing 码流的视频时长按 PTS 差分补齐），见 `docs/verification.md` | Mac mini / 跨机部署、SRT 加密与带凭据 publish、`linux-x86_64` 侧验收；服务器上有流不等于模型链路可用 |
 | 媒体与模型 | Pipeline 配置、真实媒体 probe 工具、ffprobe 锚点回放，GStreamer 真实解码 → arena → `BufferDescriptor` → lease 签发/校验/释放 → 音频 5 秒切段，视频自适应抽帧（keep/skip 全部带原因，7 个真实样本通过），跨进程数据面：Runtime 保留字节、独立进程按 lease 读取（3 个样本 × 2 个场景通过，具备有界容量与稳定拒绝码），以及 SRT 实时接入 `ingest`（`make live-check` 四个场景通过，见 `docs/verification.md`） | 背压指标、**模型 worker**（当前消费方是验收脚本，不是推理进程）、媒体格式准入（ADR-009）；ASR/OCR/VLM/BGE 插件 |
 | 工程 | uv/Cargo 锁文件、Docker、检查命令、CI（ubuntu） | 真视频 Golden Path、macOS CI 与 `launchd` 常驻形态、压测、监控仪表盘 |
 
@@ -35,6 +35,8 @@ SRT 实时接入也已落地：`ingest` 在有限窗口内从 SRT 拉流，测�
 `make live-check` 的四个场景（稳定窗口、断流恢复、无源失败、实时数据面交接）全部通过，
 细节与未验证范围见 `docs/verification.md` 的"M4"一节。注意直播**没有 anchor 区间**（没有已知时长）：
 `duration_ms` 恒为 0，`replay` 读 SRT 仍显式拒绝（`srt_source_requires_ingest_command`）。
+用户自有 OBS 的 SRT 直推随后也实测通过（同一次接入就暴露并修掉了"编码器不带 timing 时整条视频轨
+被丢弃"的缺陷），实测数据与仍未验证范围见同一文件的"M4+"一节。
 
 仍未实现：背压指标、真正消费字节的**模型** worker（当前消费方只是验收脚本）、媒体格式准入。
 因此 `golden_path_verified` 恒为 false，不得把本节读作 Golden Path 已完成。
