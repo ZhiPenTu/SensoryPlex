@@ -5,10 +5,10 @@ Protobuf/gRPC + FastAPI** 工程，为 SRT/文件接入、感知、时间轴融�
 
 产品当前以 **Web Console** 交付，不做 Electron/Tauri 等桌面客户端。部署目标是一个可跨受支持平台运行的
 主节点（控制面）和可选的插件子节点：子节点可与主节点同机，也可安装到局域网内的 Mac mini、NVIDIA 或
-厂商 NPU 主机，由主节点按节点能力、资源和数据本地性调度。该局域网 worker 拓扑是必做目标，但在
-`0.1.0` 中尚未实现节点 agent、节点注册、插件远程安装或跨机调度；当前真实验收均是单机路径。详见
-[ADR-026](docs/adr/ADR-026-Web主节点与局域网插件worker拓扑.md) 与
-[实现状态](docs/implementation-status.md)。
+厂商 NPU 主机，由主节点按节点能力、资源和数据本地性调度。ADR-026 的节点 Agent、注册/心跳、预检、
+插件部署意图/回滚和审计已完成并经 `make node-check` 验收；生产级跨机 mTLS 轮换与主节点高可用仍未完成。
+详见 [ADR-026](docs/adr/ADR-026-Web主节点与局域网插件worker拓扑.md)、
+[开发执行清单](docs/development-checklist.md) 与 [实现状态](docs/implementation-status.md)。
 
 “跨平台”只承诺受支持组合：控制面为 `linux-x86_64` / `linux-aarch64` 容器，以及
 `macos-aarch64` 主机上的无加速容器组件；模型 worker 按硬件原生或容器运行。Windows 当前仅可通过
@@ -206,7 +206,7 @@ tools/                  配置、代码生成、迁移、测试与真实媒体�
 - [ADR-021：模型 worker 按分级并发上限限流（准入、重试与账目）](docs/adr/ADR-021-模型worker按分级并发上限限流.md)
 - [ADR-022：宿主加速器能力探测与上报（三态、只写真值、与进程能力分离）](docs/adr/ADR-022-宿主加速器能力探测与上报.md)
 - [ADR-023：网关语义检索接线与索引检索面（进程独占、同源守卫、状态码与 retryable 分野）](docs/adr/ADR-023-网关语义检索接线与索引检索面.md)
-- [ADR-026：Web 主节点与局域网插件 worker 拓扑（必做目标，尚未实施）](docs/adr/ADR-026-Web主节点与局域网插件worker拓扑.md)
+- [ADR-026：Web 主节点与局域网插件 worker 拓扑（已验收，生产级 mTLS/HA 待后续阶段）](docs/adr/ADR-026-Web主节点与局域网插件worker拓扑.md)
 - [ADR-027：事件链路的分级背压准入与容器化常驻（relay / index 进 compose）](docs/adr/ADR-027-事件链路分级背压与容器化常驻.md)
 - [ADR-020：向量索引落库与检索闭环](docs/adr/ADR-020-向量索引落库与检索闭环.md)
 - [ADR-019：运行时消费分级队列上限（准入，而不是改写）](docs/adr/ADR-019-运行时消费分级队列上限.md)
@@ -216,6 +216,7 @@ tools/                  配置、代码生成、迁移、测试与真实媒体�
 - [ADR-009：媒体格式支持矩阵与拒绝语义](docs/adr/ADR-009-媒体格式支持矩阵与拒绝语义.md)
 - [ADR-010：跨进程数据面的安全边界与可见性](docs/adr/ADR-010-跨进程数据面的安全边界.md)
 - [实现状态与后续阶段](docs/implementation-status.md)
+- [开发执行清单](docs/development-checklist.md)
 - [契约与查询语义](docs/contracts/README.md)
 - [初始化验证记录](docs/verification.md)
 

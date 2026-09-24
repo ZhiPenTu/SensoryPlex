@@ -29,3 +29,11 @@ spec:
     - type: blob_storage
     - type: metadata_store
     - type: vector_store
+  # 与 file-material.yaml 同一策略；实时接入的窗口选择与 clock 对齐仍未实现（ADR-028 §9）。
+  timeline_fusion:
+    window_ms: 5000
+    fast_modalities:
+      - asr_segment
+      - ocr_blocks
+      - vision.scene_description
+    enrichment_modalities: []

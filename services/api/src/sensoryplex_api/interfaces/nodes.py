@@ -790,6 +790,7 @@ def register(app, pool, auth, settings):
         return {"status": "recorded"}
 
     register_install_endpoints(app, pool, settings)
+    register_lifecycle_convenience_endpoints(app, pool, auth, settings)
 
 
 # ── 一键式安装脚本与自纳管分发 ─────────────────────────────────────────────
@@ -905,3 +906,330 @@ def register_install_endpoints(app, pool, settings):
             },
             pb.EnrollNodeResponse,
         )
+
+
+# ── 候选节点接纳、下线节点清理与批量装配流水线 ──────────────────────────────
+
+
+def register_lifecycle_convenience_endpoints(app, pool, auth, settings):
+    @app.post("/admin/v1/nodes/{node_id}:accept")
+    def accept_node(
+        node_id: str,
+        p: Annotated[object, Depends(auth.require("plugins:manage"))] = None,
+    ):
+        """管理员一键接纳候选子节点进入集群。"""
+        with pool.connection() as conn:
+            nr = one(
+                conn,
+                "SELECT * FROM console_node WHERE node_id=%s FOR UPDATE",
+                (node_id,),
+            )
+            if not nr:
+                fail(404, "node_not_found")
+            if nr["status"] not in {"candidate", "enrolling", "offline"}:
+                fail(409, "node_not_in_candidate_state")
+
+            conn.execute(
+                (
+                    "UPDATE console_node SET status='ready', status_reason='', "
+                    "updated_at=now() WHERE node_id=%s"
+                ),
+                (node_id,),
+            )
+            audit(conn, p.name, "node.accept", node_id)
+        return get_node_by_id(pool, node_id)
+
+    @app.post("/admin/v1/nodes/{node_id}:reject")
+    def reject_node(
+        node_id: str,
+        p: Annotated[object, Depends(auth.require("plugins:manage"))] = None,
+    ):
+        """管理员拒绝候选节点。"""
+        with pool.connection() as conn:
+            nr = one(
+                conn,
+                "SELECT * FROM console_node WHERE node_id=%s FOR UPDATE",
+                (node_id,),
+            )
+            if not nr:
+                fail(404, "node_not_found")
+            conn.execute(
+                (
+                    "UPDATE console_node SET status='revoked', "
+                    "status_reason='Rejected by administrator', "
+                    "session_token_hash=NULL, updated_at=now() WHERE node_id=%s"
+                ),
+                (node_id,),
+            )
+            audit(conn, p.name, "node.reject", node_id)
+        return get_node_by_id(pool, node_id)
+
+    @app.delete("/admin/v1/nodes/{node_id}")
+    def delete_node(
+        node_id: str,
+        p: Annotated[object, Depends(auth.require("plugins:manage"))] = None,
+    ):
+        """清理已下线、已撤销或被拒绝的节点。"""
+        with pool.connection() as conn:
+            nr = one(
+                conn,
+                "SELECT * FROM console_node WHERE node_id=%s FOR UPDATE",
+                (node_id,),
+            )
+            if not nr:
+                fail(404, "node_not_found")
+            if nr["status"] == "ready":
+                fail(409, "cannot_delete_ready_node")
+
+            conn.execute(
+                "DELETE FROM console_deployment_intent WHERE node_id=%s",
+                (node_id,),
+            )
+            conn.execute(
+                "DELETE FROM console_plugin_instance WHERE node_id=%s",
+                (node_id,),
+            )
+            conn.execute(
+                "DELETE FROM console_node_enrollment_token WHERE node_id=%s",
+                (node_id,),
+            )
+            conn.execute("DELETE FROM console_node WHERE node_id=%s", (node_id,))
+            audit(conn, p.name, "node.delete", node_id)
+        return {"status": "deleted", "node_id": node_id}
+
+    @app.post("/admin/v1/nodes:purge-stale")
+    def purge_stale_nodes(
+        p: Annotated[object, Depends(auth.require("plugins:manage"))] = None,
+    ):
+        """一键清理所有离线或撤销的非同机测试节点。"""
+        with pool.connection() as conn:
+            stale_nodes = rows(
+                conn,
+                """
+                SELECT node_id FROM console_node
+                WHERE (status IN ('offline', 'revoked')) AND node_id != 'local-host'
+                """,
+            )
+            purged = []
+            for sn in stale_nodes:
+                nid = sn["node_id"]
+                conn.execute(
+                    "DELETE FROM console_deployment_intent WHERE node_id=%s",
+                    (nid,),
+                )
+                conn.execute(
+                    "DELETE FROM console_plugin_instance WHERE node_id=%s",
+                    (nid,),
+                )
+                conn.execute(
+                    "DELETE FROM console_node_enrollment_token WHERE node_id=%s",
+                    (nid,),
+                )
+                conn.execute("DELETE FROM console_node WHERE node_id=%s", (nid,))
+                purged.append(nid)
+            audit(conn, p.name, "node.purge_stale", f"count={len(purged)}")
+        return {"purged": purged, "total": len(purged)}
+
+    @app.post("/admin/v1/nodes/{node_id}/plugins:batch-deploy")
+    def batch_deploy_plugins(
+        node_id: str,
+        body: Annotated[dict, Body()] = ...,
+        p: Annotated[object, Depends(auth.require("plugins:manage"))] = None,
+    ):
+        """一键向目标节点装配所有通过预检的基础流水线插件。"""
+        plugin_ids = body.get("plugin_ids") or [
+            "org.sensoryplex.vlm-moondream",
+            "org.sensoryplex.asr-whisper-mlx",
+            "org.sensoryplex.ocr-rapidocr",
+            "org.sensoryplex.embed-bge-onnx",
+        ]
+
+        deployed = []
+        rejected = []
+        with pool.connection() as conn:
+            nr = one(
+                conn,
+                "SELECT * FROM console_node WHERE node_id=%s FOR UPDATE",
+                (node_id,),
+            )
+            if not nr:
+                fail(404, "node_not_found")
+            if nr["status"] != "ready":
+                fail(409, "target_node_not_ready")
+
+            for pid in plugin_ids:
+                try:
+                    p_entry = plugin(settings, pid)
+                except Exception:
+                    continue
+
+                pre_res = check_preflight(nr, p_entry)
+                if not pre_res["eligible"]:
+                    rejected.append({"plugin_id": pid, "reason": pre_res["reason_code"]})
+                    continue
+
+                existing_inst = one(
+                    conn,
+                    "SELECT * FROM console_plugin_instance WHERE node_id=%s AND plugin_id=%s",
+                    (node_id, pid),
+                )
+                prev_digest = existing_inst["artifact_digest"] if existing_inst else None
+                inst_id = existing_inst["instance_id"] if existing_inst else identifier("inst")
+                config_hash = "sha256:" + hashlib.sha256(b"{}").hexdigest()
+
+                conn.execute(
+                    """
+                    INSERT INTO console_plugin_instance(
+                        instance_id, node_id, plugin_id, plugin_version, artifact_digest,
+                        previous_digest, desired_state, actual_state, config_hash, config,
+                        created_by, updated_at
+                    )
+                    VALUES (
+                        %s, %s, %s, %s, %s, %s, 'ready', 'installing', %s, '{}'::jsonb, %s, now()
+                    )
+                    ON CONFLICT (node_id, plugin_id) DO UPDATE SET
+                        plugin_version=EXCLUDED.plugin_version,
+                        previous_digest=console_plugin_instance.artifact_digest,
+                        artifact_digest=EXCLUDED.artifact_digest,
+                        desired_state='ready',
+                        actual_state='installing',
+                        config_hash=EXCLUDED.config_hash,
+                        error_code=NULL,
+                        error_detail=NULL,
+                        updated_at=now()
+                    """,
+                    (
+                        inst_id,
+                        node_id,
+                        pid,
+                        p_entry["version"],
+                        p_entry["digest"],
+                        prev_digest,
+                        config_hash,
+                        p.name,
+                    ),
+                )
+
+                intent_id = identifier("intent")
+                conn.execute(
+                    """
+                    INSERT INTO console_deployment_intent(
+                        id, node_id, instance_id, action, artifact_digest, rollback_digest,
+                        config, state, created_by
+                    ) VALUES (%s, %s, %s, 'install', %s, %s, '{}'::jsonb, 'pending', %s)
+                    """,
+                    (intent_id, node_id, inst_id, p_entry["digest"], prev_digest, p.name),
+                )
+                deployed.append(pid)
+
+            audit(
+                conn,
+                p.name,
+                "node.batch_deploy",
+                f"{node_id}:deployed={len(deployed)}:rejected={len(rejected)}",
+            )
+
+        return {"node_id": node_id, "deployed": deployed, "rejected": rejected}
+
+    @app.post("/v1/agent/candidate-register")
+    def candidate_register(body: Annotated[dict, Body()] = ...):
+        """子节点零配置自报到，初始进入待接纳状态（等待管理员在网页一键批准）。"""
+        req = parse(body, pb.EnrollNodeRequest)
+        session_token = "sp_cand_" + secrets.token_hex(24)
+        shash = hash_token(session_token)
+
+        caps = req.capabilities
+        accels = (
+            [MessageToDict(a, preserving_proto_field_name=True) for a in caps.accelerators]
+            if caps and caps.accelerators
+            else []
+        )
+        labels = dict(caps.labels) if caps and caps.labels else {}
+        labels["candidate"] = "true"
+        supported_arts = (
+            list(caps.supported_artifacts)
+            if caps and caps.supported_artifacts
+            else ["local_native", "container"]
+        )
+
+        with pool.connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO console_node(
+                    node_id, display_name, status, status_reason, platform, arch,
+                    cpu_cores, memory_bytes, unified_memory_bytes, accelerators,
+                    supported_artifacts, labels, is_co_located, session_token_hash,
+                    last_heartbeat_at, enrolled_at, updated_at
+                ) VALUES (
+                    %s, %s, 'candidate', 'Waiting for admin approval', %s, %s,
+                    %s, %s, %s, %s,
+                    %s, %s, %s, %s,
+                    now(), now(), now()
+                )
+                ON CONFLICT (node_id) DO UPDATE SET
+                    display_name=EXCLUDED.display_name,
+                    platform=EXCLUDED.platform,
+                    arch=EXCLUDED.arch,
+                    cpu_cores=EXCLUDED.cpu_cores,
+                    memory_bytes=EXCLUDED.memory_bytes,
+                    unified_memory_bytes=EXCLUDED.unified_memory_bytes,
+                    accelerators=EXCLUDED.accelerators,
+                    supported_artifacts=EXCLUDED.supported_artifacts,
+                    labels=EXCLUDED.labels,
+                    session_token_hash=EXCLUDED.session_token_hash,
+                    last_heartbeat_at=now(),
+                    updated_at=now()
+                """,
+                (
+                    req.node_id,
+                    req.display_name or f"Candidate ({req.node_id})",
+                    caps.platform if caps else "unknown",
+                    caps.arch if caps else "unknown",
+                    int(caps.cpu_cores) if caps else 1,
+                    int(caps.memory_bytes) if caps else 0,
+                    int(caps.unified_memory_bytes) if caps else 0,
+                    Jsonb(accels),
+                    supported_arts,
+                    Jsonb(labels),
+                    req.is_co_located,
+                    shash,
+                ),
+            )
+            audit(conn, req.node_id, "node.candidate.registered", req.node_id)
+
+        return out(
+            {
+                "success": True,
+                "node_id": req.node_id,
+                "status": "NODE_STATUS_CANDIDATE",
+                "session_token": session_token,
+                "message": "Node registered as candidate, pending administrator approval",
+            },
+            pb.EnrollNodeResponse,
+        )
+
+
+def get_node_by_id(pool, node_id: str):
+    with pool.connection() as conn:
+        nr = one(conn, "SELECT * FROM console_node WHERE node_id=%s", (node_id,))
+        if not nr:
+            fail(404, "node_not_found")
+        inst_rows = rows(
+            conn,
+            ("SELECT * FROM console_plugin_instance WHERE node_id=%s ORDER BY created_at DESC"),
+            (node_id,),
+        )
+        item = dict(nr)
+        item["status"] = to_proto_node_status(nr["status"])
+        item["capabilities"] = {
+            "platform": nr["platform"],
+            "arch": nr["arch"],
+            "cpu_cores": nr["cpu_cores"],
+            "memory_bytes": nr["memory_bytes"],
+            "unified_memory_bytes": nr["unified_memory_bytes"],
+            "accelerators": nr["accelerators"],
+            "supported_artifacts": nr["supported_artifacts"],
+            "labels": nr["labels"],
+        }
+        item["instances"] = inst_rows
+    return out(item, pb.NodeInfo)

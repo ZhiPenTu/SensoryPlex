@@ -7,6 +7,7 @@ set -euo pipefail
 MAIN_URL="${SENSORYPLEX_MAIN_URL:-http://127.0.0.1:8091}"
 TOKEN=""
 IS_LOCAL=0
+IS_CANDIDATE=0
 NODE_ID=""
 DISPLAY_NAME=""
 DAEMON=0
@@ -18,6 +19,10 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --local)
             IS_LOCAL=1
+            shift
+            ;;
+        --candidate)
+            IS_CANDIDATE=1
             shift
             ;;
         --token)
@@ -119,6 +124,10 @@ LOG_FILE="${STATE_DIR}/${NODE_ID}.log"
 
 # 停止服务动作
 if [[ "${ACTION}" == "stop" ]]; then
+    if [[ "$(uname -s)" == "Darwin" && -f "${HOME}/Library/LaunchAgents/org.sensoryplex.agent.${NODE_ID}.plist" ]]; then
+        launchctl unload "${HOME}/Library/LaunchAgents/org.sensoryplex.agent.${NODE_ID}.plist" 2>/dev/null || true
+        rm -f "${HOME}/Library/LaunchAgents/org.sensoryplex.agent.${NODE_ID}.plist"
+    fi
     PIDS="$(pgrep -f "node_agent.py run --node-id ${NODE_ID}" || true)"
     if [[ -n "${PIDS}" ]]; then
         echo "[agent-installer] 正在停止 Agent 进程 (${PIDS})..."
@@ -168,6 +177,14 @@ if [[ ${IS_LOCAL} -eq 1 ]]; then
         --display-name "${DISPLAY_NAME}" \
         --co-located \
         --local \
+        --state-file "${STATE_FILE}"
+elif [[ ${IS_CANDIDATE} -eq 1 ]]; then
+    echo "[agent-installer] 作为候选节点自报到 (Candidate Register)..."
+    "${PYTHON_BIN}" "${AGENT_SCRIPT}" enroll \
+        --main-url "${MAIN_URL}" \
+        --node-id "${NODE_ID}" \
+        --display-name "${DISPLAY_NAME}" \
+        --candidate \
         --state-file "${STATE_FILE}"
 else
     if [[ -z "${TOKEN}" ]]; then
@@ -251,6 +268,7 @@ PLIST_EOF
         --main-url "${MAIN_URL}" < /dev/null >> "${LOG_FILE}" 2>&1 &
     
     AGENT_PID=$!
+    disown "${AGENT_PID}" 2>/dev/null || true
     echo "${AGENT_PID}" > "${PID_FILE}"
     sleep 1
 

@@ -1,6 +1,19 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Copy, Cpu, HardDrive, KeyRound, Plus, RefreshCw, Server, ShieldAlert } from 'lucide-react';
+import {
+    Check,
+    Copy,
+    Cpu,
+    HardDrive,
+    KeyRound,
+    Plus,
+    Radio,
+    RefreshCw,
+    Server,
+    ShieldAlert,
+    Trash2,
+    X,
+} from 'lucide-react';
 import { api, post } from '../api/client';
 import type { EnrollmentToken, NodeInfo, NodeList } from '../api/contracts';
 import { Badge, date, Empty, ErrorNotice, Heading, Loading, Modal, Notice } from '../components';
@@ -14,7 +27,7 @@ export default function Nodes() {
     const nodesQuery = useQuery({
         queryKey: ['nodes'],
         queryFn: ({ signal }) => api<NodeList>('/admin/v1/nodes?limit=100', { signal }),
-        refetchInterval: 5000,
+        refetchInterval: 4000,
     });
 
     const createTokenMutation = useMutation({
@@ -25,6 +38,20 @@ export default function Nodes() {
             }),
         onSuccess: (data) => {
             setCreatedToken(data);
+            void cache.invalidateQueries({ queryKey: ['nodes'] });
+        },
+    });
+
+    const acceptMutation = useMutation({
+        mutationFn: (nodeId: string) => post(`/admin/v1/nodes/${nodeId}:accept`),
+        onSuccess: () => {
+            void cache.invalidateQueries({ queryKey: ['nodes'] });
+        },
+    });
+
+    const rejectMutation = useMutation({
+        mutationFn: (nodeId: string) => post(`/admin/v1/nodes/${nodeId}:reject`),
+        onSuccess: () => {
             void cache.invalidateQueries({ queryKey: ['nodes'] });
         },
     });
@@ -43,6 +70,20 @@ export default function Nodes() {
         },
     });
 
+    const deleteMutation = useMutation({
+        mutationFn: (nodeId: string) => api(`/admin/v1/nodes/${nodeId}`, { method: 'DELETE' }),
+        onSuccess: () => {
+            void cache.invalidateQueries({ queryKey: ['nodes'] });
+        },
+    });
+
+    const purgeMutation = useMutation({
+        mutationFn: () => post('/admin/v1/nodes:purge-stale'),
+        onSuccess: () => {
+            void cache.invalidateQueries({ queryKey: ['nodes'] });
+        },
+    });
+
     const copyToken = (text: string) => {
         void navigator.clipboard.writeText(text);
         setCopied(true);
@@ -55,6 +96,11 @@ export default function Nodes() {
         return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB`;
     };
 
+    const candidates =
+        nodesQuery.data?.items?.filter((n) => n.status === 'NODE_STATUS_CANDIDATE') || [];
+    const activeNodes =
+        nodesQuery.data?.items?.filter((n) => n.status !== 'NODE_STATUS_CANDIDATE') || [];
+
     return (
         <>
             <Heading
@@ -62,17 +108,31 @@ export default function Nodes() {
                 title="节点拓扑"
                 description="统一调度同机与局域网算力节点，隔离管理面与执行面。"
                 action={
-                    <button
-                        className="primary"
-                        onClick={() => {
-                            createTokenMutation.reset();
-                            setCreatedToken(null);
-                            setTokenModalOpen(true);
-                        }}
-                    >
-                        <Plus size={17} />
-                        注册子节点
-                    </button>
+                    <div style={{ display: 'flex', gap: '10px' }}>
+                        <button
+                            onClick={() => {
+                                if (confirm('确定清理所有已离线或已撤销的旧测试节点记录吗？')) {
+                                    purgeMutation.mutate();
+                                }
+                            }}
+                            disabled={purgeMutation.isPending}
+                            title="清理已下线的测试节点"
+                        >
+                            <Trash2 size={16} />
+                            清理离线节点
+                        </button>
+                        <button
+                            className="primary"
+                            onClick={() => {
+                                createTokenMutation.reset();
+                                setCreatedToken(null);
+                                setTokenModalOpen(true);
+                            }}
+                        >
+                            <Plus size={17} />
+                            注册子节点
+                        </button>
+                    </div>
                 }
             />
             <Notice>
@@ -84,16 +144,128 @@ export default function Nodes() {
                 error={
                     nodesQuery.error ||
                     createTokenMutation.error ||
+                    acceptMutation.error ||
+                    rejectMutation.error ||
                     drainMutation.error ||
-                    revokeMutation.error
+                    revokeMutation.error ||
+                    deleteMutation.error ||
+                    purgeMutation.error
                 }
             />
 
+            {/* 发现待接纳节点横幅 (ADR-026 Candidate Discovery) */}
+            {candidates.length > 0 ? (
+                <section
+                    className="card"
+                    style={{
+                        marginBottom: '20px',
+                        border: '1px solid #eab308',
+                        background: 'rgba(234, 179, 8, 0.05)',
+                        padding: '16px',
+                    }}
+                >
+                    <div
+                        style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '10px',
+                            marginBottom: '12px',
+                        }}
+                    >
+                        <Radio size={20} color="#eab308" />
+                        <strong style={{ fontSize: '0.95rem', color: '#fef08a' }}>
+                            发现待接纳的局域网计算节点 ({candidates.length})
+                        </strong>
+                        <span className="badge warning">等待管理员审批</span>
+                    </div>
+                    <div
+                        style={{
+                            display: 'grid',
+                            gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
+                            gap: '12px',
+                        }}
+                    >
+                        {candidates.map((cand) => (
+                            <div
+                                key={cand.node_id}
+                                className="card"
+                                style={{
+                                    background: '#121215',
+                                    padding: '12px',
+                                    border: '1px solid #3f3f46',
+                                }}
+                            >
+                                <div
+                                    style={{
+                                        display: 'flex',
+                                        justifyContent: 'space-between',
+                                        alignItems: 'center',
+                                    }}
+                                >
+                                    <strong>{cand.display_name || cand.node_id}</strong>
+                                    <span className="badge muted">
+                                        {cand.capabilities?.platform}/{cand.capabilities?.arch}
+                                    </span>
+                                </div>
+                                <small
+                                    className="mono subtle"
+                                    style={{ display: 'block', margin: '4px 0' }}
+                                >
+                                    {cand.node_id}
+                                </small>
+                                <div
+                                    style={{
+                                        fontSize: '0.8rem',
+                                        color: '#a1a1aa',
+                                        margin: '8px 0',
+                                    }}
+                                >
+                                    {cand.capabilities?.cpu_cores} 核 CPU · 内存{' '}
+                                    {formatBytes(cand.capabilities?.memory_bytes)}
+                                    {cand.capabilities?.accelerators?.length
+                                        ? ` · 加速器: ${cand.capabilities.accelerators.map((a) => a.accelerator).join(', ')}`
+                                        : ''}
+                                </div>
+                                <div
+                                    style={{
+                                        display: 'flex',
+                                        gap: '8px',
+                                        justifyContent: 'flex-end',
+                                        marginTop: '10px',
+                                    }}
+                                >
+                                    <button
+                                        disabled={rejectMutation.isPending}
+                                        onClick={() => rejectMutation.mutate(cand.node_id)}
+                                        title="拒绝该节点"
+                                    >
+                                        <X size={15} />
+                                        拒绝
+                                    </button>
+                                    <button
+                                        className="primary"
+                                        disabled={acceptMutation.isPending}
+                                        onClick={() => acceptMutation.mutate(cand.node_id)}
+                                        title="接纳此节点进入集群调度"
+                                    >
+                                        <Check size={15} />
+                                        一键接纳
+                                    </button>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </section>
+            ) : null}
+
             {nodesQuery.isPending ? (
                 <Loading />
-            ) : nodesQuery.data?.items.length ? (
-                <div className="plugin-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))' }}>
-                    {nodesQuery.data.items.map((node: NodeInfo) => (
+            ) : activeNodes.length ? (
+                <div
+                    className="plugin-grid"
+                    style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))' }}
+                >
+                    {activeNodes.map((node: NodeInfo) => (
                         <article className="card plugin-card" key={node.node_id}>
                             <div className="plugin-top">
                                 <span className="plugin-icon">
@@ -109,16 +281,28 @@ export default function Nodes() {
                             <div className="plugin-meta">
                                 <Badge state={node.status} />
                                 <span className="badge muted">
-                                    {node.capabilities?.platform || "unknown"}/{node.capabilities?.arch || "unknown"}
+                                    {node.capabilities?.platform || 'unknown'}/
+                                    {node.capabilities?.arch || 'unknown'}
                                 </span>
                             </div>
 
-                            <div style={{ margin: '12px 0', fontSize: '0.85rem', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                            <div
+                                style={{
+                                    margin: '12px 0',
+                                    fontSize: '0.85rem',
+                                    display: 'flex',
+                                    flexDirection: 'column',
+                                    gap: '6px',
+                                }}
+                            >
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                                     <Cpu size={15} />
                                     <span>
-                                        {node.capabilities?.cpu_cores || 1} 核 CPU · 内存 {formatBytes(node.capabilities?.memory_bytes)}
-                                        {Number(node.capabilities?.unified_memory_bytes || 0) > 0 ? ` (统一内存 ${formatBytes(node.capabilities?.unified_memory_bytes)})` : ''}
+                                        {node.capabilities?.cpu_cores || 1} 核 CPU · 内存{' '}
+                                        {formatBytes(node.capabilities?.memory_bytes)}
+                                        {Number(node.capabilities?.unified_memory_bytes || 0) > 0
+                                            ? ` (统一内存 ${formatBytes(node.capabilities?.unified_memory_bytes)})`
+                                            : ''}
                                     </span>
                                 </div>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -126,23 +310,55 @@ export default function Nodes() {
                                     <span>
                                         加速器:{' '}
                                         {node.capabilities?.accelerators?.length
-                                            ? node.capabilities.accelerators.map((a) => `${a.accelerator} (${a.runtime_version || '可用'})`).join(', ')
+                                            ? node.capabilities.accelerators
+                                                  .map(
+                                                      (a) =>
+                                                          `${a.accelerator} (${a.runtime_version || '可用'})`,
+                                                  )
+                                                  .join(', ')
                                             : '无 / CPU'}
                                     </span>
                                 </div>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                                     <RefreshCw size={15} />
-                                    <span>最近心跳: {node.last_heartbeat_at ? date(node.last_heartbeat_at) : '尚未收到'}</span>
+                                    <span>
+                                        最近心跳:{' '}
+                                        {node.last_heartbeat_at
+                                            ? date(node.last_heartbeat_at)
+                                            : '尚未收到'}
+                                    </span>
                                 </div>
                             </div>
 
                             {node.instances && node.instances.length > 0 ? (
-                                <div style={{ borderTop: '1px solid var(--border-color, #27272a)', paddingTop: '10px', marginTop: '10px' }}>
-                                    <small style={{ fontWeight: 600, display: 'block', marginBottom: '6px' }}>已部署插件实例 ({node.instances.length})</small>
-                                    <ul style={{ margin: 0, paddingLeft: '18px', fontSize: '0.82rem' }}>
+                                <div
+                                    style={{
+                                        borderTop: '1px solid var(--border-color, #27272a)',
+                                        paddingTop: '10px',
+                                        marginTop: '10px',
+                                    }}
+                                >
+                                    <small
+                                        style={{
+                                            fontWeight: 600,
+                                            display: 'block',
+                                            marginBottom: '6px',
+                                        }}
+                                    >
+                                        已部署插件实例 ({node.instances.length})
+                                    </small>
+                                    <ul
+                                        style={{
+                                            margin: 0,
+                                            paddingLeft: '18px',
+                                            fontSize: '0.82rem',
+                                        }}
+                                    >
                                         {node.instances.map((inst) => (
                                             <li key={inst.instance_id}>
-                                                <strong>{inst.plugin_id.split('.').pop()}</strong> v{inst.plugin_version} · <Badge state={inst.actual_state} />
+                                                <strong>{inst.plugin_id.split('.').pop()}</strong> v
+                                                {inst.plugin_version} ·{' '}
+                                                <Badge state={inst.actual_state} />
                                             </li>
                                         ))}
                                     </ul>
@@ -164,7 +380,11 @@ export default function Nodes() {
                                         className="danger"
                                         disabled={revokeMutation.isPending}
                                         onClick={() => {
-                                            if (confirm(`确定撤销节点 ${node.node_id} 吗？撤销后凭据即刻失效。`)) {
+                                            if (
+                                                confirm(
+                                                    `确定撤销节点 ${node.node_id} 吗？撤销后凭据即刻失效。`,
+                                                )
+                                            ) {
                                                 revokeMutation.mutate(node.node_id);
                                             }
                                         }}
@@ -173,9 +393,24 @@ export default function Nodes() {
                                         <ShieldAlert size={15} />
                                         撤销
                                     </button>
-                                ) : (
-                                    <span className="subtle">凭据已作废</span>
-                                )}
+                                ) : null}
+                                {node.status === 'NODE_STATUS_REVOKED' ||
+                                node.status === 'NODE_STATUS_OFFLINE' ? (
+                                    <button
+                                        onClick={() => {
+                                            if (
+                                                confirm(`确定删除该节点记录（${node.node_id}）吗？`)
+                                            ) {
+                                                deleteMutation.mutate(node.node_id);
+                                            }
+                                        }}
+                                        disabled={deleteMutation.isPending}
+                                        title="删除节点记录"
+                                    >
+                                        <Trash2 size={15} />
+                                        删除
+                                    </button>
+                                ) : null}
                             </footer>
                         </article>
                     ))}
@@ -192,9 +427,21 @@ export default function Nodes() {
                     {createdToken ? (
                         <div>
                             <p>一次性注册令牌已签发。请在目标机器运行 Node Agent 并传入此令牌：</p>
-                            <div className="card" style={{ background: '#09090b', padding: '12px', margin: '12px 0' }}>
-                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                    <code className="mono" style={{ wordBreak: 'break-all', fontSize: '0.88rem' }}>
+                            <div
+                                className="card"
+                                style={{ background: '#09090b', padding: '12px', margin: '12px 0' }}
+                            >
+                                <div
+                                    style={{
+                                        display: 'flex',
+                                        justifyContent: 'space-between',
+                                        alignItems: 'center',
+                                    }}
+                                >
+                                    <code
+                                        className="mono"
+                                        style={{ wordBreak: 'break-all', fontSize: '0.88rem' }}
+                                    >
                                         {createdToken.token}
                                     </code>
                                     <button
@@ -208,35 +455,146 @@ export default function Nodes() {
                                 </div>
                             </div>
                             {(() => {
-                                const host = window.location.hostname || "127.0.0.1";
+                                const host = window.location.hostname || '127.0.0.1';
                                 const oneLine = `curl -fsSL http://${host}:8091/v1/agent/install.sh | bash -s -- --token ${createdToken.token} --main-url http://${host}:8091 --node-id ${createdToken.node_id} --daemon`;
+                                const candidateCmd = `curl -fsSL http://${host}:8091/v1/agent/install.sh | bash -s -- --candidate --main-url http://${host}:8091 --daemon`;
                                 return (
-                                    <div className="card" style={{ background: '#18181b', padding: '12px', margin: '12px 0', border: '1px solid #27272a' }}>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                                            <strong style={{ fontSize: '0.85rem', color: '#4ade80' }}>⚡ 推荐：单行命令一键安装（自动后台守护）</strong>
-                                            <button
-                                                className="ghost"
-                                                onClick={() => copyToken(oneLine)}
-                                                title="复制单行命令"
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                                        <div
+                                            className="card"
+                                            style={{
+                                                background: '#18181b',
+                                                padding: '12px',
+                                                border: '1px solid #27272a',
+                                            }}
+                                        >
+                                            <div
+                                                style={{
+                                                    display: 'flex',
+                                                    justifyContent: 'space-between',
+                                                    alignItems: 'center',
+                                                    marginBottom: '8px',
+                                                }}
                                             >
-                                                <Copy size={15} />
-                                                {copied ? '已复制' : '复制单行命令'}
-                                            </button>
+                                                <strong
+                                                    style={{
+                                                        fontSize: '0.85rem',
+                                                        color: '#4ade80',
+                                                    }}
+                                                >
+                                                    ⚡ 推荐：带令牌单行安装（自动后台守护）
+                                                </strong>
+                                                <button
+                                                    className="ghost"
+                                                    onClick={() => copyToken(oneLine)}
+                                                    title="复制单行命令"
+                                                >
+                                                    <Copy size={15} />
+                                                    {copied ? '已复制' : '复制命令'}
+                                                </button>
+                                            </div>
+                                            <code
+                                                className="mono"
+                                                style={{
+                                                    fontSize: '0.78rem',
+                                                    display: 'block',
+                                                    wordBreak: 'break-all',
+                                                    background: '#09090b',
+                                                    padding: '8px',
+                                                    borderRadius: '4px',
+                                                }}
+                                            >
+                                                {oneLine}
+                                            </code>
+                                            <small
+                                                style={{
+                                                    display: 'block',
+                                                    marginTop: '6px',
+                                                    color: '#a1a1aa',
+                                                    fontSize: '0.75rem',
+                                                }}
+                                            >
+                                                目标机器上直接执行：完成硬件探测、入网并自启后台守护。
+                                            </small>
                                         </div>
-                                        <code className="mono" style={{ fontSize: '0.78rem', display: 'block', wordBreak: 'break-all', background: '#09090b', padding: '8px', borderRadius: '4px' }}>
-                                            {oneLine}
-                                        </code>
-                                        <small style={{ display: 'block', marginTop: '6px', color: '#a1a1aa', fontSize: '0.75rem' }}>
-                                            在目标机器终端执行：自动探测硬件画像、入网认证并作为后台守护服务常驻运行。
-                                        </small>
+
+                                        <div
+                                            className="card"
+                                            style={{
+                                                background: '#18181b',
+                                                padding: '12px',
+                                                border: '1px solid #27272a',
+                                            }}
+                                        >
+                                            <div
+                                                style={{
+                                                    display: 'flex',
+                                                    justifyContent: 'space-between',
+                                                    alignItems: 'center',
+                                                    marginBottom: '8px',
+                                                }}
+                                            >
+                                                <strong
+                                                    style={{
+                                                        fontSize: '0.85rem',
+                                                        color: '#eab308',
+                                                    }}
+                                                >
+                                                    📡 零令牌模式：广播候选自报到（网页端一键接纳）
+                                                </strong>
+                                                <button
+                                                    className="ghost"
+                                                    onClick={() => copyToken(candidateCmd)}
+                                                    title="复制候选命令"
+                                                >
+                                                    <Copy size={15} />
+                                                    {copied ? '已复制' : '复制候选命令'}
+                                                </button>
+                                            </div>
+                                            <code
+                                                className="mono"
+                                                style={{
+                                                    fontSize: '0.78rem',
+                                                    display: 'block',
+                                                    wordBreak: 'break-all',
+                                                    background: '#09090b',
+                                                    padding: '8px',
+                                                    borderRadius: '4px',
+                                                }}
+                                            >
+                                                {candidateCmd}
+                                            </code>
+                                            <small
+                                                style={{
+                                                    display: 'block',
+                                                    marginTop: '6px',
+                                                    color: '#a1a1aa',
+                                                    fontSize: '0.75rem',
+                                                }}
+                                            >
+                                                在任意机器执行后，回到本页面点击“一键接纳”即可入网。
+                                            </small>
+                                        </div>
                                     </div>
                                 );
                             })()}
-                            <p className="subtle" style={{ fontSize: '0.78rem', margin: '6px 0' }}>
-                                💡 提示：与主节点同机的主机在执行 <code>./deploy/up.sh</code> 时已自动完成自纳管并常驻后台，无需手动注册。
+                            <p
+                                className="subtle"
+                                style={{ fontSize: '0.78rem', margin: '10px 0 6px 0' }}
+                            >
+                                💡 提示：与主节点同机的主机在执行 <code>./deploy/up.sh</code>{' '}
+                                时已自动完成自纳管并常驻后台，无需手动注册。
                             </p>
-                            <small className="subtle">令牌有效期至: {date(createdToken.expires_at)}</small>
-                            <div style={{ marginTop: '16px', display: 'flex', justifyContent: 'flex-end' }}>
+                            <small className="subtle">
+                                令牌有效期至: {date(createdToken.expires_at)}
+                            </small>
+                            <div
+                                style={{
+                                    marginTop: '16px',
+                                    display: 'flex',
+                                    justifyContent: 'flex-end',
+                                }}
+                            >
                                 <button className="primary" onClick={() => setTokenModalOpen(false)}>
                                     完成
                                 </button>

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertCircle, Box, Check, CheckCircle2, Download, Settings2 } from 'lucide-react';
+import { AlertCircle, Box, Check, CheckCircle2, Download, Settings2, Zap } from 'lucide-react';
 import { PluginFields, readConfig } from './PluginFields';
 import { api, post } from '../api/client';
 import type { NodeList, PluginConfigList, PluginEntry, PluginList, PreflightResponse } from '../api/contracts';
@@ -58,6 +58,23 @@ export default function Plugins() {
         },
     });
 
+    const [batchNotice, setBatchNotice] = useState<string>("");
+    const batchDeploy = useMutation({
+        mutationFn: () =>
+            post<{ node_id: string; deployed: string[]; rejected: any[] }>(
+                "/admin/v1/nodes/local-host/plugins:batch-deploy",
+                {},
+            ),
+        onSuccess: (data) => {
+            void cache.invalidateQueries({ queryKey: ["nodes"] });
+            setBatchNotice(
+                `已向 ${data.node_id} 下发 ${data.deployed.length} 个插件安装意图！` +
+                    (data.rejected.length ? ` (另有 ${data.rejected.length} 个受预检限制未部署)` : ""),
+            );
+            setTimeout(() => setBatchNotice(""), 6000);
+        },
+    });
+
     const save = useMutation({
         mutationFn: (form: FormData) =>
             post('/admin/v1/plugin-configurations', {
@@ -78,7 +95,32 @@ export default function Plugins() {
                 eyebrow="PLUGIN CENTER"
                 title="插件中心"
                 description="按契约扩展处理能力，让模型与工作流保持独立。"
+                action={
+                    <button
+                        className="primary"
+                        disabled={batchDeploy.isPending}
+                        onClick={() => {
+                            if (
+                                confirm(
+                                    "确定向同机数据面节点 (local-host) 一键装配全部基础处理插件（VLM、ASR、OCR、Embedding）吗？",
+                                )
+                            ) {
+                                batchDeploy.mutate();
+                            }
+                        }}
+                        title="向本机节点一键安装全部基础处理插件"
+                    >
+                        <Zap size={16} />
+                        一键装配本地流水线
+                    </button>
+                }
             />
+            {batchNotice ? (
+                <div className="notice" style={{ borderColor: "#4ade80", background: "rgba(74, 222, 128, 0.08)" }}>
+                    <CheckCircle2 size={18} color="#4ade80" />
+                    <span style={{ color: "#86efac", fontSize: "0.88rem" }}>{batchNotice}</span>
+                </div>
+            ) : null}
             <Notice>
                 依据 ADR-026 拓扑设计：插件不再全局泛化安装，而是由管理员选择目标计算节点。控制面预检硬件加速、容器/原生运行时、制品摘要与数据本地性；数据面仅限同机共享内存。
             </Notice>

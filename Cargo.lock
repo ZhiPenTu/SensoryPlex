@@ -1119,11 +1119,14 @@ name = "sensoryplex-runtime"
 version = "0.1.0"
 dependencies = [
  "prost",
+ "prost-types",
  "sensoryplex-media",
  "sensoryplex-sdk",
+ "sensoryplex-timeline",
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2",
  "thiserror",
  "tokio",
  "tonic",

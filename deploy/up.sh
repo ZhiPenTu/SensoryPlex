@@ -41,4 +41,4 @@ echo "  curl -fsS http://127.0.0.1:${GATEWAY_PORT}/v1/health"
 
 echo
 echo "[up] 自动纳管并拉起本机同机计算节点 (ADR-026)..."
-"${ROOT}/tools/install_agent.sh" --local --daemon || true
+"${ROOT}/tools/install_agent.sh" --local --install-service || true

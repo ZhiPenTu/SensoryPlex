@@ -27,3 +27,13 @@ spec:
     - type: blob_storage
     - type: metadata_store
     - type: vector_store
+  # `timeline_fusion` 处理器的策略。声明了处理器就必须给出策略（ADR-028）：
+  # Runtime 的 `timeline` 子命令按 window_ms 选窗，按模态集合判定素材 readiness。
+  # window_ms 必须能容纳一条描述符窗口——跨窗观测会被显式拒绝，不会被裁剪。
+  timeline_fusion:
+    window_ms: 5000
+    fast_modalities:
+      - asr_segment
+      - ocr_blocks
+      - vision.scene_description
+    enrichment_modalities: []

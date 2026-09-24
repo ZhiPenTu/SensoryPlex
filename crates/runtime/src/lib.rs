@@ -2,6 +2,11 @@ use serde::Deserialize;
 use std::num::NonZeroUsize;
 use tokio::sync::mpsc;
 
+pub use sensoryplex_timeline::{
+    FusionEngine, FusionInput, FusionLimits, FusionOutcome, FusionPolicy, FusionReport,
+    FusionRequest, MaterialScope,
+};
+
 /// 宿主加速器探测（ADR-022）。
 ///
 /// 与 `capability` 分工：`capability::backends()` 回答"**本进程**能不能执行推理"，
@@ -190,6 +195,84 @@ pub struct PipelineSpec {
     pub sinks: Vec<Processor>,
     pub queue_capacity: NonZeroUsize,
     pub data_egress: String,
+    /// `timeline_fusion` 处理器的策略。声明了处理器就必须给出策略，缺一是显式错误
+    /// （见 `Pipeline::parse`）：只写 `- type: timeline_fusion` 的 pipeline 曾经
+    /// 既不报错也没有实现，这种"声明与实现不一致"不允许再出现。
+    #[serde(default)]
+    pub timeline_fusion: Option<TimelinePolicy>,
+}
+
+/// 素材窗口与 readiness 策略；由 pipeline 声明，不由命令行临时指定。
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TimelinePolicy {
+    pub window_ms: i64,
+    pub fast_modalities: Vec<String>,
+    #[serde(default)]
+    pub enrichment_modalities: Vec<String>,
+}
+
+/// 窗口下限：比这更短会把同一条描述符窗口切碎，跨窗观测将被大面积拒绝。
+pub const MIN_TIMELINE_WINDOW_MS: i64 = 1_000;
+
+impl TimelinePolicy {
+    /// 规范化：与融合核心一样按字典序排列模态，让策略摘要与"实际生效的集合"一一对应。
+    pub fn normalized(&self) -> Self {
+        let mut fast = self.fast_modalities.clone();
+        let mut slow = self.enrichment_modalities.clone();
+        fast.sort();
+        slow.sort();
+        Self {
+            window_ms: self.window_ms,
+            fast_modalities: fast,
+            enrichment_modalities: slow,
+        }
+    }
+
+    /// 策略摘要：`pipeline_version` 必须携带它，否则"同名策略被悄悄替换"无法被发现。
+    pub fn digest(&self) -> String {
+        let normalized = self.normalized();
+        let canonical = serde_json::json!({
+            "window_ms": normalized.window_ms,
+            "fast_modalities": normalized.fast_modalities,
+            "enrichment_modalities": normalized.enrichment_modalities,
+        })
+        .to_string();
+        "sha256:".to_string() + &sha256_hex(canonical.as_bytes())
+    }
+
+    /// 融合核心的同一份校验：策略非法时连引擎都构造不出来，这里不另写一套规则。
+    pub fn engine(&self, pipeline_version: &str) -> Result<FusionEngine, String> {
+        let normalized = self.normalized();
+        FusionEngine::new(FusionPolicy {
+            pipeline_version: pipeline_version.to_string(),
+            required_modalities: normalized.fast_modalities,
+            enrichment_modalities: normalized.enrichment_modalities,
+            limits: FusionLimits::default(),
+        })
+        .map_err(|error| format!("invalid_timeline_policy: {}", error.0))
+    }
+
+    /// 由 pipeline 名与策略摘要派生的不可变版本号。
+    pub fn pipeline_version(&self, pipeline_name: &str) -> String {
+        let digest = self.digest();
+        format!(
+            "{pipeline_name}:timeline-fusion-v1:{}",
+            &digest["sha256:".len().."sha256:".len() + 16]
+        )
+    }
+}
+
+pub fn sha256_hex(payload: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(payload);
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        hex.push_str(&format!("{byte:02x}"));
+    }
+    hex
 }
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -235,9 +318,57 @@ impl Pipeline {
         {
             return Err("missing_processor_capability".into());
         }
+        Self::validate_timeline(&p)?;
         Ok(p)
     }
+
+    /// `timeline_fusion` 的"声明即实现"：声明了处理器就必须给出策略，反之亦然。
+    ///
+    /// 只声明处理器、没有策略，曾经是一条**既不报错也没有实现**的路径；这里把它变成
+    /// 解析期错误，而不是留到运行时再发现"这个阶段从来没人执行过"。
+    fn validate_timeline(p: &Self) -> Result<(), String> {
+        let declared = p
+            .spec
+            .processors
+            .iter()
+            .chain(&p.spec.slow_enrichment)
+            .chain(&p.spec.sinks)
+            .any(|stage| stage.r#type == TIMELINE_FUSION_STAGE);
+        match (&p.spec.timeline_fusion, declared) {
+            (None, true) => Err("timeline_fusion_declared_without_policy".into()),
+            (Some(_), false) => Err("timeline_policy_without_declaration".into()),
+            (None, false) => Ok(()),
+            (Some(policy), true) => {
+                if !(MIN_TIMELINE_WINDOW_MS..=FusionLimits::default().max_window_ms)
+                    .contains(&policy.window_ms)
+                {
+                    return Err(format!(
+                        "invalid_timeline_policy: window_ms must be between {} and {}",
+                        MIN_TIMELINE_WINDOW_MS,
+                        FusionLimits::default().max_window_ms
+                    ));
+                }
+                // 复用融合核心的校验（模态数量、互斥、标签……），不在这里另写一套。
+                policy
+                    .engine(&policy.pipeline_version(&p.metadata.name))
+                    .map(|_| ())
+            }
+        }
+    }
+
+    /// 已解析 pipeline 的 timeline 策略与不可变版本号；未声明时是显式错误而不是默认值。
+    pub fn timeline(&self) -> Result<(&TimelinePolicy, String), String> {
+        let policy = self
+            .spec
+            .timeline_fusion
+            .as_ref()
+            .ok_or_else(|| "timeline_policy_absent".to_string())?;
+        Ok((policy, policy.pipeline_version(&self.metadata.name)))
+    }
 }
+
+/// pipeline 里 timeline 聚合阶段的类型名；与 `config/pipelines/*.yaml` 的声明一致。
+pub const TIMELINE_FUSION_STAGE: &str = "timeline_fusion";
 
 /// 准入（admission）从不创建无界队列，也不在慢路径满载时阻塞等待。
 pub fn bounded_queue<T>(capacity: NonZeroUsize) -> (mpsc::Sender<T>, mpsc::Receiver<T>) {

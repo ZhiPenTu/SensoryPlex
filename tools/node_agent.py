@@ -141,6 +141,23 @@ class NodeAgentClient:
             except json.JSONDecodeError:
                 raise RuntimeError(f"HTTP {e.code}: {err_body}") from e
 
+    def register_candidate(
+        self,
+        display_name: str,
+        is_co_located: bool,
+        capabilities: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = {
+            "enrollment_token": "candidate",
+            "node_id": self.node_id,
+            "display_name": display_name or self.node_id,
+            "is_co_located": is_co_located,
+            "capabilities": capabilities,
+        }
+        res = self._post("/v1/agent/candidate-register", payload)
+        self.session_token = res.get("session_token", "")
+        return res
+
     def bootstrap_local(
         self,
         display_name: str,
@@ -306,6 +323,9 @@ def main():
     enroll_parser.add_argument("--node-id", required=True)
     enroll_parser.add_argument("--token", default="")
     enroll_parser.add_argument("--local", action="store_true", help="Auto-bootstrap local node")
+    enroll_parser.add_argument(
+        "--candidate", action="store_true", help="Register as candidate node"
+    )
     enroll_parser.add_argument("--display-name", default="")
     enroll_parser.add_argument("--co-located", action="store_true")
     enroll_parser.add_argument("--state-file", default="")
@@ -330,6 +350,8 @@ def main():
         client = NodeAgentClient(args.main_url, args.node_id)
         if args.local:
             res = client.bootstrap_local(args.display_name, caps)
+        elif args.candidate:
+            res = client.register_candidate(args.display_name, args.co_located, caps)
         else:
             if not args.token:
                 print("[agent] Error: --token required for remote enrollment", file=sys.stderr)

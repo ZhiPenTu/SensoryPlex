@@ -27,6 +27,7 @@ use tonic::{Request, Response, Status};
 use crate::handoff_service::{HandoffService, DEFAULT_HANDOFF_TTL_MS};
 
 mod handoff_service;
+mod timeline;
 
 /// 大于该阈值的间隔会被计入时间轴断层（discontinuity），不会被平滑掉。
 const GAP_THRESHOLD_MS: i64 = 1_000;
@@ -1153,9 +1154,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.first().map(String::as_str) == Some("ingest") {
         return ingest(&args[1..]).await;
     }
+    if args.first().map(String::as_str) == Some("timeline") {
+        // 真探测 + 真运行报告 → 融合核心 → 素材文件；不碰数据库、不发事件（ADR-028）。
+        return timeline::run(&args[1..]);
+    }
     if !args.is_empty() && args != ["serve"] {
         return Err(
-            "usage: sensoryplex-runtime [serve | check <pipeline.yaml> | replay <pipeline.yaml> <media-path> --report <report.pb> | ingest <pipeline.yaml> --report <report.pb>]"
+            "usage: sensoryplex-runtime [serve | check <pipeline.yaml> | replay <pipeline.yaml> <media-path> --report <report.pb> | ingest <pipeline.yaml> --report <report.pb> | timeline <pipeline.yaml> <media-path> --report <report.pb> --worker-report <ai-worker.json> --material-dir <dir> --out <timeline.json>]"
                 .into(),
         );
     }
