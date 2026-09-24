@@ -25,8 +25,11 @@ WSL2/Docker 兼容运行，不是已验收的一等部署目标。共享内存�
 SRT 实时接入（M4）同样可用：`ingest` 在有限窗口内拉流、解码并测量断流与恢复，重连归解码元素
 （`srtsrc auto-reconnect`），本进程只测量；直播没有已知时长，因此不产出 anchor 区间。
 背压指标（M2）与四个端侧模型插件（VLM/ASR/OCR/BGE，ADR-012/016/017）已接入；BGE 向量也已能
-落库并检索回来（`services/index-worker`，ADR-020，本机为 Milvus Lite 文件形态）。仍未接入的是
-NATS 任务分发与常驻 index-worker 消费仍未接线；网关侧语义检索已按 ADR-023 接上真实检索面
+落库并检索回来（`services/index-worker`，ADR-020，本机为 Milvus Lite 文件形态）。事务性 outbox
+的事件也已能**确认发到** NATS JetStream（`services/outbox-relay`，ADR-024：`published_at` 只在确认
+之后写、`Nats-Msg-Id = event_id` 由 duplicate window 吸收重发、stream 漂移只报不改）；仍未接线的是
+NATS 任务分发与 **NATS → sink 的消费循环**（上游 observation 还没有事件，`material.upserted`
+也携带不了 BGE 需要的文本）。网关侧语义检索已按 ADR-023 接上真实检索面
 （`mode=semantic` 不再是 501：常驻 `sensoryplex-index serve` 持有向量库，API 只转发查询并按
 `(material_unit_id, revision)` 水合事实），服务端 Milvus 拓扑在本机 Docker Hub 不可达的情况下
 未经验收。相关 API 明确报告能力不可用。
@@ -88,6 +91,14 @@ make embed-check MEDIA=/absolute/path/to/authorized-video.webm    # BGE 文本�
 `uv run --frozen python tools/verify_embed.py --media <sample> --keep-workspace` 产出的
 `ai-worker.json`。注意 Milvus Lite **是进程独占的**（同一数据目录不能被两个进程同时打开），
 服务端形态未验收，见 [ADR-020](docs/adr/ADR-020-向量索引落库与检索闭环.md)。
+
+`make outbox-check` 把事务性 outbox 接进 **NATS JetStream**（ADR-024）：真实 `EventEnvelope`
+落库后由 `services/outbox-relay` 发布，脚本再把消息从 JetStream 拉回来逐字节对账（subject、
+`Nats-Msg-Id`、载荷），并验证重放去重、漂移不被静默修好、NATS 不可达时**一行都不写**。
+这个目标在 api 容器内执行（只要真实 PostgreSQL 与真实 JetStream，都在 compose 里）。
+`make outbox-run` 是同一入口的常驻形态。**边界**：它是"发布这一跳"，
+[NATS → sink 的消费循环仍未接线](docs/adr/ADR-024-outbox分发接线与消费去重边界.md)，
+所以通过**不代表**向量已被事件驱动地写进去了。
 
 `make embed-check` 是唯一**不接数据面**的链路：它先跑一遍真实 OCR 产出文字块，再让 BGE 消费这些
 文字（`acceptsMemoryKinds: []`，喂字节以 `buffer_reader_not_attached` 明确拒绝），产出维度版本化的
@@ -159,6 +170,7 @@ plugins/python/common/  edge_material_sdk 与生成的 Python 消息
 apps/console/           React + TypeScript + Vite 素材工作台
 services/api/           模块化 Business / Admin / Identity API
 services/gateway/       旧 Gateway 导入与启动兼容入口
+services/outbox-relay/ 事务性 outbox → NATS JetStream 的 relay（ADR-024）
 db/migrations/          只追加的显式 PostgreSQL 迁移
 config/pipelines/       文件与 SRT 实时接入的 pipeline 配置
 deploy/compose/         本地容器基础设施

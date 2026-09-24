@@ -1887,3 +1887,83 @@ PR #9 / #10 已记录同一现象。按既有口径处理：**不反复重跑**�
   是跨容器接入的**前置条件**，不是"跨机已验收"。
 - **服务端 Milvus 拓扑未验收**（Docker Hub 不可达）、`linux-x86_64` 与 Mac mini 未验证。
 - 检索面不做 durable 幂等、崩溃回收与排队补偿，`max_concurrency` 是固定上限。
+
+### outbox 分发与消费去重边界（ADR-024）（2026-09-24）
+
+切片：**① 常驻 index-worker 消费的上游那一跳**——把事务性 outbox 的事件确认发到 NATS JetStream，
+并把 sink 侧的消费去重原语准备好。边界写在 [ADR-024](adr/ADR-024-outbox分发接线与消费去重边界.md) §9：
+`NATS → sink` 的**消费循环仍未接线**（它不只是接线问题，见下），所以本节的证据**不代表**
+"向量已被事件驱动地写进去了"。
+
+**接线与依赖**：新增工作区成员 `services/outbox-relay`（`sensoryplex-relay`，依赖 `nats-py` 与
+`psycopg`）。`uv lock` 在 api 容器内执行，只新增 `nats-py v2.16.0` 与 `sensoryplex-relay v0.1.0`
+两条（diff 纯增量：29 insertions / 0 deletions——`uv lock` 顺带重写过 17 行 nvidia optional-dependency
+的 platform marker，去掉 `sys_platform` 守卫会让 macOS x86_64 去装 CUDA wheel，已逐行还原并复核
+`uv lock --check` 通过）。api 镜像 `uv pip install ./services/outbox-relay`（不加 `|| true`），
+gateway 镜像补 `COPY services/outbox-relay`（`uv sync --frozen --package sensoryplex-gateway`
+需要工作区成员目录存在，`migrate` 复用 gateway 镜像）。容器内实测 `nats-py 2.16.0` /
+`sensoryplex-relay 0.1.0` 可导入。
+
+**执行位置**：`make outbox-check` **在 api 容器内**跑（与 `index-check` / `semantic-check` 的理由不同）：
+它要的只有真实 PostgreSQL 与真实 JetStream，两者都在 compose 里，Milvus Lite / HF 权重 / CoreML
+一个都不用。验收脚本自建**独立** stream `sensoryplex-events-acceptance` 与 subject 前缀
+`sensoryplex.acceptance.events`，跑完删掉，不碰开发用的 `sensoryplex-events`。
+
+**真实链路证据**（`make outbox-check`，9 个场景全过）：
+
+| # | 场景 | 实测结果 |
+| --- | --- | --- |
+| 1 | 目标描述 | `--describe` 回 `postgres:5432/sensoryplex`，不含 DSN |
+| 2 | 真实建 stream | 读回配置：subjects `["sensoryplex.acceptance.events.>"]`、`storage=file`、`max_age=604800`、`duplicate_window=7200`、上下界与契约一致 |
+| 3 | 真实发布并对账 | 拉回 2 条消息，subject = `sensoryplex.acceptance.events.material.upserted`、`Nats-Msg-Id` = outbox 的 `event_id`、载荷与 outbox 行**逐字节**相同 |
+| 4 | 确认之后才记账 | 两行 `published_at` 非空且 `attempt=1`，`pending` 归零 |
+| 5 | 发不出去就不写 | 契约缺陷（envelope 与行 id 不一致）→ `failed=1` + `event_envelope_mismatch`，行仍未发布、`attempt=1`、`pending=1`；NATS 指向死地址 → exit 1 + `nats_unreachable`、**没有任何 status 行**、账目不变 |
+| 6 | 重放去重 | 同一 `Nats-Msg-Id` 重发 → `PubAck.duplicate is True`，流内消息数仍为 2 |
+| 7 | 漂移不静默 | 手工造 `max_age` 漂移的 stream → `event_stream_contract_mismatch`（detail 里点名 `max_age`），**读回后仍是漂移值**（没被修好）；删掉后 relay 按契约重建 |
+| 8 | sink 去重 | 真 PostgreSQL 上 `record_consumed` 第一次 `True`、第二次 `False`，`consumed_at` 可观察，`consumed_event` 只有 1 行 |
+| 9 | 不外泄 | 状态行字段集合与契约一致，无 DSN / schema 名 / 主机路径 / 载荷 |
+
+**测试面**：`tests/contracts/test_outbox_relay_contract.py`（40 条：subject/event_type 准入、
+`RelayOptions` 逐项边界、envelope 与行一致性、`stream_contract_diff` 的**秒**口径、
+启动连接**有界**（三个假 nats 模块：永不返回 / 连接被拒 / 捕获参数）、状态行形状、
+`describe_target` 抹凭据）与 `tests/integration/test_outbox_relay.py`（13 条，真实 PostgreSQL +
+真实迁移：确认后才写、失败不写 `published_at`、`attempt` 计数、一批里一条坏事件不拖累其余、
+`mark_published` 只翻一次、`(event_id, consumer_name)` 作用域）。容器内全量回归：
+`make lint-ruff`（147 files，clean）、`make test-contracts`（**287 passed**）、
+`make test-integration`（**56 passed**）、`make check`（含 `cargo fmt` / `clippy -D warnings` /
+`cargo test --workspace`，通过）。
+
+**真机跑出来的三个缺陷**（记在 [ADR-024](adr/ADR-024-outbox分发接线与消费去重边界.md) §8）：
+
+1. **`max_age` / `duplicate_window` 的单位是秒**：nats-py 的 `StreamConfig` 声明
+   `max_age: Optional[float] = None  # in seconds`，纳秒由库自己换算。按"proto 是纳秒"写成
+   `7d * 1e9` 会被**再乘一次 1e9**，服务端回
+   `invalid JSON: cannot unmarshal number ... into Go struct field StreamConfigRequest.StreamConfig.max_age`。
+   契约测试里专门钉了一条"纳秒写法必须被判为漂移"。
+2. **`nats.connect(max_reconnect_attempts=-1)` 连首次连接都无限重试**
+   （`_select_next_server` 只在 `max_reconnect_attempts > 0` 时才放弃服务器）。这个坑是**测试先撞上**的：
+   一条"缺 DSN 必须显式退出"的用例在容器里被 `SENSORYPLEX_DATABASE_URL` 顶掉，于是真的去连了一次
+   NATS，测试挂了 6 分钟没动静（`nats.py` 的 `_select_next_server` 里，`max_reconnect_attempts <= 0`
+   时服务器永不被剔除）。现在启动连接有上限（`--connect-timeout-s`，默认 10s）并显式报
+   `nats_unreachable`，连上之后仍交给库做无限重连。
+3. **`duplicate_window > max_age` 的 stream 建不出来**：验收场景 7 最初就踩在这上面
+   （`duplicates window can not be larger then max age`），漂移改成只动 `max_age` 且仍大于
+   `duplicate_window`。
+
+另外确认一条**既有 schema 事实**：`consumed_event.consumed_at` 是 `NOT NULL DEFAULT now()`，
+没有"在飞"态，所以"先认领、再干活"的两相接口在这个 schema 上表达不出来；做了它会在
+"插了行、还没干完"的窗口崩溃时把重投变成**事件永久丢失**。因此 sink 原语是
+**先干活后记账**（`record_consumed` 返回 `False` = 重复完成，幂等而非错误），且**不加迁移**。
+
+#### 仍未验证（不得当成完成）
+
+- **NATS → sink 的常驻消费循环没有写**：本轮只做"发布这一跳"。而且它不只是接线——
+  上游 observation 连 `event_id` 都没有，唯一存在的 `material.upserted` 携带不了 BGE 需要的
+  `ocr_blocks` 文本，所以"消费到 sink"要先补 observation 事件契约；
+- **没有 dead-letter 与重试上限**：`attempt` 只被计数（本轮最多到 1），超过阈值怎么办未定义；
+- **relay 没进 compose**：常驻形态靠 `make outbox-run` 显式起（JetStream 里还没有消费者，
+  先常驻一个只发不收的进程没有意义）；
+- **NATS 无鉴权、无 TLS**：沿用 compose 里回环暴露的本地 NATS（ADR-010 的受控引用边界不变）；
+- **没有端到端背压**：ADR-019 的队列上限没有接到 relay，`--batch` 是固定上限；
+- 本目标在容器内执行，**没有**单独在 Apple Silicon / Mac mini 上验收（NATS 与 PostgreSQL
+  与主机架构无关，但"跑在 MAC mini 家庭工作站上"这句话本轮没有证据）。

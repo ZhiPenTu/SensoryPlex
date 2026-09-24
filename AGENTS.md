@@ -152,6 +152,7 @@ make demo-seed
 | `make console-check` | api 容器 | `tools/verify_console.py` 读 `/host-media/<file>` |
 | `make gateway-smoke` | gateway 容器 | `BASE=http://127.0.0.1:8090` 即容器自身 |
 | `make runtime-smoke` / `integration` | api 容器 | 调 `tools/smoke_*.py` |
+| `make outbox-check` / `outbox-run` | api 容器 | ADR-024：真 PostgreSQL + 真 NATS JetStream 的"发布这一跳"（`--nats-url` 容器内是 `nats://nats:4222`）；**NATS → sink 的消费循环未接线**，通过不等于向量已被事件驱动写入 |
 | `make check` / `test` / `format`（rust 部分） / `runtime` / `pipeline-check` / `media-check` / `media-replay` / `live-check` / `backpressure-check` / `capability-check` / `handoff-check` / `model-check` / `asr-check` | **host** | 调用主机 `cargo`；待批准工具链容器后再切回 |
 | `make stream-up` / `stream-down` / `stream-status` / `stream-logs` | host | 媒体流独立 compose |
 
