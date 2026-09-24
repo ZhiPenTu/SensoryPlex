@@ -142,6 +142,8 @@ Rust 侧因此**不新增任何数据库/网络依赖**，`crates/storage` 的 `
 本切片只做**文件源 → 单次运行 → 素材**。以下都在报告里作为 blocker 写死，不留给读者推断：
 
 - `metadata_append_not_exercised`：Runtime 自己**没有**追加（追加发生在 `timeline_handoff.py`）；
+- `relay_publish_not_exercised`：`timeline_handoff.py` 把 outbox 行写进**同一个事务**，但它不发事件；
+  "发到总线"是 relay 那一跳的事（ADR-024/027）。因此它的产物里必须写着这一条；
 - `vector_index_not_exercised` / `semantic_search_not_exercised`：`timeline` 命令与
   `timeline_handoff.py` 都**不**发事件、不写向量；向量那一跳由 ADR-020/023/025 的既有证据负责，
   真实媒体素材接进去的那一次端到端由 `make timeline-check` 单独出证据；
@@ -167,14 +169,27 @@ Rust 侧因此**不新增任何数据库/网络依赖**，`crates/storage` 的 `
 
 ## 8. 验收
 
-`make timeline-check MEDIA=<授权样本>`（容器内执行 Python、主机执行 cargo，理由同既有媒体目标）：
+`make timeline-check MEDIA=<授权样本>` 跑 `tools/verify_timeline_handoff.py`。执行位置固定在
+**主机**，两条理由都不可绕：runtime 二进制是主机 Mach-O（容器里 `docker compose exec` 直接
+`Exec format error`），真实 VLM 端点（ollama）与 HF/MLX 一样只在主机。PostgreSQL 与 NATS
+JetStream 仍在 compose 里跑，从宿主回环端口连；验收脚本自建隔离 schema 与独立 JetStream
+stream（不复用开发用的库与 stream），跑完即删。**因此本目标的证据写法是"主机执行 + 容器栈在跑"**，
+不得写成"容器内验收"。
 
-| 场景 | 判定标准 |
-| --- | --- |
-| 1 | 真实媒体 → 真实 replay（解码 + lease）→ 真实插件观测 → `timeline` → 素材事实：观测区间等于描述符窗口、素材窗口包含其观测、`SourceReference` 用整文件摘要、`pipeline_version` 带策略摘要 |
-| 2 | 真实 PostgreSQL（隔离 schema + 真实迁移）→ `timeline_handoff.py` 追加：素材/观测/lineage/outbox 行落库，事件 `payload_ref` 指向真实 revision，重放第二次返回"未新增" |
-| 3 | 拒绝语义：跨窗观测、账本缺失、其余摘要不一致都必须显式失败且**不追加任何事实** |
-| 4 | 不外泄：报告里没有媒体路径、没有共享内存段名、没有 DSN |
+| 场景 | 判定标准 | 实测（`video/1.mp4`，30627 ms，`sha256:3d94f00fe81b…`） |
+| --- | --- | --- |
+| 1 | 真实媒体 → 真实 replay（解码 + lease）→ 真实插件观测 → `timeline` → 素材：观测区间等于描述符窗口、素材窗口包含其观测、`SourceReference` 用**整文件**摘要、`material_unit_id` 由摘要与窗口起点派生 | 6 帧观测 → 7 窗（5/7 有观测）→ 5 条素材，`rejected=0`；`[0,33]`/`[4000,4033]`… 逐条 `source_time_range_ms == time_range_ms` |
+| 2 | 真实 PostgreSQL（隔离 schema + 真实迁移）→ `timeline_handoff.py` 追加：素材/观测/lineage/outbox 行落库，**入库字节与磁盘 protobuf 逐字节相同**，重放第二次返回"未新增" | `material_unit=5` / `observation=6` / `material_source_reference=6` / `timeline_item=6` / `event_outbox=5`；第二遍 `appended=0 replayed=5` 且行数不增 |
+| 3 | 发布这一跳：真 relay `--once` 把 outbox 发到真 JetStream，`published_at` 落定，重放不重发；发布侧分级准入被**显式注入**并给出真结论 | `published=5`＋`inflight_state=admitted`（`inflight_capacity=32`）；第二遍 `claimed=0 published=0` |
+| 4 | 三类显式失败都打真实入口且**不追加事实**：owner 漂移、同 revision 换内容、报告视图被改 | `media_source_conflict` / `immutable_revision_conflict` / `material_report_mismatch`，退出码 2 |
+| 5 | 不外泄：报告里没有媒体路径、没有共享内存段名、没有 DSN、没有令牌 | 三份产物全部通过 |
+
+本目标需要一个 **≥20 s** 的数据面空闲窗口：数据面按"最后一次调用"起算空闲，而模型推理期间
+没有任何 gRPC 调用（实测 VLM 首帧 ~3 s）。窗口给得太小，生产者会在观测途中关掉数据面，
+失败会伪装成 `data_plane_stats_failed`——这条踩坑记录写在这里，避免下次再交一次学费。
+
+证据汇总见 [验证记录](../verification.md) 的"真实媒体端到端：Runtime → Timeline 融合与授权追加
+（ADR-028）"。
 
 ## 9. 后果与仍未验证范围
 
@@ -183,6 +198,11 @@ Rust 侧因此**不新增任何数据库/网络依赖**，`crates/storage` 的 `
 
 **仍未验证（不得声称完成）：**
 
+- **relay → 常驻消费 → 向量 → 语义检索这一段没接上**：本切片停在"事件被确认发到 JetStream"。
+  `consume-check` / `event-pipeline-check` 覆盖的确实包括"事件驱动写入向量并被检索到"，
+  但它们跑的不是 timeline 融合出来的素材；"融合出的素材能被语义检索到"仍未验收；
+- **该素材经 HTTP 查询与回看未验收**：追加后的事实具备查询所需字段（`media_source.owner`、
+  `media_asset.sha256`、`timeline_item`），但查询侧那一跳没有被本切片走一遍；
 - **revision 前进**：本切片一律 `previous=None` ⇒ `revision=1`；"读回最新 revision 再融合下一版"
   未实现（需要一个能读事实的调用方），因此同一素材的**第二次不同内容**写入会以
   `immutable_revision_conflict` 显式失败而不是自动升版；

@@ -119,9 +119,22 @@ cargo test --workspace --locked
 半开区间、来源、质量状态、置信度、revision 和资源边界。它不是媒体 E2E 或质量验收。
 本轮执行环境、检查结果与未验证范围见 [VERIFICATION.md](VERIFICATION.md)。
 
-本阶段不修改 Proto、插件、SDK、Runtime、API、数据库迁移、Compose 或 Makefile。
+**首版**（本 crate 单独合入时）不修改 Proto、插件、SDK、Runtime、API、数据库迁移、Compose 或 Makefile。
 `Cargo.lock` 只给本 crate 增加已有的 `prost` / `prost-types` 依赖关系，不升级任何依赖版本。
 独立 worktree 保留这些改动，M8 工作目录不受影响。公共 TODO/实现状态/验证汇总由合并时统一更新。
+（Runtime 接线落地时对这些边界有改动：`crates/runtime`、`Cargo.toml` 与 `Makefile`，见下一节。）
 
-后续接线：Runtime 选择窗口及原片映射 → 本核心 → 事务性追加 MaterialUnit/血缘/outbox。
-此路径、真实媒体端到端、跨模态语义冲突判定、Milvus 与语义搜索尚未由本次改动实现或验收。
+后续接线（**已落地**，见 [ADR-028](../../docs/adr/ADR-028-Runtime到Timeline接线与授权追加.md)）：
+
+1. Runtime 选择窗口及原片映射：`sensoryplex-runtime timeline`（真探测 → 读写运行报告 → 按 pipeline
+   声明的栅格选窗 → 调本核心 → 写素材 protobuf 与报告）。观测身份绑定到 Runtime 签发的不透明标识
+   （`<buffer_id>@<source_digest 前 16 位>`），跨窗观测**显式拒绝而不裁剪**。
+2. 事务性追加 MaterialUnit/血缘/outbox：`tools/timeline_handoff.py`（授权写入口）登记引用事实后调
+   真实写侧 `append_material()`，事实与 outbox 行在同一个事务里落下。
+3. 验收：`make timeline-check MEDIA=<授权样本>`（主机执行，真实媒体 → 真解码 → 真 VLM → 真融合 →
+   真 PostgreSQL → 真 outbox → 真 JetStream）。证据见
+   [验证记录](../../docs/verification.md) 的 ADR-028 一节。
+
+仍**未**由这条接线实现或验收的：跨模态语义冲突判定、常驻 timeline worker（当前是单次运行）、
+`revision` 前进（当前一律 `revision=1`）、实时源与内容切窗，以及"融合出的素材被事件驱动写成向量、
+再被语义检索到并经 HTTP 查询回看"这一段。

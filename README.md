@@ -118,6 +118,18 @@ make embed-check MEDIA=/absolute/path/to/authorized-video.webm    # BGE 文本�
 relay 的 `--batch` 与 `--consume-batch` 越界即 `event_inflight_exceeds_tier_cap`，缺变量是显式
 `not_injected` —— 与媒体面同一口径，不夹取、不改写。
 
+`make timeline-check MEDIA=/absolute/path/to/authorized-sample.mp4` 是**真实媒体**从 Runtime 走到
+素材事实的那一段（[ADR-028](docs/adr/ADR-028-Runtime到Timeline接线与授权追加.md)，**主机执行**：
+runtime 二进制是主机 Mach-O，容器里 `Exec format error`，真实 VLM 端点也只在主机；
+PostgreSQL 与 NATS 仍在 compose 里，从宿主回环端口连）：真解码 + 真 lease → 真插件观测 →
+`sensoryplex-runtime timeline`（按 pipeline 声明的栅格选窗、逐条准入、调融合核心）→
+授权写入口 `tools/timeline_handoff.py`（登记引用事实 + 真写侧追加，事实与 outbox 同事务）→
+真 relay `--once` 把事件确认发到真 JetStream。实测：6 帧观测 → 7 窗（5 窗有观测）→ 5 条素材、
+`rejected=0`；入库字节与磁盘 protobuf 逐字节相同；第二遍追加 `appended=0 replayed=5`、relay 第二遍
+`published=0`；owner 漂移 / 同 revision 换内容 / 报告视图被改三类失败都显式拒绝。
+**边界**：只接文件源与单次运行（`revision=1`），且只有 VLM 一种模态 ⇒ 每条素材 `status=partial`；
+验收停在"事件已发到 JetStream"，**没有**验"融合出的素材被写成向量、再被语义检索到并经 HTTP 查询回看"。
+
 `make embed-check` 是唯一**不接数据面**的链路：它先跑一遍真实 OCR 产出文字块，再让 BGE 消费这些
 文字（`acceptsMemoryKinds: []`，喂字节以 `buffer_reader_not_attached` 明确拒绝），产出维度版本化的
 L2 归一化向量。想跳过 OCR、直接复用已有的 `ai-worker.json` 时传

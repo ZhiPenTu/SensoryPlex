@@ -2323,6 +2323,94 @@ true。也就是说：**capability 是"这个部署有没有挂载仓库"的函�
 
 ---
 
+### 真实媒体端到端：Runtime → Timeline 融合与授权追加（ADR-028）（2026-09-24）
+
+切片：收掉 TODO「真实媒体端到端」里 **Runtime → Timeline → metadata writer/outbox** 这一段。
+`crates/timeline` 此前是一个**没有任何调用方的叶子 crate**（workspace 里只有它自己的
+`Cargo.toml` 提到它），pipeline 里的 `- type: timeline_fusion` 也没有实现。决策与未验证边界见
+[ADR-028](adr/ADR-028-Runtime到Timeline接线与授权追加.md)。
+
+命令：`make timeline-check MEDIA=/absolute/path/to/authorized-sample.mp4`。
+
+**执行位置固定在主机**（两条理由都不可绕）：runtime 二进制是主机 Mach-O，容器里
+`docker compose exec` 直接 `Exec format error`；真实 VLM 端点（本机 ollama）与 HF/MLX 一样只在主机。
+PostgreSQL（25432）与 NATS（24222）仍在 compose 里跑，从宿主回环端口连；验收脚本自建隔离
+schema 与独立 JetStream stream，跑完即删，不碰开发用的库与 stream。
+
+**真实角色（没有替身）**：`sensoryplex-runtime replay --handoff-listen`（真解码 + 真 lease）→
+真 VLM 插件进程（`edge_material_plugin_vlm_moondream` + ollama `moondream:v2`）→
+`tools/ai_worker.py`（buffer 模式 ⇒ Runtime 签发的描述符账本 + 真观测）→
+`sensoryplex-runtime timeline`（真融合）→ `tools/timeline_handoff.py`（**授权追加**）→
+真 relay `--once` → 真 JetStream。
+
+#### 本轮修掉一个"单测全绿、真链路一条都过不了"的缺陷（必须记下来）
+
+worker 报告里的观测是 **protojson**（`json_format.MessageToDict`）：int64 **以字符串传输**、
+零值字段**被省略**——真实形态是 `"timeRange": {"endMs": "33"}`。而
+`crates/runtime/src/timeline.rs` 的 `RawRange` 当时只接受 JSON 数字，于是**每一条从 0 ms 开始的
+观测都变成 `observation_unparsable`**，被逐条丢进 `rejected`，最后只剩一个
+`timeline_no_window_materialized` 兜底错误。单元测试的 fixture 用的是 JSON 数字、且总带
+`startMs`，所以它一路全绿。
+
+修法两条，都是契约口径而不是兜底：
+
+- 给 `RawRange.start_ms` / `end_ms` / `RawObservation.created_at_unix_ms` 加 protojson 口径的
+  int64 读法（接受字符串与数字，缺省即 0——这是 proto3 JSON 的协议语义），并补两条回归测试：
+  真 protojson 形态必须能解析；非法 int64 必须**拒绝**而不是悄悄当成 0；
+- 兜底错误必须带**拒绝原因计数**（`timeline_no_window_materialized: <reason>=<count> …`）：
+  "一条都没通过"否则只能靠重放整条链路来定位。
+
+#### 实测（授权样本 `video/1.mp4`，540x960 HEVC + AAC，30627 ms，`sha256:3d94f00fe81b…`）
+
+```
+timeline report written: pipeline=file-material-poc stream=stream-3d94f00fe81b items=6 windows=5/7 materials=5 rejected=0
+timeline handoff: materials=5 appended=5 replayed=0 observations=6 outbox=5
+  owner drift:       timeline handoff failed: reference_fact_conflict: media_source_conflict: file-3d94f00fe81b …
+  immutable revision: timeline handoff failed: immutable_revision_conflict
+  tampered report:   timeline handoff failed: material_report_mismatch: material-3d94f00fe81b-0
+timeline handoff acceptance: real media -> replay -> VLM -> fusion -> authorized append -> outbox -> JetStream passed in 28.8s
+```
+
+| 断言 | 实测 |
+| --- | --- |
+| 身份全部由**整文件**摘要派生 | `stream-3d94f00fe81b` / `file-3d94f00fe81b` / `asset-3d94f00fe81b`；素材 id `material-3d94f00fe81b-<窗口起点>` |
+| 窗口栅格与时长求交 | 7 窗（30627 ms ÷ 5000 ms），5 窗有观测；末窗 `[30000,30627]` 被时长夹住 |
+| 观测不被重新锚定 | 6 帧的 `source_time_range_ms == time_range_ms`（`[0,33]`、`[4000,4033]`…），`observations_rejected=0` |
+| readiness 如实（不谎报） | 只有 VLM 一种模态 ⇒ 每条素材 `status=partial`、`pending_enrichments=[asr_segment, ocr_blocks]`，**不是** `fast_ready` |
+| 事实与 outbox 同事务 | `material_unit=5` / `observation=6` / `material_source_reference=6` / `timeline_item=6` / `event_outbox=5` |
+| 入库字节就是融合产物 | 每行 `contract_bytes` 与磁盘 `*.material.pb` **逐字节相同**，`content_hash` 覆盖这些字节，`material_digest` 与磁盘 bytes 一致 |
+| 幂等来自写侧 | 第二遍 `appended=0 / replayed=5`；库里 revision / observation / outbox 行数不增 |
+| 发布这一跳是真的 | relay `published=5`，`event_outbox.published_at` 5 行全部落定；第二遍 `claimed=0 / published=0` |
+| 发布侧分级准入（ADR-019/027） | 显式注入 `medium` ⇒ `inflight_state=admitted`、`inflight_capacity=32` |
+| 三类失败显式 | owner 漂移 ⇒ `media_source_conflict`；同 revision 换内容 ⇒ `immutable_revision_conflict`；报告视图被改 ⇒ `material_report_mismatch`（都在退出码 2，且**没有**追加任何事实） |
+| 不外泄 | 三份产物里没有 DSN / 主机路径 / 素材文本 / 令牌 / 向量库引用 |
+
+同批回归：`make check` 的 `lint-ruff`（`ruff check` 全过 / `format --check` 171 文件）与
+`test-py`（contracts 371 passed、integration 69 passed）、`cargo clippy --workspace --all-targets
+--locked -- -D warnings`（clean）、`cargo test --workspace --locked`（全绿）。
+
+**一条与本切片无关的既有红灯（如实记录）**：`make check` 的
+`cargo fmt --all -- --check` 在 `crates/sdk/src/lib.rs:40`（`pub use edge::material::{…}` 的
+`node::v1 as node` 排序，来自节点拓扑那一批 `1983715`）**在 HEAD 上就已经是红的**，
+不是本切片引入；本切片改动过的 Rust 文件全部 fmt-clean。
+
+#### 仍未验证（不得当成完成）
+
+- **relay → 常驻消费 → 向量 → 语义检索这一段没接**：本验收停在"事件被确认发到 JetStream"。
+  `consume-check` / `event-pipeline-check` 覆盖的是事件驱动写入与检索，但它们跑的不是 timeline
+  融合出来的素材；"融合出的素材能被语义检索到"仍未验收 ⇒ `golden_path_verified` 在三份产物里
+  都是 `false`；
+- **该素材经 HTTP 查询与回看未验收**：事实具备查询所需字段（`media_source.owner`、
+  `media_asset.sha256`、`timeline_item`），但查询侧那一跳没有被本切片走一遍；
+- **单窗口多模态共存未验收**：本切片只有 VLM 一种模态，`asr_segment` / `ocr_blocks` 仍是
+  `pending_enrichments`；ASR/OCR 与 VLM 混窗时的 `fast_modalities` 组合没有被真实验收；
+- **revision 前进未验收**：本切片一律 `revision=1`（前进需要一个先读事实的调用方）；
+- **SRT 实时源与内容切窗未验收**：`timeline` 命令只接文件源；栅格是固定的；
+- `timeline_handoff.py` 的"授权"是**参数显式**（`--owner` / `--trace-id`），不是身份系统：
+  写侧只校验引用事实与 owner 一致性，不做逐素材的授权判定。
+
+---
+
 ## 局域网插件 worker 拓扑与能力预检闭环（ADR-026）
 
 **背景**：

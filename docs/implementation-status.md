@@ -71,9 +71,15 @@ SRT 实时接入也已落地：`ingest` 在有限窗口内从 SRT 拉流，测�
 MLX Whisper（ASR，读音频段）、PP-OCR（OCR，读视频帧）与 BGE（文本向量，**消费上游 OCR 观测而不是
 字节**，worker 用 `--input-observations` 走 observation 输入路径）；`tools/ai_worker.py` 只做发现与
 调用（不读字节），四者的验收脚本都是真跑多进程。边界见
-[ADR-012](adr/ADR-012-模型插件与端侧推理边界.md)。仍未实现的是**运行时（Rust）侧对加速后端的能力
-上报**、**常驻 index-worker 消费与网关侧语义检索**、以及插件签名验证；`metal` 在 ONNX 路径上没有独立执行后端。
-因此 `golden_path_verified` 恒为 false，不得把本节读作 Golden Path 已完成；
+[ADR-012](adr/ADR-012-模型插件与端侧推理边界.md)。这一节当时列的"仍未实现"里，
+**运行时侧加速后端能力上报**（[ADR-022](adr/ADR-022-宿主加速器能力探测与上报.md)）、
+**常驻 index-worker 消费**（[ADR-025](adr/ADR-025-常驻消费循环与sink接线.md)）与
+**网关侧语义检索**（[ADR-023](adr/ADR-023-网关语义检索接线与索引检索面.md)）都已经落地，
+该归因已过期；**仍未实现的是插件签名验证**，且 `metal` 在 ONNX 路径上没有独立执行后端。
+截至 2026-09-24，`golden_path_verified` 恒为 false 的原因是**素材链路尚未整体闭环**：
+Runtime → Timeline → 追加已验收（[ADR-028](adr/ADR-028-Runtime到Timeline接线与授权追加.md)），
+但"融合出的素材被事件驱动写成向量、再被语义检索到并经 HTTP 查询回看"这一段还没走通。
+不得把本节读作 Golden Path 已完成；
 接入的 VLM 只保证链路语义正确，**不保证描述可用**（模型输出不稳定）。
 抽帧的覆盖率目前只到帧数口径，语义覆盖仍未用模型输出度量。
 共享内存数据面只在本机有意义（且同 UID 进程之间没有逐 buffer 隔离），不是分布式数据面。
@@ -228,6 +234,24 @@ HTTP 语义检索命中且排第一、事实回查挡住 stale、清理为 0、�
 `serve` 的"缺失即拒绝启动"契约在主机上不成立。现在 `cli` 只读 import 期取好的
 `BASE_ENVIRON`（`services/index-worker/src/sensoryplex_index_worker/environ.py`）。
 实测见 `docs/verification.md` 的"事件链路分级背压与容器化常驻（ADR-027）"一节。
+
+Runtime → Timeline 接线（[ADR-028](adr/ADR-028-Runtime到Timeline接线与授权追加.md)）也已经落地：
+`crates/timeline` 此前是一个**没有任何调用方**的叶子 crate（workspace 里只有它自己的 `Cargo.toml`
+提到它），两条 pipeline 里的 `- type: timeline_fusion` 也没有实现。现在新增 Runtime 子命令
+`sensoryplex-runtime timeline`（真探测原片身份 → 读真运行报告 → 按 pipeline 声明的栅格选窗 →
+逐条准入 → 调融合核心 → 写素材 protobuf 与 JSON 报告；**不碰数据库、不发事件**）、授权写入口
+`tools/timeline_handoff.py`（登记引用事实后调真实写侧 `append_material()`，事实与 outbox 行同事务）
+与验收 `make timeline-check MEDIA=<授权样本>`（**主机执行**：runtime 二进制是主机 Mach-O，容器里
+`Exec format error`；PostgreSQL 与 NATS 仍在 compose 里，从宿主回环端口连，验收自建隔离 schema 与
+独立 JetStream stream）。真实授权样本实测：6 帧观测 → 7 窗（5 窗有观测）→ 5 条素材、`rejected=0`；
+入库字节与磁盘 protobuf 逐字节相同；第二遍追加 `appended=0 replayed=5`、relay 第二遍 `published=0`；
+三类失败（owner 漂移 / 同 revision 换内容 / 报告视图被改）显式拒绝。落地时修掉一个"单测全绿但
+真链路一条都过不了"的缺陷：worker 报告的 protojson 把 int64 写成**字符串**并省略零值字段，
+读取侧此前只接受 JSON 数字，于是每一条从 0 ms 开始的观测都被判为不可解析。
+**边界**：只接文件源与单次运行（一律 `revision=1`）；只有 VLM 一种模态 ⇒ 每条素材 `status=partial`
+（**不是** `fast_ready`）；验收停在"事件已确认发到 JetStream"——"融合出的素材被事件驱动写成向量、
+再被语义检索到并经 HTTP 查询回看"仍未验收。实测见 `docs/verification.md` 的
+"真实媒体端到端：Runtime → Timeline 融合与授权追加（ADR-028）"一节。
 
 媒体格式准入（M9）已按 [ADR-009](adr/ADR-009-媒体格式支持矩阵与拒绝语义.md) 落地：承诺矩阵写成
 数据（容器 → 编码 → 位深 → 色彩 → 采样格式 → 声道），判定输入是**解码前采集的源格式上下文**加上

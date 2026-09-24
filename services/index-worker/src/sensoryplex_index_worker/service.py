@@ -16,11 +16,11 @@
 from __future__ import annotations
 
 import hmac
-import logging
 from concurrent import futures
 
 import grpc
 import psycopg
+from edge_material_sdk import get_logger
 from edge_material_sdk.generated.index.v1 import index_pb2, index_pb2_grpc
 from psycopg_pool import ConnectionPool
 
@@ -30,7 +30,7 @@ from .milvus_store import VectorIndex
 from .query_encoder import QueryEncoder, QueryEncoderError
 from .worker import search_embeddings
 
-LOGGER = logging.getLogger("sensoryplex.index.serve")
+LOGGER = get_logger("sensoryplex.index.serve")
 
 # 检索语义版本：写清楚这批命中怎么来的。改了编码/度量/回查语义就要改这个串。
 INDEX_VERSION = "milvus-flat-cosine-v1"
@@ -235,4 +235,7 @@ def start_server(
         pool.close()
         raise VectorStoreError("index_bind_failed", f"{bind}:{port}")
     server.start()
+    LOGGER.info(
+        "Started index search gRPC service", bind=bind, port=port, max_concurrency=max_concurrency
+    )
     return server, pool

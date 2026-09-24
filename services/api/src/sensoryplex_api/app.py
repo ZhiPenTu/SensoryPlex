@@ -1,10 +1,12 @@
 """单进程装配业务、管理与认证模块；执行能力由 Runtime 提供。"""
 
+import time
 from contextlib import asynccontextmanager
 from typing import Annotated
 from uuid import uuid4
 
 import psycopg
+from edge_material_sdk import get_logger, set_trace_id
 from edge_material_sdk.generated.gateway.v1 import console_pb2 as pb
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -25,6 +27,8 @@ SCHEMA = "0004_node_topology"
 SCHEMA_VERSIONS = {"0001_initial", "0002_console", "0003_embedding_index", SCHEMA}
 # 语义检索不可用时的原因码：检索面未配置就是这个码，不是 501、也不是"没有命中"。
 SEMANTIC_UNAVAILABLE_REASON = "semantic_search_unavailable"
+LOGGER = get_logger("sensoryplex.api")
+
 CAPABILITIES = [
     ("console_metadata", True, ""),
     ("node_topology", True, ""),
@@ -75,11 +79,13 @@ def create_app(settings: Settings | None = None):
 
     @asynccontextmanager
     async def lifespan(app):
+        LOGGER.info("Starting SensoryPlex Platform API", schema_target=SCHEMA)
         pool.open()
         await upload_pool.open()
         try:
             yield
         finally:
+            LOGGER.info("Shutting down SensoryPlex Platform API")
             await upload_pool.close()
             pool.close()
 
@@ -106,7 +112,11 @@ def create_app(settings: Settings | None = None):
 
     @app.middleware("http")
     async def boundaries(request: Request, call_next):
-        request.state.trace_id = uuid4().hex
+        trace_id = uuid4().hex
+        request.state.trace_id = trace_id
+        set_trace_id(trace_id)
+        start_time = time.perf_counter()
+
         if request.method in {"POST", "PUT", "PATCH"} and not (
             request.method == "PUT"
             and request.url.path.startswith("/v1/uploads/")
@@ -116,38 +126,93 @@ def create_app(settings: Settings | None = None):
             async for chunk in request.stream():
                 body.extend(chunk)
                 if len(body) > 65536:
+                    LOGGER.warning("Request body too large", path=request.url.path, max_bytes=65536)
                     return error(request, 413, "request_body_too_large")
             request._body = bytes(body)
+
         response = await call_next(request)
+        duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
+
         response.headers["X-Trace-Id"] = request.state.trace_id
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "same-origin"
         response.headers["X-Frame-Options"] = "DENY"
         if request.url.path.startswith(("/v1", "/admin", "/auth")):
             response.headers["Cache-Control"] = "no-store"
+
+        client_ip = request.client.host if request.client else "-"
+        if request.url.path == "/livez":
+            LOGGER.debug(
+                "HTTP probe completed",
+                method=request.method,
+                path=request.url.path,
+                status=response.status_code,
+                duration_ms=duration_ms,
+            )
+        elif response.status_code >= 500:
+            LOGGER.error(
+                "HTTP request server error",
+                method=request.method,
+                path=request.url.path,
+                status=response.status_code,
+                duration_ms=duration_ms,
+                client_ip=client_ip,
+            )
+        elif response.status_code >= 400:
+            LOGGER.warning(
+                "HTTP request client error",
+                method=request.method,
+                path=request.url.path,
+                status=response.status_code,
+                duration_ms=duration_ms,
+                client_ip=client_ip,
+            )
+        else:
+            LOGGER.info(
+                "HTTP request completed",
+                method=request.method,
+                path=request.url.path,
+                status=response.status_code,
+                duration_ms=duration_ms,
+                client_ip=client_ip,
+            )
         return response
 
     @app.exception_handler(HTTPException)
     async def http_error(request, exc):
         override = {"true": True, "false": False}.get((exc.headers or {}).get(RETRYABLE_HEADER, ""))
+        if exc.status_code >= 500:
+            LOGGER.error(
+                "HTTP error: %s", exc.detail, status=exc.status_code, reason=str(exc.detail)
+            )
+        else:
+            LOGGER.warning(
+                "HTTP client error: %s", exc.detail, status=exc.status_code, reason=str(exc.detail)
+            )
         return error(request, exc.status_code, str(exc.detail), retryable=override)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request, exc):
+        LOGGER.warning("Validation error on %s: %s", request.url.path, exc, status=422)
         return error(request, 422, "invalid_request")
 
     @app.exception_handler(psycopg.errors.UniqueViolation)
     async def conflict(request, exc):
+        LOGGER.warning("Database unique conflict on %s: %s", request.url.path, exc, status=409)
         return error(request, 409, "record_already_exists")
 
     @app.exception_handler(psycopg.Error)
     @app.exception_handler(TooManyRequests)
     @app.exception_handler(PoolTimeout)
     async def database_error(request, exc):
+        LOGGER.error(
+            "Metadata store error on %s: %s", request.url.path, exc, status=503, exc_info=True
+        )
         return error(request, 503, "metadata_store_unavailable")
 
     @app.exception_handler(OSError)
     async def storage_error(request, exc):
+        LOGGER.error("Storage error on %s: %s", request.url.path, exc, status=503, exc_info=True)
         return error(request, 503, "storage_unavailable")
 
     def schema_version():

@@ -65,6 +65,7 @@ TEST_NATS_URL ?= $(if $(filter container,$(EXEC_MODE)),nats://nats:4222,nats://1
 .PHONY: event-pipeline-check events-up events-down events-logs
 .PHONY: media-test resident-probe resident-install resident-uninstall resident-status
 .PHONY: lint-ruff test-py test-contracts test-integration proto-generate plugin-artifact-check
+.PHONY: timeline-check
 
 # ── 项目引导 ────────────────────────────────────────────────────────────────
 
@@ -207,6 +208,19 @@ handoff-check:
 	@test -n "$(MEDIA)" || { echo "usage: make handoff-check MEDIA=/absolute/path/to/authorized-sample.mp4"; exit 1; }
 	$(CARGO_HOST) build --locked --release -p sensoryplex-runtime --features "$(MEDIA_FEATURES)"
 	$(EXEC_API) $(PY_API) tools/verify_handoff.py --media "/host-media/$(notdir $(MEDIA))"
+
+# ── 真实媒体端到端：Runtime → Timeline → 授权追加 → outbox → JetStream（ADR-028） ──
+# 这一段是 TODO「真实媒体端到端」里 Runtime → Timeline → metadata writer/outbox 的闭环。
+# 固定在**主机**执行，两条理由都不可绕：
+#   1. runtime 二进制是主机 Mach-O（`target/release/sensoryplex-runtime`），容器里
+#      `docker compose exec` 会直接 `Exec format error`；
+#   2. 验收要用的真实 VLM 端点（ollama，127.0.0.1:11434）与 HF/MLX 一样只存在于主机。
+# PostgreSQL 与 NATS JetStream 仍在 compose 里跑，从宿主回环端口（25432 / 24222）连；
+# 验收脚本自己建隔离 schema 与独立 JetStream stream，跑完即删，不碰开发用的库与 stream。
+timeline-check:
+	@test -n "$(MEDIA)" || { echo "usage: make timeline-check MEDIA=/absolute/path/to/authorized-sample.mp4"; exit 1; }
+	$(CARGO_HOST) build --locked --release -p sensoryplex-runtime --features "$(MEDIA_FEATURES)"
+	$(PY_HOST) tools/verify_timeline_handoff.py --media "$(MEDIA)"
 
 # ── 插件产物（容器内） ────────────────────────────────────────────────────
 

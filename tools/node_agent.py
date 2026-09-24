@@ -16,7 +16,10 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from edge_material_sdk import get_logger
+
 ROOT = Path(__file__).resolve().parents[1]
+LOGGER = get_logger("sensoryplex.agent")
 
 
 def probe_host_capabilities() -> dict[str, Any]:
@@ -241,7 +244,7 @@ def execute_intent(intent: dict[str, Any], client: NodeAgentClient) -> bool:
     plugin_id = intent.get("plugin_id", "")
     digest = intent.get("artifact_digest", "")
 
-    print(f"[agent] Processing intent {intent_id}: action={action} plugin={plugin_id}...")
+    LOGGER.info("Processing intent", intent_id=intent_id, action=action, plugin_id=plugin_id)
 
     if not (digest.startswith("sha256:") and len(digest) == 71):
         client.report_deployment(
@@ -268,7 +271,7 @@ def execute_intent(intent: dict[str, Any], client: NodeAgentClient) -> bool:
             success=True,
             actual_state=target_state,
         )
-        print(f"[agent] Successfully executed {action} for {instance_id}")
+        LOGGER.info("Successfully executed intent", action=action, instance_id=instance_id)
         return True
 
     elif action == "start":
@@ -354,10 +357,10 @@ def main():
             res = client.register_candidate(args.display_name, args.co_located, caps)
         else:
             if not args.token:
-                print("[agent] Error: --token required for remote enrollment", file=sys.stderr)
+                LOGGER.error("Error: --token required for remote enrollment")
                 sys.exit(1)
             res = client.enroll(args.token, args.display_name, args.co_located, caps)
-        print(f"[agent] Enrolled successfully: node_id={args.node_id} status={res.get('status')}")
+        LOGGER.info("Enrolled successfully", node_id=args.node_id, status=res.get("status"))
         if args.state_file:
             sf = Path(args.state_file)
             sf.parent.mkdir(parents=True, exist_ok=True)
@@ -372,7 +375,7 @@ def main():
                     indent=2,
                 )
             )
-            print(f"[agent] State saved to {args.state_file}")
+            LOGGER.info("State saved", state_file=args.state_file)
 
     elif args.command == "run":
         token = args.session_token
@@ -382,7 +385,7 @@ def main():
             token = token or data.get("session_token", "")
             main_url = main_url or data.get("main_url", "")
         if not token:
-            print("[agent] Error: session_token required", file=sys.stderr)
+            LOGGER.error("Error: session_token required")
             sys.exit(1)
 
         client = NodeAgentClient(main_url, args.node_id, token)
@@ -394,10 +397,10 @@ def main():
                 status = hb_res.get("status", "")
                 heartbeat_count += 1
                 if heartbeat_count % 12 == 1:
-                    print(f"[agent] Heartbeat active: node={args.node_id} status={status}")
+                    LOGGER.info("Heartbeat active", node_id=args.node_id, status=status)
 
                 if status == "NODE_STATUS_REVOKED":
-                    print(f"[agent] Node {args.node_id} revoked by main node", file=sys.stderr)
+                    LOGGER.error("Node revoked by main node", node_id=args.node_id)
                     sys.exit(2)
 
                 intents = hb_res.get("pending_intents", [])
@@ -405,14 +408,14 @@ def main():
                     execute_intent(intent, client)
 
                 if args.once:
-                    print(f"[agent] Heartbeat once: status={status}, processed={len(intents)}")
+                    LOGGER.info("Heartbeat once completed", status=status, processed=len(intents))
                     break
 
                 interval = hb_res.get("heartbeat_interval_ms", 5000) / 1000.0
                 time.sleep(interval or args.interval_s)
 
             except Exception as e:
-                print(f"[agent] Heartbeat error: {e}", file=sys.stderr)
+                LOGGER.error("Heartbeat error: %s", e, exc_info=True)
                 if args.once:
                     sys.exit(1)
                 time.sleep(args.interval_s)

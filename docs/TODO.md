@@ -92,8 +92,20 @@
   **边界（不得含糊）**：这一项只是"发布这一跳"。当时 NATS → sink 的消费循环还没接线，
   所以 `outbox-check` 通过**不等于**"向量已被事件驱动地写进去了"——消费那一跳由
   [ADR-025](adr/ADR-025-常驻消费循环与sink接线.md) 的 `make consume-check` 单独出证据。
-- [ ] **真实媒体端到端**：Runtime → Timeline → metadata writer/outbox → 查询与回看尚未联调验收。
-  Timeline 融合核心已通过 `ffa9b56` 合并主线；核心合并不等于 Runtime 到素材的整链路验收。
+- [x] **Runtime → Timeline → metadata writer/outbox 已联调验收（ADR-028）**：新增 Runtime 子命令
+  `sensoryplex-runtime timeline`（真探测 → 读真运行报告 → 按 pipeline 声明的栅格选窗 → 真融合 →
+  写素材 protobuf 与报告）、授权写入口 `tools/timeline_handoff.py`、验收
+  `make timeline-check MEDIA=<授权样本>`。真实授权样本实测：6 帧观测 → 7 窗（5 窗有观测）→ 5 条素材、
+  `rejected=0`；追加后 `material_unit=5` / `observation=6` / `timeline_item=6` / `event_outbox=5`，
+  入库字节与磁盘 protobuf 逐字节相同；第二遍追加 `appended=0 replayed=5`，relay 第二遍 `published=0`。
+  证据见 `docs/verification.md` 的"真实媒体端到端：Runtime → Timeline 融合与授权追加（ADR-028）"。
+  **边界**：本目标固定在主机执行（runtime 二进制是主机 Mach-O，容器里 `Exec format error`；
+  真实 VLM 端点只在主机）；只接文件源、单次运行、`revision=1`；只有 VLM 一种模态，因此每条素材
+  `status=partial` 而不是 `fast_ready`。
+- [ ] **该链路产出的素材尚未走完向量/检索与查询回看**：验收停在"事件被确认发到 JetStream"。
+  `consume-check` / `event-pipeline-check` 覆盖的是事件驱动写入向量并被检索到，但它们跑的不是
+  timeline 融合出来的素材；这些素材经 HTTP 查询与回看也还没有走一遍。因此 `golden_path_verified`
+  在三份产物里都是 `false`。Timeline 融合核心本身已通过 `ffa9b56` 合并主线。
 - [ ] **语义冲突识别与消解**：当前融合核心只保留显式冲突标记；不推断自然语言矛盾。
 - [x] **素材查询与回看体验**：筛选、历史版本、观测时间轴、血缘和授权原片定位已通过浏览器验收，
   证据见 [专项记录](verification-material-review.md)。核心实现已通过 `c05ba8d` 合并主线。

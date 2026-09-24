@@ -33,8 +33,8 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "plugins/python/common/src"))
 
 import psycopg  # noqa: E402
-from edge_material_sdk.generated.media.v1 import media_pb2 as media  # noqa: E402
 from edge_material_sdk.generated.material.v1 import material_pb2 as material  # noqa: E402
+from edge_material_sdk.generated.media.v1 import media_pb2 as media  # noqa: E402
 from sensoryplex_api.infrastructure import materials as api_materials  # noqa: E402
 
 from tools.verify_index import derive_database_url, describe_target  # noqa: E402
@@ -145,7 +145,7 @@ def register_references(conn, report, description, owner, units) -> dict:
     codec = ",".join(tracks)
     # 素材时间轴的起点：取观测里最早的事实时间，**不是**当前时间。重放必须逐字节相同。
     started_at = datetime.datetime.fromtimestamp(
-        min(unit.created_at_unix_ms for unit in units) / 1000, tz=datetime.timezone.utc
+        min(unit.created_at_unix_ms for unit in units) / 1000, tz=datetime.UTC
     )
 
     failures = []

@@ -17,6 +17,8 @@ import sys
 import tempfile
 import threading
 
+from edge_material_sdk import get_logger
+
 from .relay import (
     DEFAULT_BATCH,
     DEFAULT_STREAM,
@@ -29,6 +31,8 @@ from .relay import (
     run_relay,
 )
 from .residency import ResidencyError, read_event_backpressure
+
+LOGGER = get_logger("sensoryplex.relay")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -123,6 +127,12 @@ def main(argv: list[str] | None = None) -> int:
     stop = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
     signal.signal(signal.SIGINT, lambda *_: stop.set())
+    LOGGER.info(
+        "Starting outbox relay",
+        stream=options.stream,
+        subject_prefix=options.subject_prefix,
+        batch=options.batch,
+    )
     emit = StatusWriter(arguments.status_out)
     try:
         return asyncio.run(
@@ -136,6 +146,9 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
     except RelayError as error:
+        LOGGER.error(
+            "Outbox relay error", stream=options.stream, error_code=error.code, detail=error.detail
+        )
         emit(
             {
                 "event": "relay.error",
