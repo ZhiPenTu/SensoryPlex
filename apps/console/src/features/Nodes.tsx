@@ -1,28 +1,58 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-    Check,
-    Copy,
-    Cpu,
-    HardDrive,
-    KeyRound,
-    Plus,
-    Radio,
-    RefreshCw,
-    Server,
-    ShieldAlert,
-    Trash2,
-    X,
-} from 'lucide-react';
+    Alert,
+    Button,
+    Card,
+    Col,
+    Descriptions,
+    Form,
+    Input,
+    InputNumber,
+    Popconfirm,
+    Row,
+    Space,
+    Tag,
+    Typography,
+    message,
+} from 'antd';
+import {
+    ClusterOutlined,
+    CheckCircleOutlined,
+    HddOutlined,
+    AppstoreOutlined,
+    KeyOutlined,
+    ClearOutlined,
+    CopyOutlined,
+    CheckOutlined,
+    ThunderboltOutlined,
+    StopOutlined,
+    DeleteOutlined,
+    SafetyCertificateOutlined,
+    ApiOutlined,
+} from '@ant-design/icons';
 import { api, post } from '../api/client';
 import type { EnrollmentToken, NodeInfo, NodeList } from '../api/contracts';
-import { Badge, date, Empty, ErrorNotice, Heading, Loading, Modal, Notice } from '../components';
+import {
+    Badge,
+    date,
+    Empty,
+    ErrorNotice,
+    Heading,
+    Loading,
+    Modal,
+    Notice,
+    StatSummary,
+} from '../components';
+
+const { Text } = Typography;
 
 export default function Nodes() {
     const cache = useQueryClient();
     const [tokenModalOpen, setTokenModalOpen] = useState(false);
     const [createdToken, setCreatedToken] = useState<EnrollmentToken | null>(null);
     const [copied, setCopied] = useState(false);
+    const [form] = Form.useForm();
 
     const nodesQuery = useQuery({
         queryKey: ['nodes'],
@@ -31,10 +61,10 @@ export default function Nodes() {
     });
 
     const createTokenMutation = useMutation({
-        mutationFn: (form: FormData) =>
+        mutationFn: (values: { node_id: string; expires_in_minutes: number }) =>
             post<EnrollmentToken>('/admin/v1/nodes/enrollment-tokens', {
-                node_id: form.get('node_id'),
-                expires_in_minutes: Number(form.get('expires_in_minutes') || 60),
+                node_id: values.node_id,
+                expires_in_minutes: Number(values.expires_in_minutes || 60),
             }),
         onSuccess: (data) => {
             setCreatedToken(data);
@@ -45,6 +75,7 @@ export default function Nodes() {
     const acceptMutation = useMutation({
         mutationFn: (nodeId: string) => post(`/admin/v1/nodes/${nodeId}:accept`),
         onSuccess: () => {
+            message.success('已接纳该节点进入集群');
             void cache.invalidateQueries({ queryKey: ['nodes'] });
         },
     });
@@ -52,6 +83,7 @@ export default function Nodes() {
     const rejectMutation = useMutation({
         mutationFn: (nodeId: string) => post(`/admin/v1/nodes/${nodeId}:reject`),
         onSuccess: () => {
+            message.info('已拒绝该节点入网申请');
             void cache.invalidateQueries({ queryKey: ['nodes'] });
         },
     });
@@ -59,6 +91,7 @@ export default function Nodes() {
     const drainMutation = useMutation({
         mutationFn: (nodeId: string) => post(`/admin/v1/nodes/${nodeId}:drain`),
         onSuccess: () => {
+            message.success('已将节点置为排空中状态');
             void cache.invalidateQueries({ queryKey: ['nodes'] });
         },
     });
@@ -66,6 +99,7 @@ export default function Nodes() {
     const revokeMutation = useMutation({
         mutationFn: (nodeId: string) => post(`/admin/v1/nodes/${nodeId}:revoke`),
         onSuccess: () => {
+            message.warning('已撤销该节点权限');
             void cache.invalidateQueries({ queryKey: ['nodes'] });
         },
     });
@@ -73,6 +107,7 @@ export default function Nodes() {
     const deleteMutation = useMutation({
         mutationFn: (nodeId: string) => api(`/admin/v1/nodes/${nodeId}`, { method: 'DELETE' }),
         onSuccess: () => {
+            message.success('已移除节点记录');
             void cache.invalidateQueries({ queryKey: ['nodes'] });
         },
     });
@@ -80,6 +115,7 @@ export default function Nodes() {
     const purgeMutation = useMutation({
         mutationFn: () => post('/admin/v1/nodes:purge-stale'),
         onSuccess: () => {
+            message.success('已清理所有离线与失效测试节点');
             void cache.invalidateQueries({ queryKey: ['nodes'] });
         },
     });
@@ -87,6 +123,7 @@ export default function Nodes() {
     const copyToken = (text: string) => {
         void navigator.clipboard.writeText(text);
         setCopied(true);
+        message.success('已复制到剪贴板');
         setTimeout(() => setCopied(false), 2000);
     };
 
@@ -115,70 +152,81 @@ export default function Nodes() {
     );
 
     return (
-        <>
+        <div>
             <Heading
-                eyebrow="LAN WORKER TOPOLOGY"
-                title="节点拓扑"
-                description="统一调度同机与局域网算力节点，隔离管理面与执行面。"
+                eyebrow="LAN Worker Topology"
+                title="节点拓扑管理"
+                description="统一纳管同机与局域网分布式算力 Worker，隔离管理面与执行面，保障端侧就地多模态处理性能。"
                 action={
-                    <div style={{ display: 'flex', gap: '10px' }}>
-                        <button
-                            onClick={() => {
-                                if (confirm('确定清理所有已离线或已撤销的旧测试节点记录吗？')) {
-                                    purgeMutation.mutate();
-                                }
-                            }}
-                            disabled={purgeMutation.isPending}
-                            title="清理已下线的测试节点"
+                    <Space size={8}>
+                        <Popconfirm
+                            title="确定清理所有已离线或已撤销的旧测试节点记录吗？"
+                            onConfirm={() => purgeMutation.mutate()}
+                            okText="清理"
+                            cancelText="取消"
                         >
-                            <Trash2 size={16} />
-                            清理离线节点
-                        </button>
-                        <button
-                            className="primary"
+                            <Button icon={<ClearOutlined />} loading={purgeMutation.isPending}>
+                                清理离线节点
+                            </Button>
+                        </Popconfirm>
+
+                        <Button
+                            type="primary"
+                            icon={<KeyOutlined />}
                             onClick={() => {
-                                createTokenMutation.reset();
                                 setCreatedToken(null);
+                                form.resetFields();
                                 setTokenModalOpen(true);
                             }}
                         >
-                            <Plus size={17} />
-                            注册子节点
-                        </button>
-                    </div>
+                            生成接入令牌
+                        </Button>
+                    </Space>
                 }
             />
+
+            <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
+                <Col xs={24} sm={6}>
+                    <StatSummary
+                        title="活跃计算节点"
+                        value={activeNodes.length}
+                        prefix={<ClusterOutlined style={{ color: '#1668dc' }} />}
+                    />
+                </Col>
+                <Col xs={24} sm={6}>
+                    <StatSummary
+                        title="可调度节点 (Ready)"
+                        value={readyCount}
+                        prefix={<CheckCircleOutlined style={{ color: '#10b981' }} />}
+                        color="#10b981"
+                    />
+                </Col>
+                <Col xs={24} sm={6}>
+                    <StatSummary
+                        title="同机数据面节点"
+                        value={coLocatedCount}
+                        prefix={<HddOutlined style={{ color: '#08979c' }} />}
+                        color="#08979c"
+                    />
+                </Col>
+                <Col xs={24} sm={6}>
+                    <StatSummary
+                        title="部署模型实例"
+                        value={instanceCount}
+                        prefix={<AppstoreOutlined style={{ color: '#8b5cf6' }} />}
+                        color="#8b5cf6"
+                    />
+                </Col>
+            </Row>
+
             <Notice>
-                主节点是唯一控制面权威；子节点 agent 负责真实模型下载与生命周期。共享内存、DMA 与
-                Metal/CUDA 句柄仅在同机数据面有效，远程节点仅处理结构化观测与文本。
+                管理面 (Control Plane) 与执行面 (Worker)
+                物理隔离：通过双向心跳检测与动态准入控制，任务仅下发至可调度的同机或受控局域网节点。
             </Notice>
-            <section className="control-strip" aria-label="节点拓扑概览">
-                <div>
-                    <span>登记节点</span>
-                    <strong>{activeNodes.length}</strong>
-                </div>
-                <div>
-                    <span>可调度</span>
-                    <strong>{readyCount}</strong>
-                </div>
-                <div>
-                    <span>同机数据面</span>
-                    <strong>{coLocatedCount}</strong>
-                </div>
-                <div>
-                    <span>插件实例</span>
-                    <strong>{instanceCount}</strong>
-                </div>
-                <div>
-                    <span>待接纳</span>
-                    <strong>{candidates.length}</strong>
-                </div>
-            </section>
 
             <ErrorNotice
                 error={
                     nodesQuery.error ||
-                    createTokenMutation.error ||
                     acceptMutation.error ||
                     rejectMutation.error ||
                     drainMutation.error ||
@@ -188,409 +236,418 @@ export default function Nodes() {
                 }
             />
 
-            {/* 发现待接纳节点横幅 (ADR-026 Candidate Discovery) */}
+            {/* 候选待接纳节点专区 */}
             {candidates.length > 0 ? (
-                <section className="candidate-panel">
-                    <div className="candidate-heading">
-                        <Radio size={20} color="#eab308" />
-                        <strong>发现待接纳的局域网计算节点 ({candidates.length})</strong>
-                        <span className="badge warning">等待管理员审批</span>
-                    </div>
-                    <div className="candidate-list">
-                        {candidates.map((cand) => (
-                            <div key={cand.node_id} className="candidate-row">
-                                <div>
-                                    <div className="candidate-title">
-                                        <strong>{cand.display_name || cand.node_id}</strong>
-                                        <span className="badge muted">
-                                            {cand.capabilities?.platform}/{cand.capabilities?.arch}
-                                        </span>
+                <Card
+                    title={
+                        <Space size={8}>
+                            <SafetyCertificateOutlined style={{ color: '#f59e0b' }} />
+                            <span style={{ fontWeight: 650, fontSize: 15 }}>
+                                待准入审批候选节点
+                            </span>
+                            <Tag color="warning">{candidates.length} 台待审批</Tag>
+                        </Space>
+                    }
+                    style={{
+                        marginBottom: 20,
+                        borderColor: '#fde68a',
+                        background: '#fffbeb',
+                    }}
+                >
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                        {candidates.map((node) => (
+                            <div
+                                key={node.node_id}
+                                style={{
+                                    background: '#ffffff',
+                                    padding: '14px 18px',
+                                    borderRadius: 8,
+                                    border: '1px solid #fef3c7',
+                                    display: 'flex',
+                                    justifyContent: 'space-between',
+                                    alignItems: 'center',
+                                    flexWrap: 'wrap',
+                                    gap: 12,
+                                }}
+                            >
+                                <Space size={12}>
+                                    <ClusterOutlined style={{ fontSize: 20, color: '#f59e0b' }} />
+                                    <div>
+                                        <Space size={8}>
+                                            <Text strong style={{ fontSize: 13 }}>
+                                                {node.node_id}
+                                            </Text>
+                                            <Tag color="warning">待准入审核</Tag>
+                                            {node.is_co_located ? (
+                                                <Tag color="blue">同机节点</Tag>
+                                            ) : null}
+                                        </Space>
+                                        <div
+                                            style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}
+                                        >
+                                            算力: {acceleratorText(node)} · 内存:{' '}
+                                            {formatBytes(node.capabilities?.memory_bytes)}
+                                        </div>
                                     </div>
-                                    <small className="mono subtle">{cand.node_id}</small>
-                                    <small>
-                                        {cand.capabilities?.cpu_cores} 核 CPU · 内存{' '}
-                                        {formatBytes(cand.capabilities?.memory_bytes)}
-                                        {cand.capabilities?.accelerators?.length
-                                            ? ` · 加速器: ${cand.capabilities.accelerators.map((a) => a.accelerator).join(', ')}`
-                                            : ''}
-                                    </small>
-                                </div>
-                                <div className="candidate-actions">
-                                    <button
-                                        disabled={rejectMutation.isPending}
-                                        onClick={() => rejectMutation.mutate(cand.node_id)}
-                                        title="拒绝该节点"
+                                </Space>
+
+                                <Space size={8}>
+                                    <Button
+                                        type="primary"
+                                        size="small"
+                                        style={{ background: '#10b981', borderColor: '#10b981' }}
+                                        loading={acceptMutation.isPending}
+                                        onClick={() => acceptMutation.mutate(node.node_id)}
                                     >
-                                        <X size={15} />
-                                        拒绝
-                                    </button>
-                                    <button
-                                        className="primary"
-                                        disabled={acceptMutation.isPending}
-                                        onClick={() => acceptMutation.mutate(cand.node_id)}
-                                        title="接纳此节点进入集群调度"
-                                    >
-                                        <Check size={15} />
                                         一键接纳
-                                    </button>
-                                </div>
+                                    </Button>
+                                    <Popconfirm
+                                        title="确定拒绝该节点接入申请？"
+                                        onConfirm={() => rejectMutation.mutate(node.node_id)}
+                                        okText="拒绝"
+                                        cancelText="取消"
+                                    >
+                                        <Button
+                                            size="small"
+                                            danger
+                                            loading={rejectMutation.isPending}
+                                        >
+                                            拒绝
+                                        </Button>
+                                    </Popconfirm>
+                                </Space>
                             </div>
                         ))}
                     </div>
-                </section>
+                </Card>
             ) : null}
 
-            {nodesQuery.isPending ? (
-                <Loading />
-            ) : activeNodes.length ? (
-                <div className="node-list">
-                    {activeNodes.map((node: NodeInfo) => (
-                        <article className="node-row" key={node.node_id}>
-                            <div className="node-identity">
-                                <span className="node-icon">
-                                    <Server size={22} />
-                                </span>
-                                <div>
-                                    <div className="node-title">
-                                        <h2>{node.display_name || node.node_id}</h2>
-                                        <Badge state={node.status} />
-                                        <span className="badge muted">
-                                            {node.is_co_located ? '同机数据面' : '局域网子节点'}
-                                        </span>
-                                    </div>
-                                    <small className="mono">{node.node_id}</small>
-                                    {node.status_reason ? (
-                                        <small className="subtle">{node.status_reason}</small>
-                                    ) : null}
-                                </div>
-                            </div>
-
-                            <div className="node-facts">
-                                <div>
-                                    <Cpu size={15} />
-                                    <span>
-                                        {node.capabilities?.cpu_cores || 1} 核 CPU · 内存{' '}
-                                        {formatBytes(node.capabilities?.memory_bytes)}
-                                        {Number(node.capabilities?.unified_memory_bytes || 0) > 0
-                                            ? ` · 统一内存 ${formatBytes(node.capabilities?.unified_memory_bytes)}`
-                                            : ''}
-                                    </span>
-                                </div>
-                                <div>
-                                    <HardDrive size={15} />
-                                    <span>加速器: {acceleratorText(node)}</span>
-                                </div>
-                                <div>
-                                    <RefreshCw size={15} />
-                                    <span>
-                                        最近心跳:{' '}
-                                        {node.last_heartbeat_at
-                                            ? date(node.last_heartbeat_at)
-                                            : '尚未收到'}
-                                    </span>
-                                </div>
-                            </div>
-
-                            <div className="node-instances">
-                                <small>已部署插件实例 ({node.instances?.length || 0})</small>
-                                {node.instances && node.instances.length > 0 ? (
-                                    <div className="instance-chips">
-                                        {node.instances.map((inst) => (
-                                            <span key={inst.instance_id} className="instance-chip">
-                                                <strong>{inst.plugin_id.split('.').pop()}</strong>
-                                                <span>v{inst.plugin_version}</span>
-                                                <Badge state={inst.actual_state} />
-                                            </span>
-                                        ))}
-                                    </div>
-                                ) : (
-                                    <small className="subtle">尚未下发插件实例</small>
-                                )}
-                            </div>
-
-                            <footer className="node-actions">
-                                {node.status === 'NODE_STATUS_READY' ? (
-                                    <button
-                                        disabled={drainMutation.isPending}
-                                        onClick={() => drainMutation.mutate(node.node_id)}
-                                        title="排空节点：不再下发新任务"
-                                    >
-                                        排空
-                                    </button>
-                                ) : null}
-                                {node.status !== 'NODE_STATUS_REVOKED' ? (
-                                    <button
-                                        className="danger"
-                                        disabled={revokeMutation.isPending}
-                                        onClick={() => {
-                                            if (
-                                                confirm(
-                                                    `确定撤销节点 ${node.node_id} 吗？撤销后凭据即刻失效。`,
-                                                )
-                                            ) {
-                                                revokeMutation.mutate(node.node_id);
-                                            }
-                                        }}
-                                        title="撤销节点凭据"
-                                    >
-                                        <ShieldAlert size={15} />
-                                        撤销
-                                    </button>
-                                ) : null}
-                                {node.status === 'NODE_STATUS_REVOKED' ||
-                                node.status === 'NODE_STATUS_OFFLINE' ? (
-                                    <button
-                                        onClick={() => {
-                                            if (
-                                                confirm(`确定删除该节点记录（${node.node_id}）吗？`)
-                                            ) {
-                                                deleteMutation.mutate(node.node_id);
-                                            }
-                                        }}
-                                        disabled={deleteMutation.isPending}
-                                        title="删除节点记录"
-                                    >
-                                        <Trash2 size={15} />
-                                        删除
-                                    </button>
-                                ) : null}
-                            </footer>
-                        </article>
-                    ))}
-                </div>
-            ) : !nodesQuery.error ? (
-                <Empty title="暂无登记节点">
-                    集群中尚未登记任何计算节点。点击右上角“注册子节点”获取一次性令牌。
-                </Empty>
-            ) : null}
-
-            {tokenModalOpen ? (
-                <Modal title="注册新计算节点" onClose={() => setTokenModalOpen(false)}>
-                    <ErrorNotice error={createTokenMutation.error} />
-                    {createdToken ? (
-                        <div>
-                            <p>一次性注册令牌已签发。请在目标机器运行 Node Agent 并传入此令牌：</p>
-                            <div
-                                className="card"
-                                style={{ background: '#09090b', padding: '12px', margin: '12px 0' }}
+            {/* 正式活跃节点拓扑卡片 */}
+            <Card
+                title={
+                    <div
+                        style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                        }}
+                    >
+                        <Space size={8}>
+                            <ApiOutlined style={{ color: '#1668dc' }} />
+                            <span style={{ fontWeight: 650, fontSize: 15 }}>集群算力拓扑视图</span>
+                        </Space>
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                            心跳每 4 秒实时同步
+                        </Text>
+                    </div>
+                }
+            >
+                {nodesQuery.isPending ? (
+                    <Loading tip="正在扫描网络节点拓扑…" />
+                ) : activeNodes.length ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                        {activeNodes.map((node) => (
+                            <Card
+                                key={node.node_id}
+                                size="small"
+                                style={{
+                                    borderRadius: 8,
+                                    border: '1px solid #e2e8f0',
+                                    background:
+                                        node.status === 'NODE_STATUS_READY' ? '#ffffff' : '#f8fafc',
+                                }}
                             >
                                 <div
                                     style={{
                                         display: 'flex',
                                         justifyContent: 'space-between',
-                                        alignItems: 'center',
+                                        alignItems: 'flex-start',
+                                        flexWrap: 'wrap',
+                                        gap: 12,
+                                        marginBottom: 12,
                                     }}
                                 >
+                                    <div>
+                                        <Space size={8} align="center">
+                                            <ClusterOutlined
+                                                style={{ fontSize: 16, color: '#1668dc' }}
+                                            />
+                                            <Text strong style={{ fontSize: 14 }}>
+                                                {node.node_id}
+                                            </Text>
+                                            <Badge state={node.status} />
+                                            {node.is_co_located ? (
+                                                <Tag color="geekblue" style={{ margin: 0 }}>
+                                                    同机执行面
+                                                </Tag>
+                                            ) : (
+                                                <Tag color="default" style={{ margin: 0 }}>
+                                                    局域网节点
+                                                </Tag>
+                                            )}
+                                        </Space>
+                                        <div
+                                            style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}
+                                        >
+                                            节点名称: {node.display_name || node.node_id} ·
+                                            最后心跳: {date(node.last_heartbeat_at)}
+                                        </div>
+                                    </div>
+
+                                    <Space size={8}>
+                                        {node.status === 'NODE_STATUS_READY' ? (
+                                            <Popconfirm
+                                                title="确定排空该节点？排空后将不再接收新任务。"
+                                                onConfirm={() => drainMutation.mutate(node.node_id)}
+                                                okText="排空"
+                                                cancelText="取消"
+                                            >
+                                                <Button
+                                                    size="small"
+                                                    icon={<StopOutlined />}
+                                                    loading={drainMutation.isPending}
+                                                >
+                                                    排空
+                                                </Button>
+                                            </Popconfirm>
+                                        ) : null}
+
+                                        {node.status !== 'NODE_STATUS_REVOKED' &&
+                                        node.status !== 'NODE_STATUS_OFFLINE' ? (
+                                            <Popconfirm
+                                                title="确定撤销该节点权限凭据？"
+                                                onConfirm={() =>
+                                                    revokeMutation.mutate(node.node_id)
+                                                }
+                                                okText="撤销"
+                                                cancelText="取消"
+                                            >
+                                                <Button
+                                                    size="small"
+                                                    danger
+                                                    loading={revokeMutation.isPending}
+                                                >
+                                                    撤销
+                                                </Button>
+                                            </Popconfirm>
+                                        ) : null}
+
+                                        {node.status === 'NODE_STATUS_REVOKED' ||
+                                        node.status === 'NODE_STATUS_OFFLINE' ? (
+                                            <Popconfirm
+                                                title="确定从拓扑中彻底删除该节点记录？"
+                                                onConfirm={() =>
+                                                    deleteMutation.mutate(node.node_id)
+                                                }
+                                                okText="删除"
+                                                cancelText="取消"
+                                            >
+                                                <Button
+                                                    size="small"
+                                                    danger
+                                                    type="text"
+                                                    icon={<DeleteOutlined />}
+                                                    loading={deleteMutation.isPending}
+                                                >
+                                                    删除记录
+                                                </Button>
+                                            </Popconfirm>
+                                        ) : null}
+                                    </Space>
+                                </div>
+
+                                <Descriptions
+                                    bordered
+                                    size="small"
+                                    column={{ xs: 1, sm: 3 }}
+                                    style={{ marginBottom: 12 }}
+                                    labelStyle={{ background: '#f8fafc', width: 90 }}
+                                >
+                                    <Descriptions.Item label="CPU 核心">
+                                        <Text strong>{node.capabilities?.cpu_cores || 0} 核</Text>
+                                    </Descriptions.Item>
+                                    <Descriptions.Item label="系统内存">
+                                        <Text strong>
+                                            {formatBytes(node.capabilities?.memory_bytes)}
+                                        </Text>
+                                    </Descriptions.Item>
+                                    <Descriptions.Item label="算力加速">
+                                        <Space size={4}>
+                                            <ThunderboltOutlined style={{ color: '#f59e0b' }} />
+                                            <span>{acceleratorText(node)}</span>
+                                        </Space>
+                                    </Descriptions.Item>
+                                </Descriptions>
+
+                                <div>
+                                    <Text type="secondary" style={{ fontSize: 12, marginRight: 8 }}>
+                                        部署实例:
+                                    </Text>
+                                    {node.instances?.length ? (
+                                        <Space size={[6, 6]} wrap>
+                                            {node.instances.map((inst) => (
+                                                <Tag
+                                                    key={inst.instance_id}
+                                                    color="blue"
+                                                    style={{ margin: 0, fontSize: 11 }}
+                                                >
+                                                    {inst.plugin_id} [{inst.actual_state}]
+                                                </Tag>
+                                            ))}
+                                        </Space>
+                                    ) : (
+                                        <Text type="secondary" style={{ fontSize: 12 }}>
+                                            暂未部署插件实例
+                                        </Text>
+                                    )}
+                                </div>
+                            </Card>
+                        ))}
+                    </div>
+                ) : !nodesQuery.error ? (
+                    <Empty title="暂无可用计算节点">
+                        请使用下方接入令牌或启动本地 <code>./deploy/up.sh</code> 进行节点注册。
+                    </Empty>
+                ) : null}
+            </Card>
+
+            {/* 接入令牌生成弹窗 */}
+            {tokenModalOpen ? (
+                <Modal
+                    title="生成 Worker 接入令牌"
+                    onClose={() => setTokenModalOpen(false)}
+                    width={560}
+                >
+                    {createdToken ? (
+                        <div>
+                            <Alert
+                                type="success"
+                                showIcon
+                                message="接入令牌生成成功"
+                                description="请使用该凭据在目标计算节点上执行接入命令，节点随后将在上方候选列表中出现。"
+                                style={{ marginBottom: 16 }}
+                            />
+
+                            <div style={{ marginBottom: 16 }}>
+                                <Text
+                                    strong
+                                    style={{ fontSize: 12, display: 'block', marginBottom: 4 }}
+                                >
+                                    Token 密钥:
+                                </Text>
+                                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                                     <code
                                         className="mono"
-                                        style={{ wordBreak: 'break-all', fontSize: '0.88rem' }}
+                                        style={{ flex: 1, padding: '6px 10px', fontSize: 12 }}
                                     >
                                         {createdToken.token}
                                     </code>
-                                    <button
-                                        className="ghost"
+                                    <Button
+                                        icon={copied ? <CheckOutlined /> : <CopyOutlined />}
                                         onClick={() => copyToken(createdToken.token)}
-                                        title="复制令牌"
                                     >
-                                        <Copy size={16} />
                                         {copied ? '已复制' : '复制'}
-                                    </button>
+                                    </Button>
                                 </div>
                             </div>
-                            {(() => {
-                                const host = window.location.hostname || '127.0.0.1';
-                                const oneLine = `curl -fsSL http://${host}:8091/v1/agent/install.sh | bash -s -- --token ${createdToken.token} --main-url http://${host}:8091 --node-id ${createdToken.node_id} --daemon`;
-                                const candidateCmd = `curl -fsSL http://${host}:8091/v1/agent/install.sh | bash -s -- --candidate --main-url http://${host}:8091 --daemon`;
-                                return (
-                                    <div
-                                        style={{
-                                            display: 'flex',
-                                            flexDirection: 'column',
-                                            gap: '10px',
-                                        }}
-                                    >
-                                        <div
-                                            className="card"
-                                            style={{
-                                                background: '#18181b',
-                                                padding: '12px',
-                                                border: '1px solid #27272a',
-                                            }}
-                                        >
-                                            <div
-                                                style={{
-                                                    display: 'flex',
-                                                    justifyContent: 'space-between',
-                                                    alignItems: 'center',
-                                                    marginBottom: '8px',
-                                                }}
-                                            >
-                                                <strong
-                                                    style={{
-                                                        fontSize: '0.85rem',
-                                                        color: '#4ade80',
-                                                    }}
-                                                >
-                                                    ⚡ 推荐：带令牌单行安装（自动后台守护）
-                                                </strong>
-                                                <button
-                                                    className="ghost"
-                                                    onClick={() => copyToken(oneLine)}
-                                                    title="复制单行命令"
-                                                >
-                                                    <Copy size={15} />
-                                                    {copied ? '已复制' : '复制命令'}
-                                                </button>
-                                            </div>
-                                            <code
-                                                className="mono"
-                                                style={{
-                                                    fontSize: '0.78rem',
-                                                    display: 'block',
-                                                    wordBreak: 'break-all',
-                                                    background: '#09090b',
-                                                    padding: '8px',
-                                                    borderRadius: '4px',
-                                                }}
-                                            >
-                                                {oneLine}
-                                            </code>
-                                            <small
-                                                style={{
-                                                    display: 'block',
-                                                    marginTop: '6px',
-                                                    color: '#a1a1aa',
-                                                    fontSize: '0.75rem',
-                                                }}
-                                            >
-                                                目标机器上直接执行：完成硬件探测、入网并自启后台守护。
-                                            </small>
-                                        </div>
 
-                                        <div
-                                            className="card"
-                                            style={{
-                                                background: '#18181b',
-                                                padding: '12px',
-                                                border: '1px solid #27272a',
-                                            }}
-                                        >
-                                            <div
-                                                style={{
-                                                    display: 'flex',
-                                                    justifyContent: 'space-between',
-                                                    alignItems: 'center',
-                                                    marginBottom: '8px',
-                                                }}
-                                            >
-                                                <strong
-                                                    style={{
-                                                        fontSize: '0.85rem',
-                                                        color: '#eab308',
-                                                    }}
-                                                >
-                                                    📡 零令牌模式：广播候选自报到（网页端一键接纳）
-                                                </strong>
-                                                <button
-                                                    className="ghost"
-                                                    onClick={() => copyToken(candidateCmd)}
-                                                    title="复制候选命令"
-                                                >
-                                                    <Copy size={15} />
-                                                    {copied ? '已复制' : '复制候选命令'}
-                                                </button>
-                                            </div>
-                                            <code
-                                                className="mono"
-                                                style={{
-                                                    fontSize: '0.78rem',
-                                                    display: 'block',
-                                                    wordBreak: 'break-all',
-                                                    background: '#09090b',
-                                                    padding: '8px',
-                                                    borderRadius: '4px',
-                                                }}
-                                            >
-                                                {candidateCmd}
-                                            </code>
-                                            <small
-                                                style={{
-                                                    display: 'block',
-                                                    marginTop: '6px',
-                                                    color: '#a1a1aa',
-                                                    fontSize: '0.75rem',
-                                                }}
-                                            >
-                                                在任意机器执行后，回到本页面点击“一键接纳”即可入网。
-                                            </small>
-                                        </div>
-                                    </div>
-                                );
-                            })()}
-                            <p
-                                className="subtle"
-                                style={{ fontSize: '0.78rem', margin: '10px 0 6px 0' }}
-                            >
-                                💡 提示：与主节点同机的主机在执行 <code>./deploy/up.sh</code>{' '}
-                                时已自动完成自纳管并常驻后台，无需手动注册。
-                            </p>
-                            <small className="subtle">
+                            <div style={{ marginBottom: 16 }}>
+                                <Text
+                                    strong
+                                    style={{ fontSize: 12, display: 'block', marginBottom: 4 }}
+                                >
+                                    快捷启动命令示例:
+                                </Text>
+                                <pre
+                                    style={{
+                                        margin: 0,
+                                        padding: 12,
+                                        borderRadius: 6,
+                                        background: '#0f172a',
+                                        color: '#38bdf8',
+                                        fontSize: 11,
+                                        overflow: 'auto',
+                                    }}
+                                >
+                                    {`SENSORYPLEX_ENROLL_TOKEN="${createdToken.token}" cargo run -p sensoryplex-runtime -- worker --node-id "${createdToken.node_id}"`}
+                                </pre>
+                            </div>
+
+                            <Text type="secondary" style={{ fontSize: 12, display: 'block' }}>
                                 令牌有效期至: {date(createdToken.expires_at)}
-                            </small>
+                            </Text>
+
                             <div
                                 style={{
-                                    marginTop: '16px',
                                     display: 'flex',
                                     justifyContent: 'flex-end',
+                                    marginTop: 20,
                                 }}
                             >
-                                <button
-                                    className="primary"
-                                    onClick={() => setTokenModalOpen(false)}
-                                >
+                                <Button type="primary" onClick={() => setTokenModalOpen(false)}>
                                     完成
-                                </button>
+                                </Button>
                             </div>
                         </div>
                     ) : (
-                        <form
-                            onSubmit={(e) => {
-                                e.preventDefault();
-                                createTokenMutation.mutate(new FormData(e.currentTarget));
-                            }}
+                        <Form
+                            form={form}
+                            layout="vertical"
+                            onFinish={(values) => createTokenMutation.mutate(values)}
                         >
-                            <label>
-                                节点标识 (node_id)
-                                <input
-                                    autoFocus
-                                    required
-                                    name="node_id"
-                                    placeholder="例如：node-mac-mini-01 或 node-gpu-3090"
-                                    pattern="[a-zA-Z0-9_.-]{3,64}"
-                                />
-                            </label>
-                            <label>
-                                令牌有效时长（分钟）
-                                <input
-                                    name="expires_in_minutes"
-                                    type="number"
-                                    defaultValue={60}
-                                    min={5}
-                                    max={1440}
-                                />
-                            </label>
-                            <p className="subtle">
-                                令牌为一次性短期凭据，用于子节点 Agent 首次入网注册并换取长效
-                                Session Token。
-                            </p>
-                            <button className="primary" disabled={createTokenMutation.isPending}>
-                                <KeyRound size={16} />
-                                生成注册令牌
-                            </button>
-                        </form>
+                            <Form.Item
+                                name="node_id"
+                                label={
+                                    <span style={{ fontWeight: 500 }}>
+                                        目标节点唯一标识 (node_id)
+                                    </span>
+                                }
+                                rules={[
+                                    { required: true, message: '请输入节点标识' },
+                                    {
+                                        pattern: /^[a-zA-Z0-9_.-]{3,64}$/,
+                                        message: '格式必须为 3~64 位的字母、数字、点或下划线',
+                                    },
+                                ]}
+                            >
+                                <Input placeholder="例如：node-gpu-4090 或 worker-mac-studio" />
+                            </Form.Item>
+
+                            <Form.Item
+                                name="expires_in_minutes"
+                                label={<span style={{ fontWeight: 500 }}>有效时长（分钟）</span>}
+                                initialValue={60}
+                            >
+                                <InputNumber min={5} max={1440} style={{ width: '100%' }} />
+                            </Form.Item>
+
+                            <div
+                                style={{
+                                    fontSize: 12,
+                                    color: '#64748b',
+                                    marginBottom: 20,
+                                    padding: '8px 12px',
+                                    background: '#f8fafc',
+                                    borderRadius: 6,
+                                }}
+                            >
+                                令牌为一次性接入凭据，Worker 启动首次入网后将自动换取安全长效会话。
+                            </div>
+
+                            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12 }}>
+                                <Button onClick={() => setTokenModalOpen(false)}>取消</Button>
+                                <Button
+                                    type="primary"
+                                    htmlType="submit"
+                                    loading={createTokenMutation.isPending}
+                                >
+                                    生成接入令牌
+                                </Button>
+                            </div>
+                        </Form>
                     )}
                 </Modal>
             ) : null}
-        </>
+        </div>
     );
 }

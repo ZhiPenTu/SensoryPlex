@@ -1,6 +1,31 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertCircle, Box, Check, CheckCircle2, Download, Settings2, Zap } from 'lucide-react';
+import {
+    Alert,
+    Button,
+    Card,
+    Col,
+    Divider,
+    Form,
+    Input,
+    Popconfirm,
+    Row,
+    Select,
+    Space,
+    Table,
+    Tabs,
+    Tag,
+    Typography,
+    message,
+} from 'antd';
+import {
+    AppstoreOutlined,
+    SettingOutlined,
+    CloudDownloadOutlined,
+    ThunderboltOutlined,
+    CheckCircleOutlined,
+    ClusterOutlined,
+} from '@ant-design/icons';
 import { PluginFields, readConfig } from './PluginFields';
 import { api, post } from '../api/client';
 import type {
@@ -10,7 +35,18 @@ import type {
     PluginList,
     PreflightResponse,
 } from '../api/contracts';
-import { Badge, date, Empty, ErrorNotice, Heading, Loading, Modal, Notice } from '../components';
+import {
+    Badge,
+    date,
+    Empty,
+    ErrorNotice,
+    Heading,
+    Loading,
+    Modal,
+    StatSummary,
+} from '../components';
+
+const { Text, Paragraph } = Typography;
 
 export default function Plugins() {
     const cache = useQueryClient();
@@ -19,6 +55,7 @@ export default function Plugins() {
     const [targetNodeId, setTargetNodeId] = useState<string>('');
     const [selectedConfigId, setSelectedConfigId] = useState<string>('');
     const [tab, setTab] = useState('catalog');
+    const [configForm] = Form.useForm();
 
     const catalog = useQuery({
         queryKey: ['catalog'],
@@ -54,6 +91,7 @@ export default function Plugins() {
                 config_id: selectedConfigId || undefined,
             }),
         onSuccess: () => {
+            message.success('已成功下发插件部署指令至计算节点');
             void cache.invalidateQueries({ queryKey: ['nodes'] });
             setInstallingPlugin(null);
             setTargetNodeId('');
@@ -70,6 +108,7 @@ export default function Plugins() {
             ),
         onSuccess: (data) => {
             void cache.invalidateQueries({ queryKey: ['nodes'] });
+            message.success(`已向 ${data.node_id} 下发 ${data.deployed.length} 个插件安装意图！`);
             setBatchNotice(
                 `已向 ${data.node_id} 下发 ${data.deployed.length} 个插件安装意图！` +
                     (data.rejected.length
@@ -88,6 +127,7 @@ export default function Plugins() {
                 config: readConfig(form, selected!.config_schema),
             }),
         onSuccess: () => {
+            message.success('插件配置方案已成功保存');
             void cache.invalidateQueries({ queryKey: ['configs'] });
             setSelected(null);
             setTab('configs');
@@ -95,196 +135,348 @@ export default function Plugins() {
     });
 
     const catalogItems = catalog.data?.items || [];
-    const configCount = configs.data?.total ?? configs.data?.items.length ?? 0;
+    const configList = configs.data?.items || [];
+    const configCount = configs.data?.total ?? configList.length;
     const readyNodes =
         nodes.data?.items?.filter((node) => node.status === 'NODE_STATUS_READY').length || 0;
     const deployedInstances =
         nodes.data?.items?.reduce((total, node) => total + (node.instances?.length || 0), 0) || 0;
 
+    const configColumns = [
+        {
+            title: '配置名称',
+            dataIndex: 'name',
+            key: 'name',
+            render: (name: string, row: (typeof configList)[0]) => (
+                <Space align="center" size={10}>
+                    <SettingOutlined style={{ color: '#1668dc' }} />
+                    <Text strong style={{ fontSize: 13 }}>
+                        {name}
+                    </Text>
+                    <span className="mono" style={{ fontSize: 11, color: '#94a3b8' }}>
+                        ({row.id.slice(0, 16)}…)
+                    </span>
+                </Space>
+            ),
+        },
+        {
+            title: '绑定插件',
+            dataIndex: 'plugin_id',
+            key: 'plugin_id',
+            render: (pid: string) => (
+                <Tag color="geekblue" style={{ fontFamily: 'monospace' }}>
+                    {pid}
+                </Tag>
+            ),
+        },
+        {
+            title: '配置详情',
+            dataIndex: 'config',
+            key: 'config',
+            render: (conf: Record<string, unknown>) => (
+                <code
+                    style={{
+                        maxWidth: 360,
+                        display: 'inline-block',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                    }}
+                >
+                    {JSON.stringify(conf)}
+                </code>
+            ),
+        },
+        {
+            title: '创建时间',
+            dataIndex: 'created_at',
+            key: 'created_at',
+            width: 180,
+            render: (time: string) => (
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                    {date(time)}
+                </Text>
+            ),
+        },
+    ];
+
     return (
-        <>
+        <div>
             <Heading
-                eyebrow="PLUGIN CENTER"
-                title="插件中心"
-                description="按契约扩展处理能力，让模型与工作流保持独立。"
+                eyebrow="Plugin Center"
+                title="插件生态与配置中心"
+                description="统一接入视觉大模型 (VLM)、语音识别 (ASR)、光学字符 (OCR) 与向量特征嵌入等模型算力插件。"
                 action={
-                    <button
-                        className="primary"
-                        disabled={batchDeploy.isPending}
-                        onClick={() => {
-                            if (
-                                confirm(
-                                    '确定向同机数据面节点 (local-host) 一键装配全部基础处理插件（VLM、ASR、OCR、Embedding）吗？',
-                                )
-                            ) {
-                                batchDeploy.mutate();
-                            }
-                        }}
-                        title="向本机节点一键安装全部基础处理插件"
+                    <Popconfirm
+                        title="确定向同机数据面节点 (local-host) 一键装配全部基础处理插件（VLM、ASR、OCR、Embedding）吗？"
+                        onConfirm={() => batchDeploy.mutate()}
+                        okText="立即装配"
+                        cancelText="取消"
                     >
-                        <Zap size={16} />
-                        一键装配本地流水线
-                    </button>
+                        <Button
+                            type="primary"
+                            icon={<ThunderboltOutlined />}
+                            loading={batchDeploy.isPending}
+                        >
+                            一键装配本机基础插件
+                        </Button>
+                    </Popconfirm>
                 }
             />
-            {batchNotice ? (
-                <div className="notice notice-success">
-                    <CheckCircle2 size={18} />
-                    <span>{batchNotice}</span>
-                </div>
-            ) : null}
-            <Notice>
-                依据 ADR-026
-                拓扑设计：插件不再全局泛化安装，而是由管理员选择目标计算节点。控制面预检硬件加速、容器/原生运行时、制品摘要与数据本地性；数据面仅限同机共享内存。
-            </Notice>
-            <section className="control-strip" aria-label="插件中心概览">
-                <div>
-                    <span>目录插件</span>
-                    <strong>{catalogItems.length}</strong>
-                </div>
-                <div>
-                    <span>配置版本</span>
-                    <strong>{configCount}</strong>
-                </div>
-                <div>
-                    <span>可调度节点</span>
-                    <strong>{readyNodes}</strong>
-                </div>
-                <div>
-                    <span>已部署实例</span>
-                    <strong>{deployedInstances}</strong>
-                </div>
-            </section>
-            <div className="tabs">
-                <button
-                    className={tab === 'catalog' ? 'active' : ''}
-                    onClick={() => setTab('catalog')}
-                >
-                    插件目录
-                </button>
-                <button
-                    className={tab === 'configs' ? 'active' : ''}
-                    onClick={() => setTab('configs')}
-                >
-                    配置版本
-                </button>
-            </div>
-            <ErrorNotice error={catalog.error || configs.error} />
-            {tab === 'catalog' ? (
-                catalog.isPending ? (
-                    <Loading />
-                ) : (
-                    <div className="catalog-grid">
-                        {catalogItems.map((item) => (
-                            <article
-                                className="catalog-card"
-                                key={item.id}
-                                data-plugin-id={item.id}
-                            >
-                                <div className="catalog-main">
-                                    <span className="catalog-icon">
-                                        <Box size={27} />
-                                    </span>
-                                    <div className="catalog-copy">
-                                        <div className="catalog-title">
-                                            <h2>{item.name}</h2>
-                                            <span className="version">v{item.version}</span>
-                                        </div>
-                                        <p>{item.description}</p>
-                                        <div className="tags compact-tags">
-                                            {item.produces.map((x) => (
-                                                <span key={x}>{x.replace('observation.', '')}</span>
-                                            ))}
-                                        </div>
-                                    </div>
-                                </div>
-                                <div className="catalog-side">
-                                    <div className="catalog-badges">
-                                        <Badge state={item.state} />
-                                        <Badge state={item.trust} />
-                                    </div>
-                                    <small className="mono digest-line">
-                                        {item.digest.slice(0, 34)}…
-                                    </small>
-                                    <div className="catalog-actions">
-                                        <button
-                                            onClick={() => {
-                                                save.reset();
-                                                setSelected(item);
-                                            }}
-                                        >
-                                            <Settings2 size={16} />
-                                            配置
-                                        </button>
-                                        <button
-                                            className="primary"
-                                            onClick={() => {
-                                                deploy.reset();
-                                                setInstallingPlugin(item);
-                                                const defaultNode =
-                                                    nodes.data?.items?.[0]?.node_id || '';
-                                                setTargetNodeId(defaultNode);
-                                            }}
-                                        >
-                                            <Download size={16} />
-                                            安装到节点
-                                        </button>
-                                    </div>
-                                </div>
-                            </article>
-                        ))}
-                        {catalogItems.length === 0 ? (
-                            <Empty title="没有发现插件">受控目录中暂时没有插件 Manifest。</Empty>
-                        ) : null}
-                    </div>
-                )
-            ) : (
-                <section className="card">
-                    {configs.isPending ? (
-                        <Loading />
-                    ) : configs.data?.items.length ? (
-                        <div className="table-wrap">
-                            <table>
-                                <thead>
-                                    <tr>
-                                        <th>配置名称</th>
-                                        <th>版本</th>
-                                        <th>模型</th>
-                                        <th>保存时间</th>
-                                        <th>状态</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {configs.data.items.map((item) => (
-                                        <tr key={item.id}>
-                                            <td>
-                                                <strong>{item.name}</strong>
-                                                <small>{item.plugin_id}</small>
-                                            </td>
-                                            <td>v{item.revision}</td>
-                                            <td>{String(item.config?.model || '未配置')}</td>
-                                            <td>{date(item.created_at)}</td>
-                                            <td>
-                                                <span className="saved">
-                                                    <Check size={14} />
-                                                    已保存
-                                                </span>
-                                            </td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
-                        </div>
-                    ) : !configs.error ? (
-                        <Empty title="还没有配置版本">
-                            在插件目录中配置模型参数，每次保存都会生成不可变版本。
-                        </Empty>
-                    ) : null}
-                </section>
-            )}
 
+            <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
+                <Col xs={24} sm={6}>
+                    <StatSummary
+                        title="已登记插件规范"
+                        value={catalogItems.length}
+                        prefix={<AppstoreOutlined style={{ color: '#1668dc' }} />}
+                    />
+                </Col>
+                <Col xs={24} sm={6}>
+                    <StatSummary
+                        title="自定义配置方案"
+                        value={configCount}
+                        prefix={<SettingOutlined style={{ color: '#08979c' }} />}
+                        color="#08979c"
+                    />
+                </Col>
+                <Col xs={24} sm={6}>
+                    <StatSummary
+                        title="可部署就绪节点"
+                        value={readyNodes}
+                        prefix={<ClusterOutlined style={{ color: '#10b981' }} />}
+                        color="#10b981"
+                    />
+                </Col>
+                <Col xs={24} sm={6}>
+                    <StatSummary
+                        title="活跃运行实例"
+                        value={deployedInstances}
+                        prefix={<CheckCircleOutlined style={{ color: '#8b5cf6' }} />}
+                        color="#8b5cf6"
+                    />
+                </Col>
+            </Row>
+
+            {batchNotice ? (
+                <Alert type="success" showIcon message={batchNotice} style={{ marginBottom: 16 }} />
+            ) : null}
+
+            <ErrorNotice
+                error={
+                    catalog.error ||
+                    configs.error ||
+                    nodes.error ||
+                    deploy.error ||
+                    batchDeploy.error
+                }
+            />
+
+            <Card bodyStyle={{ padding: '0 20px 20px' }}>
+                <Tabs
+                    activeKey={tab}
+                    onChange={setTab}
+                    items={[
+                        {
+                            key: 'catalog',
+                            label: (
+                                <Space size={6}>
+                                    <AppstoreOutlined />
+                                    <span>插件规范目录 ({catalogItems.length})</span>
+                                </Space>
+                            ),
+                            children: (
+                                <div>
+                                    {catalog.isPending ? (
+                                        <Loading tip="正在载入插件目录…" />
+                                    ) : (
+                                        <Row gutter={[16, 16]}>
+                                            {catalogItems.map((plugin) => (
+                                                <Col xs={24} md={12} key={plugin.id}>
+                                                    <Card
+                                                        size="small"
+                                                        style={{
+                                                            borderRadius: 8,
+                                                            border: '1px solid #e2e8f0',
+                                                            height: '100%',
+                                                            display: 'flex',
+                                                            flexDirection: 'column',
+                                                        }}
+                                                        bodyStyle={{
+                                                            padding: 18,
+                                                            flex: 1,
+                                                            display: 'flex',
+                                                            flexDirection: 'column',
+                                                        }}
+                                                    >
+                                                        <div
+                                                            style={{
+                                                                display: 'flex',
+                                                                justifyContent: 'space-between',
+                                                                alignItems: 'flex-start',
+                                                                marginBottom: 10,
+                                                            }}
+                                                        >
+                                                            <div>
+                                                                <Text
+                                                                    strong
+                                                                    style={{ fontSize: 15 }}
+                                                                >
+                                                                    {plugin.name}
+                                                                </Text>
+                                                                <div style={{ marginTop: 2 }}>
+                                                                    <span
+                                                                        className="mono"
+                                                                        style={{
+                                                                            fontSize: 11,
+                                                                            color: '#64748b',
+                                                                        }}
+                                                                    >
+                                                                        {plugin.id}
+                                                                    </span>
+                                                                </div>
+                                                            </div>
+                                                            <Space size={4}>
+                                                                <Badge state={plugin.state} />
+                                                                <Tag
+                                                                    color={
+                                                                        plugin.trust === 'official'
+                                                                            ? 'green'
+                                                                            : 'orange'
+                                                                    }
+                                                                >
+                                                                    {plugin.trust || 'unverified'}
+                                                                </Tag>
+                                                            </Space>
+                                                        </div>
+
+                                                        <Paragraph
+                                                            type="secondary"
+                                                            style={{
+                                                                fontSize: 13,
+                                                                marginBottom: 12,
+                                                                flex: 1,
+                                                            }}
+                                                        >
+                                                            {plugin.description ||
+                                                                '按官方契约提供的高性能模型处理组件。'}
+                                                        </Paragraph>
+
+                                                        <div style={{ marginBottom: 16 }}>
+                                                            <Space size={[4, 4]} wrap>
+                                                                <Tag color="cyan">
+                                                                    版本: {plugin.version}
+                                                                </Tag>
+                                                                <Tag color="purple">
+                                                                    摘要:{' '}
+                                                                    {plugin.digest
+                                                                        ? plugin.digest.slice(
+                                                                              0,
+                                                                              12,
+                                                                          ) + '…'
+                                                                        : '官方契约'}
+                                                                </Tag>
+                                                                {plugin.consumes?.map((c) => (
+                                                                    <Tag key={c} color="blue">
+                                                                        输入: {c}
+                                                                    </Tag>
+                                                                ))}
+                                                                {plugin.produces?.map((p) => (
+                                                                    <Tag key={p} color="green">
+                                                                        产出: {p}
+                                                                    </Tag>
+                                                                ))}
+                                                            </Space>
+                                                        </div>
+
+                                                        <div
+                                                            style={{
+                                                                marginTop: 'auto',
+                                                                paddingTop: 12,
+                                                                borderTop: '1px solid #f1f5f9',
+                                                                display: 'flex',
+                                                                justifyContent: 'flex-end',
+                                                                gap: 8,
+                                                            }}
+                                                        >
+                                                            <Button
+                                                                size="small"
+                                                                icon={<SettingOutlined />}
+                                                                onClick={() => {
+                                                                    setSelected(plugin);
+                                                                    configForm.resetFields();
+                                                                }}
+                                                            >
+                                                                配置参数
+                                                            </Button>
+                                                            <Button
+                                                                size="small"
+                                                                type="primary"
+                                                                icon={<CloudDownloadOutlined />}
+                                                                onClick={() => {
+                                                                    setInstallingPlugin(plugin);
+                                                                    setTargetNodeId(
+                                                                        readyNodes > 0
+                                                                            ? nodes.data?.items?.find(
+                                                                                  (n) =>
+                                                                                      n.status ===
+                                                                                      'NODE_STATUS_READY',
+                                                                              )?.node_id || ''
+                                                                            : '',
+                                                                    );
+                                                                    setSelectedConfigId('');
+                                                                }}
+                                                            >
+                                                                部署至节点
+                                                            </Button>
+                                                        </div>
+                                                    </Card>
+                                                </Col>
+                                            ))}
+                                        </Row>
+                                    )}
+                                </div>
+                            ),
+                        },
+                        {
+                            key: 'configs',
+                            label: (
+                                <Space size={6}>
+                                    <SettingOutlined />
+                                    <span>参数方案配置 ({configList.length})</span>
+                                </Space>
+                            ),
+                            children: (
+                                <div>
+                                    {configs.isPending ? (
+                                        <Loading tip="正在载入方案配置…" />
+                                    ) : configList.length ? (
+                                        <Table
+                                            columns={configColumns}
+                                            dataSource={configList}
+                                            rowKey="id"
+                                            pagination={{ pageSize: 15 }}
+                                        />
+                                    ) : (
+                                        <Empty title="暂无自定义配置方案">
+                                            在插件目录中点击【配置参数】可根据插件 Manifest
+                                            生成并保存可复用的运行参数。
+                                        </Empty>
+                                    )}
+                                </div>
+                            ),
+                        },
+                    ]}
+                />
+            </Card>
+
+            {/* 新建/保存插件配置 Modal */}
             {selected ? (
-                <Modal title="保存插件配置" onClose={() => setSelected(null)}>
+                <Modal
+                    title={`新建插件运行配置 · ${selected.name}`}
+                    onClose={() => setSelected(null)}
+                    width={600}
+                >
                     <ErrorNotice error={save.error} />
                     <form
                         onSubmit={(e) => {
@@ -292,184 +484,158 @@ export default function Plugins() {
                             save.mutate(new FormData(e.currentTarget));
                         }}
                     >
-                        <label>
-                            配置名称
-                            <input
+                        <div style={{ marginBottom: 14 }}>
+                            <Text
+                                strong
+                                style={{ fontSize: 13, display: 'block', marginBottom: 4 }}
+                            >
+                                配置方案名称
+                            </Text>
+                            <Input
                                 autoFocus
                                 required
-                                maxLength={120}
                                 name="name"
-                                placeholder="例如：本地场景描述"
+                                placeholder={`例如：${selected.name} 默认高精度配置`}
                             />
-                        </label>
+                        </div>
+
+                        <Divider style={{ margin: '14px 0' }} />
+
                         <PluginFields schema={selected.config_schema} />
-                        <p className="subtle">
-                            保存配置不会验证模型就绪或启动插件。运行时传输地址由节点执行器绑定。
-                        </p>
-                        <button className="primary" disabled={save.isPending}>
-                            保存配置版本
-                        </button>
+
+                        <div
+                            style={{
+                                marginTop: 24,
+                                display: 'flex',
+                                justifyContent: 'flex-end',
+                                gap: 10,
+                            }}
+                        >
+                            <Button onClick={() => setSelected(null)}>取消</Button>
+                            <Button type="primary" htmlType="submit" loading={save.isPending}>
+                                保存方案
+                            </Button>
+                        </div>
                     </form>
                 </Modal>
             ) : null}
 
+            {/* 部署插件至目标节点 Modal */}
             {installingPlugin ? (
                 <Modal
-                    title={`部署插件 · ${installingPlugin.name}`}
+                    title={`下发插件部署意图 · ${installingPlugin.name}`}
                     onClose={() => setInstallingPlugin(null)}
+                    width={580}
                 >
-                    <ErrorNotice error={deploy.error} />
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
                         <div>
-                            <span className="eyebrow">PLUGIN ARTIFACT</span>
-                            <div className="card" style={{ padding: '10px', marginTop: '4px' }}>
-                                <strong>{installingPlugin.id}</strong> (v{installingPlugin.version})
-                                <br />
-                                <small className="mono" style={{ color: '#a1a1aa' }}>
-                                    {installingPlugin.digest}
-                                </small>
-                            </div>
+                            <Text
+                                strong
+                                style={{ fontSize: 13, display: 'block', marginBottom: 6 }}
+                            >
+                                目标计算节点:
+                            </Text>
+                            <Select
+                                value={targetNodeId || undefined}
+                                onChange={setTargetNodeId}
+                                placeholder="选择接入集群的计算节点"
+                                style={{ width: '100%' }}
+                                options={nodes.data?.items?.map((n) => ({
+                                    label: `${n.node_id} [${n.status === 'NODE_STATUS_READY' ? '可调度' : n.status}]`,
+                                    value: n.node_id,
+                                    disabled: n.status !== 'NODE_STATUS_READY',
+                                }))}
+                            />
                         </div>
 
-                        <label>
-                            选择目标计算节点
-                            <select
-                                value={targetNodeId}
-                                onChange={(e) => setTargetNodeId(e.target.value)}
+                        <div>
+                            <Text
+                                strong
+                                style={{ fontSize: 13, display: 'block', marginBottom: 6 }}
                             >
-                                <option value="" disabled>
-                                    -- 请选择部署节点 --
-                                </option>
-                                {nodes.data?.items?.map((n) => (
-                                    <option key={n.node_id} value={n.node_id}>
-                                        {n.display_name || n.node_id} (
-                                        {n.is_co_located ? '同机数据面' : '局域网子节点'}) -{' '}
-                                        {n.capabilities?.platform || 'unknown'}/
-                                        {n.capabilities?.arch || 'unknown'} [{n.status}]
-                                    </option>
-                                ))}
-                            </select>
-                        </label>
-
-                        {configs.data?.items?.filter((c) => c.plugin_id === installingPlugin.id)
-                            .length ? (
-                            <label>
-                                绑定配置版本（可选）
-                                <select
-                                    value={selectedConfigId}
-                                    onChange={(e) => setSelectedConfigId(e.target.value)}
-                                >
-                                    <option value="">默认配置</option>
-                                    {configs.data.items
-                                        .filter((c) => c.plugin_id === installingPlugin.id)
-                                        .map((c) => (
-                                            <option key={c.id} value={c.id}>
-                                                {c.name} (v{c.revision})
-                                            </option>
-                                        ))}
-                                </select>
-                            </label>
-                        ) : null}
+                                运行配置方案 (可选):
+                            </Text>
+                            <Select
+                                value={selectedConfigId || undefined}
+                                onChange={setSelectedConfigId}
+                                placeholder="选择适用的插件配置方案 (默认使用标准参数)"
+                                style={{ width: '100%' }}
+                                allowClear
+                                options={configList
+                                    .filter((c) => c.plugin_id === installingPlugin.id)
+                                    .map((c) => ({
+                                        label: `${c.name} (${c.id.slice(0, 16)}…)`,
+                                        value: c.id,
+                                    }))}
+                            />
+                        </div>
 
                         {targetNodeId ? (
-                            <div
-                                className="card"
-                                style={{ padding: '12px', background: '#121215' }}
-                            >
-                                <small
-                                    style={{
-                                        fontWeight: 600,
-                                        display: 'block',
-                                        marginBottom: '6px',
-                                    }}
+                            <div>
+                                <Text
+                                    strong
+                                    style={{ fontSize: 13, display: 'block', marginBottom: 6 }}
                                 >
-                                    控制面预检 (ADR-026 Preflight)
-                                </small>
+                                    ADR-026 控制面能力预检 (Preflight):
+                                </Text>
                                 {preflight.isPending ? (
-                                    <div style={{ fontSize: '0.85rem', color: '#a1a1aa' }}>
-                                        正在执行硬件能力与数据本地性预检…
+                                    <div
+                                        style={{
+                                            padding: 12,
+                                            background: '#f8fafc',
+                                            borderRadius: 6,
+                                        }}
+                                    >
+                                        <Text type="secondary">
+                                            正在执行硬件能力与数据本地性预检…
+                                        </Text>
                                     </div>
                                 ) : preflight.data ? (
-                                    <div>
-                                        {preflight.data.eligible ? (
-                                            <div
-                                                style={{
-                                                    color: '#4ade80',
-                                                    display: 'flex',
-                                                    alignItems: 'center',
-                                                    gap: '8px',
-                                                    fontSize: '0.88rem',
-                                                }}
-                                            >
-                                                <CheckCircle2 size={18} />
-                                                <span>
-                                                    预检通过：目标节点算力、架构与数据本地性满足要求。
-                                                </span>
-                                            </div>
-                                        ) : (
-                                            <div
-                                                style={{
-                                                    color: '#f87171',
-                                                    display: 'flex',
-                                                    alignItems: 'flex-start',
-                                                    gap: '8px',
-                                                    fontSize: '0.88rem',
-                                                }}
-                                            >
-                                                <AlertCircle
-                                                    size={18}
-                                                    style={{ marginTop: '2px', flexShrink: 0 }}
-                                                />
-                                                <div>
-                                                    <strong>
-                                                        预检拒绝 ({preflight.data.reason_code})
-                                                    </strong>
-                                                    <p
-                                                        style={{
-                                                            margin: '4px 0 0 0',
-                                                            fontSize: '0.82rem',
-                                                            color: '#fca5a5',
-                                                        }}
-                                                    >
-                                                        {preflight.data.detail}
-                                                    </p>
-                                                </div>
-                                            </div>
-                                        )}
-                                    </div>
+                                    preflight.data.eligible ? (
+                                        <Alert
+                                            type="success"
+                                            showIcon
+                                            message="预检通过"
+                                            description="目标节点的芯片架构、加速卡驱动、显存及数据本地性完全满足该插件运行要求。"
+                                        />
+                                    ) : (
+                                        <Alert
+                                            type="error"
+                                            showIcon
+                                            message={`预检未通过 (${preflight.data.reason_code})`}
+                                            description={preflight.data.detail}
+                                        />
+                                    )
                                 ) : (
-                                    <div style={{ fontSize: '0.85rem', color: '#f87171' }}>
-                                        无法获取预检状态
-                                    </div>
+                                    <Alert type="warning" message="无法获取节点预检状态" />
                                 )}
                             </div>
-                        ) : (
-                            <p className="subtle">请先选择一个节点以触发控制面能力预检。</p>
-                        )}
+                        ) : null}
 
                         <div
                             style={{
                                 display: 'flex',
                                 justifyContent: 'flex-end',
-                                gap: '10px',
-                                marginTop: '12px',
+                                gap: 10,
+                                marginTop: 12,
                             }}
                         >
-                            <button onClick={() => setInstallingPlugin(null)}>取消</button>
-                            <button
-                                className="primary"
+                            <Button onClick={() => setInstallingPlugin(null)}>取消</Button>
+                            <Button
+                                type="primary"
+                                icon={<CloudDownloadOutlined />}
                                 disabled={
                                     !targetNodeId || !preflight.data?.eligible || deploy.isPending
                                 }
+                                loading={deploy.isPending}
                                 onClick={() => deploy.mutate()}
                             >
-                                <Download size={16} />
                                 下发部署意图
-                            </button>
+                            </Button>
                         </div>
                     </div>
                 </Modal>
             ) : null}
-        </>
+        </div>
     );
 }

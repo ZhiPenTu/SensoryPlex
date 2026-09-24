@@ -344,7 +344,7 @@ demo-reset:
 # 通过 bind mount 反映主机源文件）。
 console-build:
 	@test "$(EXEC_MODE)" = container || { echo "console-build 只能在容器内执行：/workspace 与镜像自带的 node 只存在于 console 镜像里" >&2; exit 1; }
-	$(EXEC_CONSOLE) sh -lc 'cd /workspace/apps/console && npm ci --no-audit --no-fund && npm run build'
+	$(EXEC_CONSOLE) sh -lc 'cd /workspace/apps/console && npm ci --no-audit --no-fund && npm run build && cp -rf /workspace/apps/console/dist/* /usr/share/nginx/html/'
 
 console-check:
 	@test -n "$(MEDIA)" || { echo "usage: make console-check MEDIA=/absolute/path/to/authorized.webm"; exit 1; }
