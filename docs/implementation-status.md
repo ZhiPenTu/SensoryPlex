@@ -2,7 +2,13 @@
 
 依据根目录 ADR 的第 1 周目标建立工程，保留原需求文档作为设计依据。
 目标平台包含 `macos-aarch64`（Apple Silicon，含 Mac mini 端侧部署）与 `linux-x86_64`（NVIDIA 性能主线），
-见 ADR-008 与蓝图 §1.3。
+见 ADR-008 与蓝图 §1.4。
+
+产品当前以 Web Console 交付，不做桌面客户端。目标架构要求一个可调度的主节点和按节点管理的局域网
+插件 worker 子节点：子节点可与主节点同机，也可安装在局域网内的异构硬件主机。这个拓扑是**必做目标**，
+但目前未实现 node agent、节点注册/心跳、安装位置选择、远程插件生命周期或跨机调度；下表中的现有验证
+全部仍是单机事实，不能把它们外推为多节点可用。具体需求见
+[ADR-026](adr/ADR-026-Web主节点与局域网插件worker拓扑.md)。
 
 2026-09-24 并行状态：**M8 整体仍在研发中**；Timeline 核心在独立分支
 `codex/timeline-fusion`（`bdb00ef`），尚未合并。真实媒体端到端联调与语义冲突识别
@@ -19,6 +25,7 @@
 | PostgreSQL | 显式迁移、不可变素材与模型版本、来源校验、事务 outbox | 保留与归档策略、outbox 消费与补偿 |
 | Gateway | Bearer 认证、owner 过滤、素材详情、历史版本、关键词/标签/时间查询 | 外部鉴权、语义检索、短期媒体授权 URL |
 | Console / Platform API | 独立 React / TS / Vite 工程、统一模块化 API、会话/CSRF/RBAC、真实上传与 Range 回看、插件配置版本、方案/任务草稿、作用域凭据、账户/角色管理与审计；运行手册见 `docs/runbooks/console.md` | Runtime 媒体准入、安装与生命周期、方案发布、任务执行及素材来源映射；当前不是完整业务 Golden Path |
+| 局域网插件 worker 拓扑（必做） | 未实现；当前只有单机 CLI/验收进程，没有 node agent、节点 Registry、节点心跳、按节点的插件实例、安装/卸载/回滚或跨机调度 | 以主节点管理同机/局域网子节点；Web 选择安装位置；能力/资源/数据本地性校验；认证心跳、部署审计、失败恢复与真实多节点验收（ADR-026） |
 | 存储/硬件 | Rust adapter traits，模型与配置 hash 契约；向量落库与检索走 `services/index-worker` 的 Milvus（本机 **Lite 文件形态**，写后回读确认） | NAS/MinIO、服务端 Milvus 拓扑（本机 Docker Hub 不可达，未验收）、ONNX/TensorRT 实现 |
 | 直播接入基础设施 | 本机 MediaMTX 1.21.1（独立 Compose，仅回环端口）；SRT 直推（GStreamer `srtsink` 与用户自有 OBS）与 Runtime `ingest` 已打通：稳定窗口、断流恢复、无源失败、实时数据面交接、VideoToolbox 视频五个场景通过，OBS 真实直推亦实测（无 timing 码流的视频时长按 PTS 差分补齐），见 `docs/verification.md` | Mac mini / 跨机部署、SRT 加密与带凭据 publish、`linux-x86_64` 侧验收；服务器上有流不等于语义链路可用 |
 | 媒体与模型 | Pipeline 配置、真实媒体 probe 工具、ffprobe 锚点回放，GStreamer 真实解码 → arena → `BufferDescriptor` → lease 签发/校验/释放 → 音频 5 秒切段，视频自适应抽帧（keep/skip 全部带原因，7 个真实样本通过），跨进程数据面：Runtime 保留字节、独立进程按 lease 读取（3 个样本 × 2 个场景通过，具备有界容量与稳定拒绝码），SRT 实时接入 `ingest`（`make live-check` 五个场景通过），背压与队列可观察：三条有界队列的深度/峰值/容量、按原因与按种类的丢弃、lease 等待时间（`verify_backpressure.py` 4 场景 + OBS 直播实测，见 `docs/verification.md`），以及第一个**端侧模型插件**：本机 ollama `moondream:v2`（VLM），插件经 `LeaseBufferReader` 读真实视频帧产出带锚点/来源/版本/显式置信度语义的 observation，`tools/ai_worker.py` 只发现与调用不读字节，`make model-check` 四进程通过（见 `docs/verification.md` 的"M8"一节与 ADR-012），以及**媒体格式准入与显式拒绝**：承诺矩阵写成数据、源格式按 stream ID 关联、被拒轨道带稳定拒绝码进报告（`make capability-check` **19 场景**通过：6 个公开授权正样本 + 13 条拒绝路径，见 `docs/verification.md` 的"M9"一节与 ADR-009），以及第二个**端侧模型插件**（ASR）：本机 MLX Whisper 经 `LeaseBufferReader` 读真实音频段产出带锚点/来源/显式置信度语义的转写 observation，音频样本布局（`sample_format`）与音频段描述符进保留表一并落成契约，`make asr-check` 四进程通过（见 `docs/verification.md` 的"M10"一节与 ADR-014），以及第三个（OCR）与第四个（BGE 文本向量）端侧模型插件：OCR 以随包携带的 PP-OCR 组合权重的**组合摘要**为身份、产出带帧像素坐标的文字块；BGE **不接数据面**（`acceptsMemoryKinds: []`），消费上游 OCR 事实产出**维度版本化**的 L2 归一化向量，`make ocr-check` / `make embed-check` 均多进程通过，以及**向量落库与检索闭环**：`services/index-worker`（`sensoryplex-index`）把 BGE 向量写进 Milvus（本机 **Lite 文件形态**）并**读回来确认**才置 `embedding_record.state='ready'`，检索命中必须回查 PostgreSQL 的 `ready` + material 存在 + `source.owner` 才允许返回（被丢弃的命中单独计数），`make index-check` **11 个场景**通过（见 `docs/verification.md` 与 ADR-020），以及**宿主加速器能力上报**：`DescribeCapabilities` 新增 `host_accelerators`，与执行后端分成两张表、三态不得互相塌陷，`make accelerator-check` 四路对账通过（本机 `coreml=available(3520.5.1)`、`metal=available(metal4)` 与宿主直读逐字一致；`LANG=zh_CN.UTF-8` 判定不变；`PATH=/nonexistent` 落 `unknown` 而**不是**"不存在"；见 `docs/verification.md` 的"M8 剩余：宿主加速器能力探测与上报（ADR-022）"与 ADR-022），以及**outbox 分发接线与消费去重边界**：新增 `services/outbox-relay`，把事务性 outbox 的事件
