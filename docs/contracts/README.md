@@ -12,7 +12,8 @@ reserved，破坏语义的修改进入新的协议 major。当前为开发预览
 - 原始媒体只以受控引用传递。事件不携带帧、PCM、tensor；outbox 仅保存 EventEnvelope。
 - REST 使用 Protobuf JSON 映射，字段采用 snake_case；int64 返回字符串，optional
   缺失表示未知；查询时间条件为区间重叠，标签是 AND，modalities 是 OR。
-- `keyword` 为 PostgreSQL 字面子串检索，无相关性排名；`semantic` 未接入时返回 501。
+- `keyword` 为 PostgreSQL 字面子串检索，无相关性排名；`semantic` 为真实向量检索（契约见下文
+  "网关语义检索契约"）。
 - 单一部署 API token 映射到 `SENSORYPLEX_PRINCIPAL`，数据库按 source.owner 二次过滤。
   外部身份提供方、多用户 token、管理角色与审计日志不在当前底座实现范围内。
 - 默认不注册模型插件，不导入测试 observation，不把测试 fixture 作为媒体验收。
@@ -294,6 +295,36 @@ reserved，破坏语义的修改进入新的协议 major。当前为开发预览
   因此 edge 是"单写进程"；`deploy/compose/docker-compose.vector.yml` 的服务端拓扑因本机 Docker Hub
   不可达**未验收**，不得据此声称服务端可用。
 
+网关语义检索契约（ADR-023，**[网关语义检索接线与索引检索面](../adr/ADR-023-网关语义检索接线与索引检索面.md)**，
+**以下语义已实现并实测**，证据见 [验证记录](../verification.md) 的"网关语义检索接线（ADR-023）"一节）：
+
+- **`mode=semantic` 只接受 `query` + `limit`**；`stream_id` / `modalities` / `tags` / `start_ms` /
+  `end_ms` / `min_confidence` 显式拒绝（`semantic_filters_not_supported`）。静默忽略筛选条件会返回
+  "像是筛过"的结果，比拒绝更糟。空查询在 API 侧即拒（`invalid_query`）。
+- **keyword 不排名，`hits` 必须为空**（"没有排名"与"排名为 0"不同）；semantic 的 `hits` 与
+  `materials` **同序同长**，`index_version` 由检索面给出（keyword 恒为 `postgres-literal-v1`）。
+- **命中是引用，不是事实源也不是鉴权依据**：调用方按 `(material_unit_id, material_revision)`
+  重新水合事实；水合不出来的命中计入 `unresolved_hits`，检索面丢弃的命中计入 `unindexed_hits`，
+  结果集不静默变小。
+- **`distance` 是 COSINE 距离**（FLAT 精确检索，越小越近），**不是置信度**：本切片不做相关性校准，
+  RRF / 混合检索未做，筛选条件只在 keyword 模式生效。
+- **同源守卫**：collection 里的 `model_release_id` 必须**唯一且等于**本次查询编码器，否则整请求拒绝
+  （`vector_index_model_release_mixed` / `query_model_release_mismatch`）。刻意不按 principal 过滤
+  ——collection 是所有 owner 共用的，混装会让**所有人**的距离失去可比性。
+- **进程边界**：向量库由常驻检索面（`sensoryplex-index serve`）独占持有，API **不**打开向量库
+  （Milvus Lite 数据目录是进程独占的，ADR-020 §7）。检索面共享令牌 + 常量时间比较
+  （`authorization: Bearer <token>`，缺失与带错一律拒绝且不区分），无令牌或令牌不足 32 字符拒绝启动，
+  默认只绑回环 `127.0.0.1:50077`。
+- **HTTP 状态码只表示失败落在哪一环**：没走到检索面 → 503（未配置 `semantic_search_unavailable`、
+  令牌不符 `semantic_index_unauthenticated`、连不上 `semantic_index_unreachable`）；检索面答了但不是
+  本契约 → 502（`semantic_index_protocol_error` 或检索面自报的不可重试原因码）。
+  **`retryable` 是独立标记**：503 也可能不可重试（配置错误），502 也不代表"重试会变好"。
+- **原因码原样上抛**，API 不改写检索面的码；API 自有的两个码（`semantic_search_unavailable`、
+  `semantic_index_unreachable`）与检索面的码是**两套词汇**，不得混用。
+- 能力上报只报配置事实：配了检索面 ⇒ `semantic_search` 报 available（`reason` 为空），否则报
+  `semantic_search_unavailable`——**不是 501，也不再是 `semantic_index_not_configured`**。
+  终结点与令牌必须都配齐，终结点写成 URL（`http://...`）直接拒绝：它要的是 gRPC target。
+
 模型 worker 并发上限契约（ADR-021，**[模型 worker 按分级并发上限限流](../adr/ADR-021-模型worker按分级并发上限限流.md)**，
 **以下语义已实现并实测**；`tools/ai_worker.py`，证据见 [验证记录](../verification.md) 的
 "M8 剩余：模型 worker 按分级并发上限限流（ADR-021）"一节）：
@@ -323,4 +354,5 @@ reserved，破坏语义的修改进入新的协议 major。当前为开发预览
 
 `append_material` 是受信 timeline/storage 进程的内部入口；当前无公共写入 API。
 事实写入和 outbox 在同一事务完成。outbox 分发、NATS 消费去重和重试器尚待实现，
-因此不能把“已写 outbox”解释为“已发布 NATS”或“可语义检索”。
+因此不能把“已写 outbox”解释为“已发布 NATS”或“已由 index-worker 常驻消费”。
+语义检索本身已接线，但它的输入仍是显式调用（`sensoryplex-index index`），不是 NATS 消费。

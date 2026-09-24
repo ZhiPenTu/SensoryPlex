@@ -14,8 +14,10 @@ SRT 实时接入（M4）同样可用：`ingest` 在有限窗口内拉流、解�
 （`srtsrc auto-reconnect`），本进程只测量；直播没有已知时长，因此不产出 anchor 区间。
 背压指标（M2）与四个端侧模型插件（VLM/ASR/OCR/BGE，ADR-012/016/017）已接入；BGE 向量也已能
 落库并检索回来（`services/index-worker`，ADR-020，本机为 Milvus Lite 文件形态）。仍未接入的是
-NATS 任务分发、常驻 index-worker 消费，以及网关侧语义检索——`mode=semantic` 仍返回 501，
-服务端 Milvus 拓扑在本机 Docker Hub 不可达的情况下未经验收。相关 API 明确报告能力不可用。
+NATS 任务分发与常驻 index-worker 消费仍未接线；网关侧语义检索已按 ADR-023 接上真实检索面
+（`mode=semantic` 不再是 501：常驻 `sensoryplex-index serve` 持有向量库，API 只转发查询并按
+`(material_unit_id, revision)` 水合事实），服务端 Milvus 拓扑在本机 Docker Hub 不可达的情况下
+未经验收。相关 API 明确报告能力不可用。
 
 ## 快速开始
 
@@ -160,6 +162,8 @@ tools/                  配置、代码生成、迁移、测试与真实媒体�
 - [素材工作台 MVP 工程设计稿（应用准备流程已实现）](docs/design/console-mvp.md)
 - [ADR-021：模型 worker 按分级并发上限限流（准入、重试与账目）](docs/adr/ADR-021-模型worker按分级并发上限限流.md)
 - [ADR-022：宿主加速器能力探测与上报（三态、只写真值、与进程能力分离）](docs/adr/ADR-022-宿主加速器能力探测与上报.md)
+- [ADR-023：网关语义检索接线与索引检索面（进程独占、同源守卫、状态码与 retryable 分野）](docs/adr/ADR-023-网关语义检索接线与索引检索面.md)
+- [ADR-020：向量索引落库与检索闭环](docs/adr/ADR-020-向量索引落库与检索闭环.md)
 - [ADR-019：运行时消费分级队列上限（准入，而不是改写）](docs/adr/ADR-019-运行时消费分级队列上限.md)
 - [ADR-015：macOS 常驻形态（launchd）与统一内存分级](docs/adr/ADR-015-macOS常驻形态与统一内存分级.md)
 - [ADR-014：ASR 插件与音频样本布局契约](docs/adr/ADR-014-ASR插件与音频样本布局契约.md)

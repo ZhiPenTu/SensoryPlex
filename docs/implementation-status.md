@@ -21,7 +21,7 @@
 | Console / Platform API | 独立 React / TS / Vite 工程、统一模块化 API、会话/CSRF/RBAC、真实上传与 Range 回看、插件配置版本、方案/任务草稿、作用域凭据、账户/角色管理与审计；运行手册见 `docs/runbooks/console.md` | Runtime 媒体准入、安装与生命周期、方案发布、任务执行及素材来源映射；当前不是完整业务 Golden Path |
 | 存储/硬件 | Rust adapter traits，模型与配置 hash 契约；向量落库与检索走 `services/index-worker` 的 Milvus（本机 **Lite 文件形态**，写后回读确认） | NAS/MinIO、服务端 Milvus 拓扑（本机 Docker Hub 不可达，未验收）、ONNX/TensorRT 实现 |
 | 直播接入基础设施 | 本机 MediaMTX 1.21.1（独立 Compose，仅回环端口）；SRT 直推（GStreamer `srtsink` 与用户自有 OBS）与 Runtime `ingest` 已打通：稳定窗口、断流恢复、无源失败、实时数据面交接、VideoToolbox 视频五个场景通过，OBS 真实直推亦实测（无 timing 码流的视频时长按 PTS 差分补齐），见 `docs/verification.md` | Mac mini / 跨机部署、SRT 加密与带凭据 publish、`linux-x86_64` 侧验收；服务器上有流不等于语义链路可用 |
-| 媒体与模型 | Pipeline 配置、真实媒体 probe 工具、ffprobe 锚点回放，GStreamer 真实解码 → arena → `BufferDescriptor` → lease 签发/校验/释放 → 音频 5 秒切段，视频自适应抽帧（keep/skip 全部带原因，7 个真实样本通过），跨进程数据面：Runtime 保留字节、独立进程按 lease 读取（3 个样本 × 2 个场景通过，具备有界容量与稳定拒绝码），SRT 实时接入 `ingest`（`make live-check` 五个场景通过），背压与队列可观察：三条有界队列的深度/峰值/容量、按原因与按种类的丢弃、lease 等待时间（`verify_backpressure.py` 4 场景 + OBS 直播实测，见 `docs/verification.md`），以及第一个**端侧模型插件**：本机 ollama `moondream:v2`（VLM），插件经 `LeaseBufferReader` 读真实视频帧产出带锚点/来源/版本/显式置信度语义的 observation，`tools/ai_worker.py` 只发现与调用不读字节，`make model-check` 四进程通过（见 `docs/verification.md` 的"M8"一节与 ADR-012），以及**媒体格式准入与显式拒绝**：承诺矩阵写成数据、源格式按 stream ID 关联、被拒轨道带稳定拒绝码进报告（`make capability-check` **19 场景**通过：6 个公开授权正样本 + 13 条拒绝路径，见 `docs/verification.md` 的"M9"一节与 ADR-009），以及第二个**端侧模型插件**（ASR）：本机 MLX Whisper 经 `LeaseBufferReader` 读真实音频段产出带锚点/来源/显式置信度语义的转写 observation，音频样本布局（`sample_format`）与音频段描述符进保留表一并落成契约，`make asr-check` 四进程通过（见 `docs/verification.md` 的"M10"一节与 ADR-014），以及第三个（OCR）与第四个（BGE 文本向量）端侧模型插件：OCR 以随包携带的 PP-OCR 组合权重的**组合摘要**为身份、产出带帧像素坐标的文字块；BGE **不接数据面**（`acceptsMemoryKinds: []`），消费上游 OCR 事实产出**维度版本化**的 L2 归一化向量，`make ocr-check` / `make embed-check` 均多进程通过，以及**向量落库与检索闭环**：`services/index-worker`（`sensoryplex-index`）把 BGE 向量写进 Milvus（本机 **Lite 文件形态**）并**读回来确认**才置 `embedding_record.state='ready'`，检索命中必须回查 PostgreSQL 的 `ready` + material 存在 + `source.owner` 才允许返回（被丢弃的命中单独计数），`make index-check` **11 个场景**通过（见 `docs/verification.md` 与 ADR-020），以及**宿主加速器能力上报**：`DescribeCapabilities` 新增 `host_accelerators`，与执行后端分成两张表、三态不得互相塌陷，`make accelerator-check` 四路对账通过（本机 `coreml=available(3520.5.1)`、`metal=available(metal4)` 与宿主直读逐字一致；`LANG=zh_CN.UTF-8` 判定不变；`PATH=/nonexistent` 落 `unknown` 而**不是**"不存在"；见 `docs/verification.md` 的"M8 剩余：宿主加速器能力探测与上报（ADR-022）"与 ADR-022） | Rust 侧仍没有任何 in-process `ExecutionBackend`（`model_inference` 恒在 `unavailable_capabilities`；宿主加速器探测只在开发机 `macos-aarch64` 实测，`cuda` 分支与 Mac mini 均未验收）；常驻 index-worker 消费与网关语义检索接线（`mode=semantic` 仍 501，RRF/混合检索未做）；服务端 Milvus 形态（本机 Docker Hub 不可达，未验收）；ASR 的 Linux 后端（`mlx` 是 Apple Silicon 专属）；插件**未签名**（`local_native` 形态，签名/SBOM 只有结构预检）；旋转的采集与应用（v1 未实现） |
+| 媒体与模型 | Pipeline 配置、真实媒体 probe 工具、ffprobe 锚点回放，GStreamer 真实解码 → arena → `BufferDescriptor` → lease 签发/校验/释放 → 音频 5 秒切段，视频自适应抽帧（keep/skip 全部带原因，7 个真实样本通过），跨进程数据面：Runtime 保留字节、独立进程按 lease 读取（3 个样本 × 2 个场景通过，具备有界容量与稳定拒绝码），SRT 实时接入 `ingest`（`make live-check` 五个场景通过），背压与队列可观察：三条有界队列的深度/峰值/容量、按原因与按种类的丢弃、lease 等待时间（`verify_backpressure.py` 4 场景 + OBS 直播实测，见 `docs/verification.md`），以及第一个**端侧模型插件**：本机 ollama `moondream:v2`（VLM），插件经 `LeaseBufferReader` 读真实视频帧产出带锚点/来源/版本/显式置信度语义的 observation，`tools/ai_worker.py` 只发现与调用不读字节，`make model-check` 四进程通过（见 `docs/verification.md` 的"M8"一节与 ADR-012），以及**媒体格式准入与显式拒绝**：承诺矩阵写成数据、源格式按 stream ID 关联、被拒轨道带稳定拒绝码进报告（`make capability-check` **19 场景**通过：6 个公开授权正样本 + 13 条拒绝路径，见 `docs/verification.md` 的"M9"一节与 ADR-009），以及第二个**端侧模型插件**（ASR）：本机 MLX Whisper 经 `LeaseBufferReader` 读真实音频段产出带锚点/来源/显式置信度语义的转写 observation，音频样本布局（`sample_format`）与音频段描述符进保留表一并落成契约，`make asr-check` 四进程通过（见 `docs/verification.md` 的"M10"一节与 ADR-014），以及第三个（OCR）与第四个（BGE 文本向量）端侧模型插件：OCR 以随包携带的 PP-OCR 组合权重的**组合摘要**为身份、产出带帧像素坐标的文字块；BGE **不接数据面**（`acceptsMemoryKinds: []`），消费上游 OCR 事实产出**维度版本化**的 L2 归一化向量，`make ocr-check` / `make embed-check` 均多进程通过，以及**向量落库与检索闭环**：`services/index-worker`（`sensoryplex-index`）把 BGE 向量写进 Milvus（本机 **Lite 文件形态**）并**读回来确认**才置 `embedding_record.state='ready'`，检索命中必须回查 PostgreSQL 的 `ready` + material 存在 + `source.owner` 才允许返回（被丢弃的命中单独计数），`make index-check` **11 个场景**通过（见 `docs/verification.md` 与 ADR-020），以及**宿主加速器能力上报**：`DescribeCapabilities` 新增 `host_accelerators`，与执行后端分成两张表、三态不得互相塌陷，`make accelerator-check` 四路对账通过（本机 `coreml=available(3520.5.1)`、`metal=available(metal4)` 与宿主直读逐字一致；`LANG=zh_CN.UTF-8` 判定不变；`PATH=/nonexistent` 落 `unknown` 而**不是**"不存在"；见 `docs/verification.md` 的"M8 剩余：宿主加速器能力探测与上报（ADR-022）"与 ADR-022），以及**网关语义检索接线**：`mode=semantic` 从 501 变成真实检索——常驻检索面（`sensoryplex-index serve`）是持有向量库的唯一进程，API 只转发查询 + 按 `(material_unit_id, revision)` 水合事实，查询向量用 BGE 插件自己的 `Start` 编码并按 `model_release_id` 做 collection 级同源守卫（异源或混装整请求拒绝），未配置/不可达/令牌不符与"检索面答了但不是本契约"按失败发生位置分 503/502，`retryable` 是独立标记（503 也可能是不可重试的配置错误），`make semantic-check` **13 个场景**通过（见 `docs/verification.md` 的"网关语义检索接线（ADR-023）"与 ADR-023） | Rust 侧仍没有任何 in-process `ExecutionBackend`（`model_inference` 恒在 `unavailable_capabilities`；宿主加速器探测只在开发机 `macos-aarch64` 实测，`cuda` 分支与 Mac mini 均未验收）；常驻 index-worker 消费（NATS/outbox 仍未接线）；RRF/混合检索与相关性校准未做；服务端 Milvus 形态（本机 Docker Hub 不可达，未验收）；ASR 的 Linux 后端（`mlx` 是 Apple Silicon 专属）；插件**未签名**（`local_native` 形态，签名/SBOM 只有结构预检）；旋转的采集与应用（v1 未实现） |
 | 工程 | uv/Cargo 锁文件、Docker、检查命令、CI（`check`/`check-console` + **Apple Silicon** `check-apple-silicon`，远端 `macos-15-arm64` 已真实通过）、macOS `launchd` 常驻形态与统一内存分级（`tools/macos_resident.py`，见 ADR-015） | 真视频 Golden Path、Linux NVIDIA 侧 CI、压测、监控仪表盘 |
 
 下一里程碑：**本地文件 → GStreamer → PTS 正确的 frame/audio descriptor**，先完成
@@ -123,9 +123,29 @@ failed 不返回、幂等、维度篡改、库不可达、collection 契约漂�
 不换路径），因此 edge 形态是单写进程；服务端拓扑见
 `deploy/compose/docker-compose.vector.yml`，但本机 Docker Hub 不可达
 （`milvusdb/milvus` 拉取 EOF），**standalone 形态未经写入与检索验收**；常驻消费（NATS/outbox）
-与网关 `mode=semantic` 都未接线，向量质量（recall/MRR）未验收。决策见
+仍未接线，向量质量（recall/MRR）未验收。决策见
 [ADR-020](adr/ADR-020-向量索引落库与检索闭环.md)，实测见 `docs/verification.md` 的
 "M8 剩余：向量索引落库与检索闭环（ADR-020）"一节。
+
+网关语义检索接线（M8 剩余项）也已落地：`mode=semantic` 不再是 501。**Milvus Lite 是进程独占的**
+（ADR-020 §7），所以"网关接上检索"不等于"网关自己检索"——索引持有者 `services/index-worker` 新增
+常驻形态 `sensoryplex-index serve`（gRPC 检索面：共享令牌 + 常量时间比较，默认只绑回环
+`127.0.0.1:50077`，无令牌或令牌不足 32 字符拒绝启动），调用方只提交**查询文本**：编码查询向量、
+向量库近邻、PostgreSQL 事实回查都在这一侧完成。API（`infrastructure/semantic.py`）只做转发 + 按
+`(material_unit_id, revision)` 重新水合素材事实——**命中不是事实源、也不是鉴权依据**，水合不出来的
+命中计入 `unresolved_hits`、检索面丢弃的命中计入 `unindexed_hits`，结果集不静默变小。查询向量用 BGE
+插件自己的 `Start` 装配（不复制第二套模型），并按 `model_release_id` 做 **collection 级同源守卫**：
+另一个 release 或同库混装 → 整请求拒绝（`query_model_release_mismatch` /
+`vector_index_model_release_mixed`）。HTTP 状态码只表示**失败落在哪一环**（没走到检索面 → 503；
+检索面答了但不是本契约 → 502），`retryable` 是**独立**标记——`semantic_index_unauthenticated` 与
+`semantic_search_unavailable` 都是 503 却不可重试。本切片**只做纯语义**：`mode=semantic` 只接受
+`query` + `limit`，其余筛选条件显式 422 `semantic_filters_not_supported`（静默忽略筛选会给出
+"像是筛过"的结果）；keyword 不排名，`hits` 为空而不是补一串 0 距离；RRF/混合检索与相关性校准未做，
+`distance` 是 COSINE 距离、不是置信度。`make semantic-check` 用真实 BGE → 真实 Milvus Lite →
+常驻检索面 → 真实 API 走 HTTP **13 个场景**全过（含同源守卫两种形态、启动即拒契约漂移、目录锁、
+令牌不符与不可达的状态码/`retryable` 分野、线上不外泄）。决策见
+[ADR-023](adr/ADR-023-网关语义检索接线与索引检索面.md)，实测见 `docs/verification.md` 的
+"网关语义检索接线（ADR-023）"一节。
 
 媒体格式准入（M9）已按 [ADR-009](adr/ADR-009-媒体格式支持矩阵与拒绝语义.md) 落地：承诺矩阵写成
 数据（容器 → 编码 → 位深 → 色彩 → 采样格式 → 声道），判定输入是**解码前采集的源格式上下文**加上

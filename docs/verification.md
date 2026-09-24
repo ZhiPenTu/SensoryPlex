@@ -1594,6 +1594,8 @@ emb_1953e314…|failed|milvus://material_text_bge_small_zh_v1_5_d512_v1/emb_1953
 - **常驻消费未接线**：没有 NATS/outbox 轮询把上游观测喂给 index-worker，本轮只有显式 CLI 调用，
   因此**没有**常驻 index-worker 服务/容器；`deploy/` 下也没有对应服务。
 - **网关语义检索仍是 501**：`mode=semantic` 未接这批向量，RRF/混合检索、相关性排序均未做。
+  （本切片的这道缺口已由 [ADR-023](adr/ADR-023-网关语义检索接线与索引检索面.md) 收口，
+  见下文"网关语义检索接线（ADR-023）"；排序面仍未做。）
 - **向量质量未验收**：没有带参考文本的检索样本，所以没有 recall/MRR/排序基准；
   本轮只证明"同一向量能取回自己的事实"。
 - **共享向量去重未做**：同一段文字在多个 material 下会各存一份向量（`embedding_id` 含 material 作用域）。
@@ -1785,3 +1787,96 @@ Rust server / Python gRPC client: PASS; platform=macos-aarch64; host accelerator
 - `metal` 的 `runtime_version` 是 Metal **家族令牌**（`metal4`），`coreml` 的是 framework 的
   `CFBundleVersion`，两者不同名，不得横向比较。
 - 探测是**首次 `DescribeCapabilities` 时做一次并缓存**（`OnceLock`），不是持续监控。
+
+### M8 剩余：网关语义检索接线（ADR-023）（2026-09-24）
+
+#### 命令与角色
+
+```bash
+# 主机侧一键验收（真实 BGE 插件进程 → 真实 Milvus Lite → 常驻检索面 → 真实 API 走 HTTP）
+make semantic-check
+
+# 容器内回归（api 镜像重建后；契约 + 真实 PostgreSQL 集成）
+make test-py EXEC_MODE=container
+```
+
+固定在**主机**执行的理由与 `cargo` / `index-check` 相同：被验收的两样东西（Milvus Lite 数据目录、
+HF 权重）只存在于主机。脚本 `--keep-workspace` 可留现场（工作区落在 `$TMPDIR/sensoryplex-semantic-*`）。
+
+#### 实测结果（`make semantic-check`）
+
+```
+semantic search acceptance: real BGE -> Milvus Lite -> resident surface -> API hydration passed in 9.5s
+```
+
+本次实测的契约事实（脚本自报）：release `bge:bge-small-zh-v1.5@1d01788f1813`、
+collection `material_text_bge_small_zh_v1_5_d512_v1`、`dimension=512`、
+`index_version=milvus-flat-cosine-v1`。
+
+| # | 场景 | 结果 |
+| --- | --- | --- |
+| 1 | 真实观测落库（Milvus + PostgreSQL 两侧对账） | 3 条 `ready` + `confirmed`，release 唯一；另一进程 `inspect` 看到同一批行与维度 |
+| 2 | 检索面必须显式带令牌 | 不带令牌的 `serve` 拒绝启动（`index_auth_token_required`） |
+| 3 | 起常驻检索面（持有向量库的唯一进程） | 就绪即对外服务，报告 encoder / collection / `index_version` |
+| 4 | 端到端语义检索（真实编码 + 真实近邻 + 真实水合） | `mode=semantic`，`hits` 与 `materials` 同序同长，距离有界 |
+| 5 | 非 owner 命中被丢弃 | 不进结果、计入 `unindexed_hits`，**不表现成"没有命中"** |
+| 6 | keyword 不排名 | `hits` 为空，语义字段为空/0 |
+| 7 | 线上真正传的东西（裸 gRPC） | 不外泄路径、令牌、权重目录等受控引用 |
+| 8 | 令牌不符 | 503 + `semantic_index_unauthenticated` + `retryable=false` |
+| 9 | 检索面不可达 | 503 + `semantic_index_unreachable` + `retryable=true`，响应里**没有** `materials` |
+| 10 | 未配置 ≠ 曾经 501 | 能力表 false + `semantic_search_unavailable`；配了报 available 且 `reason` 为空 |
+| 11 | 同源守卫两种形态 | 整库另一个 release / 同库混装 → 各自稳定码且整请求拒绝；清掉外来行后恢复 |
+| 12 | collection 契约漂移 | **启动时**即拒（`vector_collection_contract_mismatch`），不留到第一次查询 |
+| 13 | 目录锁 + 停止后可用 | 第二个进程被拒（`vector_store_locked`）；前一个优雅停止后立刻可再起 |
+
+#### 顺带修掉的既有缺陷（5 条，全部由真链路抓出）
+
+1. **`stable_code` 白名单太窄**：`execution_provider_not_selected:CPUExecutionProvider` 这类
+   "码 + 冒号参数"被拒；收紧为 `^[a-z][a-z0-9_]{0,59}(:[A-Za-z0-9_.!<>=-]{1,40}){0,2}$` 并加
+   `MAX_STABLE_CODE_LENGTH=120`（仍然有界，但不把合法码误判成脏数据）。
+2. **HTTP 状态码被当成"是否可重试"的唯一表达**：见 ADR-023 §5；现在状态码只表示失败落在哪一环，
+   `retryable` 是独立标记（`semantic_index_unauthenticated` 是 503 却不可重试）。
+   该标记经 `HTTPException.headers` 在进程内传递，**不出现在响应头里**。
+3. **连接池覆盖 DSN 的 `options`**：`_session_options()` 原来用
+   `options=-c statement_timeout=...` **覆盖**调用方给的会话设置，静默丢掉隔离 schema 用的
+   `-c search_path=...`，表现为"连上了却查不到表"（`relation "embedding_record" does not exist`）；
+   改为**追加**。这条只在隔离 schema 的集成/验收环境里暴露。
+4. **漂移的 collection 拖到第一次查询才失败**：`cli serve` 原来不 `ensure_collection()`，
+   于是契约不符被包装成可重试的 `vector_search_failed`，把配置事实伪装成瞬时故障；
+   现在启动即拒。
+5. **`make gateway-smoke` 的语义断言写在旧契约上**：`services/gateway` 内嵌 `sensoryplex_api`，
+   但断言仍写着 `== 501`，于是"旧实现 + 旧断言"自洽地 PASS——一个只证明"两个旧东西还一致"的
+   冒烟检查。已同步改成 ADR-023 口径（503 + `semantic_search_unavailable` + `retryable=false`；
+   空查询 422），并重建 gateway 镜像后复跑（见上表）。
+
+#### 静态与回归检查
+
+| 检查 | 结果 |
+| --- | --- |
+| `ruff check` / `ruff format --check`（容器内，`services tools tests`） | `All checks passed!` / `80 files already formatted` |
+| `make test-py EXEC_MODE=container` | 契约 **247 passed** + 集成 **43 passed** |
+| `cargo check --locked -p sensoryplex-sdk`（主机） | `Finished dev profile`（新增 `index` 模块可编译） |
+| `make semantic-check`（主机，重建 api 镜像后复跑） | 13 场景 PASS，9.5s |
+| `make gateway-smoke`（重建 gateway 镜像后） | `semantic 503 (semantic_search_unavailable, retryable=false) and 422 on empty query: PASS` |
+| 部署态 API 直连（`curl`，未配置检索面） | 503 + `reason_code=semantic_search_unavailable` + `retryable=false`，响应头里**没有** `X-Retryable` |
+| `make console-build` + 重建 console 镜像 | 服务中的 bundle 含 `semantic_search_unavailable` 与新文案 |
+
+#### 一条必须记住的环境事实：gateway 镜像内嵌 api
+
+`services/gateway` 是兼容入口，`sensoryplex_gateway.app` 直接
+`from sensoryplex_api.app import create_app`，而它的 Dockerfile 把 `services/api` COPY 进镜像。
+因此**API 的契约/行为改动必须同时重建 gateway 镜像**，否则两个入口对同一个请求给出不同答案。
+本轮真的踩到：`make gateway-smoke` 在旧 gateway 镜像上仍然打印 `PASS`——旧断言写着 `== 501`，
+跑的又是旧实现；重建 gateway（并同步改断言）后才是 ADR-023 的 503/422 口径。
+
+#### 仍未验证（不得当成完成）
+
+- **常驻 index-worker 消费（NATS/outbox → sink）仍未接线**：检索面是常驻的，但"向量怎么进来"仍只有
+  显式 CLI 调用（ADR-020 §9 的同一缺口）。
+- **RRF / 混合检索 / 相关性校准未做**：`distance` 是 COSINE 距离，不是置信度；筛选条件只在 keyword
+  模式生效（semantic 模式下显式 422）。
+- **向量质量仍未验收**：没有带参考文本的检索样本 → 没有 recall/MRR/排序基准。
+- **检索面跨机/跨容器部署未验证**：本切片只在本机回环 `127.0.0.1` 上验收；共享令牌 + 回环默认值
+  是跨容器接入的**前置条件**，不是"跨机已验收"。
+- **服务端 Milvus 拓扑未验收**（Docker Hub 不可达）、`linux-x86_64` 与 Mac mini 未验证。
+- 检索面不做 durable 幂等、崩溃回收与排队补偿，`max_concurrency` 是固定上限。
