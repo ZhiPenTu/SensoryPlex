@@ -14,19 +14,20 @@ from psycopg_pool import AsyncConnectionPool, ConnectionPool, PoolTimeout, TooMa
 
 from .auth import Authorization
 from .contracts import RETRYABLE_HEADER, fail, out
-from .interfaces import admin, assets, business, identity
+from .interfaces import admin, assets, business, identity, nodes
 from .settings import Settings
 
 # 本镜像认识的迁移集合：/v1/health 要求库里应用的版本**恰好**等于这个集合，
 # 多一条（镜像旧了）少一条（没跑迁移）都直接 503。因此每加一条迁移都必须同步这里——
 # 本切片新增 `0003_embedding_index` 时漏掉这一跳，就是被真实集成测试抓出来的。
 # `SCHEMA` 仍是最新版本，供 `schema_version` 字段上报。
-SCHEMA = "0003_embedding_index"
-SCHEMA_VERSIONS = {"0001_initial", "0002_console", SCHEMA}
+SCHEMA = "0004_node_topology"
+SCHEMA_VERSIONS = {"0001_initial", "0002_console", "0003_embedding_index", SCHEMA}
 # 语义检索不可用时的原因码：检索面未配置就是这个码，不是 501、也不是"没有命中"。
 SEMANTIC_UNAVAILABLE_REASON = "semantic_search_unavailable"
 CAPABILITIES = [
     ("console_metadata", True, ""),
+    ("node_topology", True, ""),
     ("keyword_search", True, ""),
     ("file_storage", True, ""),
     ("media_admission", False, "media_admission_not_attached"),
@@ -195,6 +196,7 @@ def create_app(settings: Settings | None = None):
     business.register(app, pool, auth, settings)
     assets.register(app, pool, auth, settings, upload_pool)
     admin.register(app, pool, auth, settings)
+    nodes.register(app, pool, auth, settings)
     dist = settings.console_dist.resolve()
     if (dist / "static").is_dir():
         app.mount("/static", StaticFiles(directory=dist / "static"), name="console-assets")

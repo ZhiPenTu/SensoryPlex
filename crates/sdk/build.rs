@@ -11,6 +11,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "gateway/v1/gateway.proto",
         "gateway/v1/console.proto",
         "index/v1/index.proto",
+        "node/v1/node.proto",
     ];
     let paths: Vec<_> = files.iter().map(|file| format!("{root}/{file}")).collect();
     for path in &paths {

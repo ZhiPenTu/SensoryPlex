@@ -1,0 +1,191 @@
+syntax = "proto3";
+package edge.material.node.v1;
+
+import "runtime/v1/runtime.proto";
+import "google/protobuf/struct.proto";
+
+// Node status lifecycle in ADR-026.
+enum NodeStatus {
+  NODE_STATUS_UNSPECIFIED = 0;
+  NODE_STATUS_CANDIDATE = 1;
+  NODE_STATUS_ENROLLING = 2;
+  NODE_STATUS_READY = 3;
+  NODE_STATUS_DRAINING = 4;
+  NODE_STATUS_OFFLINE = 5;
+  NODE_STATUS_REVOKED = 6;
+}
+
+// Plugin instance lifecycle states in ADR-026.
+enum PluginInstanceState {
+  PLUGIN_INSTANCE_STATE_UNSPECIFIED = 0;
+  PLUGIN_INSTANCE_STATE_PLANNED = 1;
+  PLUGIN_INSTANCE_STATE_INSTALLING = 2;
+  PLUGIN_INSTANCE_STATE_READY = 3;
+  PLUGIN_INSTANCE_STATE_DEGRADED = 4;
+  PLUGIN_INSTANCE_STATE_DRAINING = 5;
+  PLUGIN_INSTANCE_STATE_STOPPED = 6;
+  PLUGIN_INSTANCE_STATE_FAILED = 7;
+  PLUGIN_INSTANCE_STATE_ROLLED_BACK = 8;
+  PLUGIN_INSTANCE_STATE_UNINSTALLED = 9;
+}
+
+// Deployment action from main node to node agent.
+enum DeploymentAction {
+  DEPLOYMENT_ACTION_UNSPECIFIED = 0;
+  DEPLOYMENT_ACTION_INSTALL = 1;
+  DEPLOYMENT_ACTION_START = 2;
+  DEPLOYMENT_ACTION_STOP = 3;
+  DEPLOYMENT_ACTION_UNINSTALL = 4;
+  DEPLOYMENT_ACTION_ROLLBACK = 5;
+  DEPLOYMENT_ACTION_DRAIN = 6;
+}
+
+// Capabilities and resources of a node.
+message NodeCapabilityProfile {
+  string platform = 1; // macos, linux
+  string arch = 2;     // aarch64, x86_64
+  uint32 cpu_cores = 3;
+  uint64 memory_bytes = 4;
+  uint64 unified_memory_bytes = 5;
+  repeated edge.material.runtime.v1.HostAccelerator accelerators = 6;
+  repeated string supported_artifacts = 7; // local_native, container
+  map<string, string> labels = 8;
+}
+
+// Registered node snapshot in the control plane registry.
+message NodeInfo {
+  string node_id = 1;
+  string display_name = 2;
+  NodeStatus status = 3;
+  string status_reason = 4;
+  NodeCapabilityProfile capabilities = 5;
+  bool is_co_located = 6;
+  string last_heartbeat_at = 7;
+  string enrolled_at = 8;
+  repeated PluginInstance instances = 9;
+}
+
+message NodeList {
+  repeated NodeInfo items = 1;
+  uint32 total = 2;
+}
+
+// Plugin instance tracking on a specific node.
+message PluginInstance {
+  string instance_id = 1;
+  string node_id = 2;
+  string plugin_id = 3;
+  string plugin_version = 4;
+  string artifact_digest = 5;
+  string previous_digest = 6;
+  string desired_state = 7;
+  string actual_state = 8;
+  string config_hash = 9;
+  google.protobuf.Struct config = 10;
+  string error_code = 11;
+  string error_detail = 12;
+  string created_at = 13;
+  string updated_at = 14;
+}
+
+message PluginInstanceList {
+  repeated PluginInstance items = 1;
+  uint32 total = 2;
+}
+
+// Enrollment token for sub-node agent authentication.
+message EnrollmentToken {
+  string token = 1;
+  string node_id = 2;
+  string expires_at = 3;
+  string created_at = 4;
+}
+
+message CreateEnrollmentTokenRequest {
+  string node_id = 1;
+  uint32 expires_in_minutes = 2;
+}
+
+message EnrollNodeRequest {
+  string enrollment_token = 1;
+  string node_id = 2;
+  string display_name = 3;
+  bool is_co_located = 4;
+  NodeCapabilityProfile capabilities = 5;
+}
+
+message EnrollNodeResponse {
+  bool success = 1;
+  string node_id = 2;
+  NodeStatus status = 3;
+  string session_token = 4;
+  string message = 5;
+}
+
+message NodeHeartbeatRequest {
+  string node_id = 1;
+  string session_token = 2;
+  int64 timestamp_unix_ms = 3;
+  uint64 available_memory_bytes = 4;
+  uint32 current_concurrency = 5;
+  repeated string running_instance_ids = 6;
+}
+
+message NodeHeartbeatResponse {
+  NodeStatus status = 1;
+  uint32 heartbeat_interval_ms = 2;
+  repeated DeploymentIntent pending_intents = 3;
+}
+
+message DeploymentIntent {
+  string intent_id = 1;
+  string instance_id = 2;
+  string node_id = 3;
+  string plugin_id = 4;
+  string plugin_version = 5;
+  DeploymentAction action = 6;
+  string artifact_digest = 7;
+  string rollback_digest = 8;
+  google.protobuf.Struct config = 9;
+  string created_at = 10;
+  int64 deadline_unix_ms = 11;
+}
+
+message ReportDeploymentRequest {
+  string intent_id = 1;
+  string instance_id = 2;
+  string node_id = 3;
+  DeploymentAction action = 4;
+  bool success = 5;
+  string actual_state = 6;
+  string error_code = 7;
+  string error_detail = 8;
+}
+
+message PreflightRequest {
+  string node_id = 1;
+  string plugin_id = 2;
+  string config_id = 3;
+  bool requires_data_locality = 4;
+  string data_plane_node_id = 5;
+}
+
+message PreflightResponse {
+  bool eligible = 1;
+  string reason_code = 2;
+  string detail = 3;
+  repeated string matched_capabilities = 4;
+  repeated string missing_capabilities = 5;
+}
+
+message TaskAssignment {
+  string assignment_id = 1;
+  string job_id = 2;
+  string target_node_id = 3;
+  string actual_node_id = 4;
+  string state = 5;
+  string reassignment_reason = 6;
+  bool data_locality_checked = 7;
+  int64 deadline_unix_ms = 8;
+  string created_at = 9;
+}

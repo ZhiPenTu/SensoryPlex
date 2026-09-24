@@ -38,6 +38,9 @@ def catalog(settings):
                     "reason": "runtime_plugin_installer_not_attached",
                     "consumes": spec["capabilities"]["consumes"],
                     "produces": spec["capabilities"]["produces"],
+                    "accepts_memory_kinds": spec["capabilities"].get("acceptsMemoryKinds", []),
+                    "form": spec["artifacts"].get("form", "local_native"),
+                    "resources": spec.get("resources", {}),
                     "config_schema": schema,
                 }
             )

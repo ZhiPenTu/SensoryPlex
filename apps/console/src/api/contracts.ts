@@ -332,3 +332,230 @@ export interface GetMaterialRequest {
   material_unit_id: string;
   revision?: number;
 }
+export type CapabilityState = "CAPABILITY_STATE_UNSPECIFIED" | "CAPABILITY_STATE_AVAILABLE" | "CAPABILITY_STATE_UNAVAILABLE";
+export type AcceleratorState = "ACCELERATOR_STATE_UNSPECIFIED" | "ACCELERATOR_STATE_AVAILABLE" | "ACCELERATOR_STATE_UNAVAILABLE" | "ACCELERATOR_STATE_UNKNOWN";
+export interface DescribeRequest {
+}
+export interface PluginDescription {
+  name: string;
+  version: string;
+  protocol: string;
+  consumes: string[];
+  produces: string[];
+  memory_kinds: string[];
+}
+export interface ValidateConfigRequest {
+  config?: JsonObject;
+}
+export interface ValidationResult {
+  valid: boolean;
+  field_errors: string[];
+}
+export interface StartRequest {
+  config?: JsonObject;
+}
+export interface LifecycleResponse {
+  state: string;
+  error?: ProcessingError;
+}
+export interface PluginInput {
+  buffer?: BufferDescriptor;
+  observation?: Observation;
+}
+export interface ProcessRequest {
+  context?: RequestContext;
+  inputs: PluginInput[];
+  processor_release_id: string;
+}
+export interface ProcessResponse {
+  observations: Observation[];
+  warnings: string[];
+  error?: ProcessingError;
+}
+export interface CancelRequest {
+  request_id: string;
+}
+export interface HealthRequest {
+}
+export interface HealthResponse {
+  state: string;
+  unavailable_capabilities: string[];
+}
+export interface DrainRequest {
+  grace_period_ms: number;
+}
+export interface StopRequest {
+}
+export interface HostResources {
+  unified_memory_bytes: string;
+  total_memory_bytes: string;
+  logical_cores: number;
+}
+export interface BackendCapability {
+  backend: string;
+  platform: string;
+  runtime_version: string;
+  precisions: string[];
+  memory_kinds: string[];
+  max_concurrency: number;
+  state: CapabilityState;
+  unavailable_reason: string;
+}
+export interface HostAccelerator {
+  accelerator: string;
+  platform: string;
+  state: AcceleratorState;
+  detection_source: string;
+  runtime_version: string;
+  evidence: string[];
+  unavailable_reason: string;
+}
+export interface ResidencyLimits {
+  tier: string;
+  media_queue_capacity: string;
+  model_parallelism: string;
+}
+export interface DescribeCapabilitiesRequest {
+}
+export interface DescribeCapabilitiesResponse {
+  platform: string;
+  host?: HostResources;
+  backends: BackendCapability[];
+  unavailable_capabilities: string[];
+  admitted_memory_kinds: string[];
+  host_accelerators: HostAccelerator[];
+  residency?: ResidencyLimits;
+}
+export type NodeStatus = "NODE_STATUS_UNSPECIFIED" | "NODE_STATUS_CANDIDATE" | "NODE_STATUS_ENROLLING" | "NODE_STATUS_READY" | "NODE_STATUS_DRAINING" | "NODE_STATUS_OFFLINE" | "NODE_STATUS_REVOKED";
+export type PluginInstanceState = "PLUGIN_INSTANCE_STATE_UNSPECIFIED" | "PLUGIN_INSTANCE_STATE_PLANNED" | "PLUGIN_INSTANCE_STATE_INSTALLING" | "PLUGIN_INSTANCE_STATE_READY" | "PLUGIN_INSTANCE_STATE_DEGRADED" | "PLUGIN_INSTANCE_STATE_DRAINING" | "PLUGIN_INSTANCE_STATE_STOPPED" | "PLUGIN_INSTANCE_STATE_FAILED" | "PLUGIN_INSTANCE_STATE_ROLLED_BACK" | "PLUGIN_INSTANCE_STATE_UNINSTALLED";
+export type DeploymentAction = "DEPLOYMENT_ACTION_UNSPECIFIED" | "DEPLOYMENT_ACTION_INSTALL" | "DEPLOYMENT_ACTION_START" | "DEPLOYMENT_ACTION_STOP" | "DEPLOYMENT_ACTION_UNINSTALL" | "DEPLOYMENT_ACTION_ROLLBACK" | "DEPLOYMENT_ACTION_DRAIN";
+export interface NodeCapabilityProfile {
+  platform: string;
+  arch: string;
+  cpu_cores: number;
+  memory_bytes: string;
+  unified_memory_bytes: string;
+  accelerators: HostAccelerator[];
+  supported_artifacts: string[];
+  labels: Record<string, string>;
+}
+export interface NodeInfo {
+  node_id: string;
+  display_name: string;
+  status: NodeStatus;
+  status_reason: string;
+  capabilities?: NodeCapabilityProfile;
+  is_co_located: boolean;
+  last_heartbeat_at: string;
+  enrolled_at: string;
+  instances: PluginInstance[];
+}
+export interface NodeList {
+  items: NodeInfo[];
+  total: number;
+}
+export interface PluginInstance {
+  instance_id: string;
+  node_id: string;
+  plugin_id: string;
+  plugin_version: string;
+  artifact_digest: string;
+  previous_digest: string;
+  desired_state: string;
+  actual_state: string;
+  config_hash: string;
+  config?: JsonObject;
+  error_code: string;
+  error_detail: string;
+  created_at: string;
+  updated_at: string;
+}
+export interface PluginInstanceList {
+  items: PluginInstance[];
+  total: number;
+}
+export interface EnrollmentToken {
+  token: string;
+  node_id: string;
+  expires_at: string;
+  created_at: string;
+}
+export interface CreateEnrollmentTokenRequest {
+  node_id: string;
+  expires_in_minutes: number;
+}
+export interface EnrollNodeRequest {
+  enrollment_token: string;
+  node_id: string;
+  display_name: string;
+  is_co_located: boolean;
+  capabilities?: NodeCapabilityProfile;
+}
+export interface EnrollNodeResponse {
+  success: boolean;
+  node_id: string;
+  status: NodeStatus;
+  session_token: string;
+  message: string;
+}
+export interface NodeHeartbeatRequest {
+  node_id: string;
+  session_token: string;
+  timestamp_unix_ms: string;
+  available_memory_bytes: string;
+  current_concurrency: number;
+  running_instance_ids: string[];
+}
+export interface NodeHeartbeatResponse {
+  status: NodeStatus;
+  heartbeat_interval_ms: number;
+  pending_intents: DeploymentIntent[];
+}
+export interface DeploymentIntent {
+  intent_id: string;
+  instance_id: string;
+  node_id: string;
+  plugin_id: string;
+  plugin_version: string;
+  action: DeploymentAction;
+  artifact_digest: string;
+  rollback_digest: string;
+  config?: JsonObject;
+  created_at: string;
+  deadline_unix_ms: string;
+}
+export interface ReportDeploymentRequest {
+  intent_id: string;
+  instance_id: string;
+  node_id: string;
+  action: DeploymentAction;
+  success: boolean;
+  actual_state: string;
+  error_code: string;
+  error_detail: string;
+}
+export interface PreflightRequest {
+  node_id: string;
+  plugin_id: string;
+  config_id: string;
+  requires_data_locality: boolean;
+  data_plane_node_id: string;
+}
+export interface PreflightResponse {
+  eligible: boolean;
+  reason_code: string;
+  detail: string;
+  matched_capabilities: string[];
+  missing_capabilities: string[];
+}
+export interface TaskAssignment {
+  assignment_id: string;
+  job_id: string;
+  target_node_id: string;
+  actual_node_id: string;
+  state: string;
+  reassignment_reason: string;
+  data_locality_checked: boolean;
+  deadline_unix_ms: string;
+  created_at: string;
+}

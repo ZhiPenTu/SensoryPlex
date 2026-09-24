@@ -1,8 +1,13 @@
 """从生成的 Proto descriptor 生成浏览器使用的 JSON 类型，避免重复定义契约。"""
 
+import sys
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "plugins/python/common/src"))
+
 from edge_material_sdk.generated.gateway.v1 import console_pb2, gateway_pb2
+from edge_material_sdk.generated.node.v1 import node_pb2
 from google.protobuf.descriptor import FieldDescriptor as F
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +26,7 @@ def generate():
 
     collect(console_pb2.DESCRIPTOR)
     collect(gateway_pb2.DESCRIPTOR)
+    collect(node_pb2.DESCRIPTOR)
     lines = [
         "// Generated from proto/ by tools/generate_console_types.py. Do not edit.",
         "export type JsonValue = string | number | boolean | null | JsonValue[] | JsonObject;",
@@ -34,12 +40,15 @@ def generate():
         for message in file.message_types_by_name.values():
             lines.append(f"export interface {message.name} {{")
             for field in message.fields:
+                is_map = False
                 if field.type == F.TYPE_MESSAGE:
-                    kind = (
-                        "JsonObject"
-                        if field.message_type.full_name == "google.protobuf.Struct"
-                        else field.message_type.name
-                    )
+                    if field.message_type.GetOptions().map_entry:
+                        is_map = True
+                        kind = "Record<string, string>"
+                    elif field.message_type.full_name == "google.protobuf.Struct":
+                        kind = "JsonObject"
+                    else:
+                        kind = field.message_type.name
                 elif field.type == F.TYPE_ENUM:
                     kind = field.enum_type.name
                 elif field.type == F.TYPE_BOOL:
@@ -56,7 +65,7 @@ def generate():
                     kind = "string"
                 else:
                     kind = "number"
-                if field.label == F.LABEL_REPEATED:
+                if field.label == F.LABEL_REPEATED and not is_map:
                     kind += "[]"
                 optional = "?" if field.has_presence else ""
                 lines.append(f"  {field.name}{optional}: {kind};")
