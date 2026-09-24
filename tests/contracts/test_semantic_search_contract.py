@@ -14,7 +14,6 @@ from edge_material_sdk.generated.gateway.v1 import gateway_pb2
 from edge_material_sdk.generated.index.v1 import index_pb2
 from sensoryplex_api.infrastructure import semantic
 from sensoryplex_api.interfaces import business
-from sensoryplex_api.settings import Settings
 from sensoryplex_index_worker import service
 from sensoryplex_index_worker.query_encoder import GENERIC_CODE, stable_code
 
@@ -222,8 +221,8 @@ class FakeRpcError(grpc.RpcError):
         return self._code
 
 
-def test_api_reports_unconfigured_search_as_unavailable_not_as_not_implemented():
-    settings = Settings(database_url="postgresql://ignored/none")
+def test_api_reports_unconfigured_search_as_unavailable_not_as_not_implemented(bare_settings):
+    settings = bare_settings(database_url="postgresql://ignored/none")
     with pytest.raises(semantic.SemanticSearchError) as failure:
         semantic.search(None, settings, principal="owner", query="x", limit=5)
     assert failure.value.code == "semantic_search_unavailable"
@@ -282,24 +281,39 @@ def test_semantic_filters_are_rejected_instead_of_silently_ignored():
 # ── 配置面：半配置的检索面不允许启动 ───────────────────────────────────────
 
 
-def test_index_search_settings_refuse_half_configuration():
+def test_index_search_settings_refuse_half_configuration(bare_settings):
     base = {"database_url": "postgresql://ignored/none"}
-    assert Settings(**base).index_search_endpoint == ""
-    assert Settings(**base).index_vector_index_key == KEY
-    configured = Settings(
+    assert bare_settings(**base).index_search_endpoint == ""
+    assert bare_settings(**base).index_vector_index_key == KEY
+    configured = bare_settings(
         **base, index_search_endpoint="127.0.0.1:50077", index_search_token="t" * 32
     )
     assert configured.index_search_endpoint == "127.0.0.1:50077"
     with pytest.raises(ValueError, match="index_search_token_required"):
-        Settings(**base, index_search_endpoint="127.0.0.1:50077")
+        bare_settings(**base, index_search_endpoint="127.0.0.1:50077")
     with pytest.raises(ValueError, match="index_search_token_required"):
-        Settings(**base, index_search_endpoint="127.0.0.1:50077", index_search_token="short")
+        bare_settings(**base, index_search_endpoint="127.0.0.1:50077", index_search_token="short")
     with pytest.raises(ValueError, match="index_search_endpoint_required"):
-        Settings(**base, index_search_token="t" * 32)
+        bare_settings(**base, index_search_token="t" * 32)
     with pytest.raises(ValueError, match="index_search_endpoint_invalid"):
-        Settings(
+        bare_settings(
             **base, index_search_endpoint="http://127.0.0.1:50077", index_search_token="t" * 32
         )
+
+
+def test_blank_search_configuration_counts_as_unconfigured(bare_settings):
+    """容器编排只能给出空串（compose `${VAR:-}` / `docker compose exec -e VAR=` 都表达不了
+    "变量不存在"），所以空白必须读成"没配"——否则老 `.env` 会让 api 拒绝启动、整个栈起不来。
+
+    半配置仍然被挡住：只给一处（任一处为空）照样落 `*_required`。
+    """
+    both_blank = bare_settings(index_search_endpoint="  ", index_search_token="")
+    assert both_blank.index_search_endpoint == ""
+    assert both_blank.index_search_token is None
+    with pytest.raises(ValueError, match="index_search_token_required"):
+        bare_settings(index_search_endpoint="127.0.0.1:50077", index_search_token="")
+    with pytest.raises(ValueError, match="index_search_endpoint_required"):
+        bare_settings(index_search_endpoint="", index_search_token="t" * 32)
 
 
 def test_api_vocabulary_and_index_vocabulary_stay_distinct():

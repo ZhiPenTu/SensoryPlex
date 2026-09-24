@@ -30,6 +30,7 @@
 
 import argparse
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -80,6 +81,9 @@ PRINCIPAL = "semantic-acceptance-owner"
 INTRUDER = "semantic-acceptance-intruder"
 API_TOKEN = "semantic-acceptance-api-token-not-a-deployment-secret"
 SURFACE_TOKEN = "semantic-acceptance-surface-token-0123456789abcdef"
+# 检索面的令牌环境变量（`serve` 在 `--auth-token` 缺失时读它）。脚本**不假设**操作者终端
+# 里没有这个名字，所以"没有令牌"这一场显式控制子进程环境；理由见场景 2 处的注释。
+AUTH_TOKEN_VAR = "SENSORYPLEX_INDEX_AUTH_TOKEN"
 STREAM = "stream_semantic_acceptance"
 SOURCE = "source_semantic_acceptance"
 MATERIAL = "material_semantic_acceptance"
@@ -494,15 +498,24 @@ def surface_call(
 def api_settings(
     database_url: str, *, endpoint: str = "", token: str = SURFACE_TOKEN, principal: str = PRINCIPAL
 ) -> Settings:
+    """构造受脚本控制的 `Settings`：检索面配置**只从参数来**。
+
+    本机 `.env` 与 compose 环境是真的配上检索面的（ADR-027 把 `index:50077` 写进了 `.env`），
+    所以"未配置"这个场景必须自己控制环境（`_env_file=None` + 显式空值），否则验的是宿主机
+    而不是这条契约——同一根因在契约测试里也修过一次（`tests/conftest.py::bare_settings`）。
+    """
     fields: dict = {
         "database_url": database_url,
         "api_token": SecretStr(API_TOKEN),
         "principal": principal,
+        # 显式空值压过环境与 `.env`；`endpoint` 给了就换成配齐的一对。
+        "index_search_endpoint": "",
+        "index_search_token": None,
     }
     if endpoint:
         fields["index_search_endpoint"] = endpoint
         fields["index_search_token"] = SecretStr(token)
-    return Settings(**fields)
+    return Settings(_env_file=None, **fields)
 
 
 def search(client: TestClient, body: dict) -> tuple[int, dict]:
@@ -655,6 +668,18 @@ def verify(  # noqa: PLR0915 - 验收脚本按场景直排，拆函数会让"哪
         )
 
         # ── 场景 2：检索面必须显式带令牌才允许启动 ────────────────────────
+        # 子进程环境里必须**真的没有**这个变量：`subprocess.run` 默认继承父进程环境，而
+        # **操作者自己的 shell** 完全可能 export 过它（`make semantic-check` 也允许外部传入）。
+        # 不显式摘掉的话，这一场验的就是宿主机的环境，而不是检索面的 fail-closed 语义。
+        #
+        # 这一场曾经真的红过（ADR-027 §10 第 4 条）：`pymilvus.settings` 在 **import 期**调用
+        # `load_dotenv()`，python-dotenv 从 `pymilvus/settings.py` 所在目录**向上找 `.env`**
+        # （`__main__` 没有 `__file__` 时还会退回用 cwd）。宿主 venv 就在仓库根下（`.venv/`），
+        # 于是仓库 `.env` 里的 `SENSORYPLEX_INDEX_AUTH_TOKEN` 被**顺手**注进子进程 `os.environ`，
+        # 令牌缺失也照样起服务、常驻到超时（容器里 venv 在 `/app/.venv`，找不到，所以同一份代码
+        # 在容器里是绿的）。修复见 `sensoryplex_index_worker/environ.py`：`serve` 只读 import 期
+        # 取好的 `BASE_ENVIRON`。这里仍然显式摘掉，是为了让"操作者 export 过令牌"也不影响判定。
+        no_token_env = {k: v for k, v in os.environ.items() if k != AUTH_TOKEN_VAR}
         no_token = subprocess.run(
             [
                 sys.executable,
@@ -677,6 +702,7 @@ def verify(  # noqa: PLR0915 - 验收脚本按场景直排，拆函数会让"哪
             capture_output=True,
             text=True,
             cwd=str(ROOT),
+            env=no_token_env,
             timeout=CLI_TIMEOUT_S,
         )
         check(

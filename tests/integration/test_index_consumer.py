@@ -20,6 +20,7 @@ from edge_material_sdk.generated.common.v1.common_pb2 import EventEnvelope
 from psycopg import sql
 from psycopg.conninfo import make_conninfo
 from sensoryplex_index_worker import consumer
+from sensoryplex_relay import residency
 
 from tools.migrate import migrate
 
@@ -404,6 +405,8 @@ class NatsHarness:
                 subscription=subscription,
                 database_url=self.database,
                 options=options,
+                # 集成层不注入分级：这里要测的是投递/ack/fail-stop，不是准入（那是契约层的事）。
+                backpressure=residency.read_event_backpressure(options.batch, environ={}),
                 index=self.index,
                 encoder=self.encoder,
                 emit=self.documents.append,

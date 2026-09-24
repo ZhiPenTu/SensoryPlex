@@ -13,7 +13,7 @@ import time
 import pytest
 import sensoryplex_relay
 from edge_material_sdk.generated.common.v1.common_pb2 import EventEnvelope
-from sensoryplex_relay import cli, relay
+from sensoryplex_relay import cli, relay, residency
 
 DIGEST = "sha256:" + "a" * 64
 
@@ -191,6 +191,7 @@ def test_status_line_carries_counts_and_identifiers_only():
     document = relay.status_document(
         cycle=3,
         options=relay.RelayOptions(),
+        backpressure=residency.read_event_backpressure(relay.DEFAULT_BATCH, environ={}),
         claimed=2,
         published=1,
         failed=1,
@@ -214,6 +215,11 @@ def test_status_line_carries_counts_and_identifiers_only():
         "max_attempt",
         "error_code",
         "error_detail",
+        # 分级背压（ADR-027）：准入结论随每一行状态一起走。
+        "inflight_state",
+        "inflight_declared",
+        "inflight_capacity",
+        "resident_tier",
     }
     assert document["event"] == "relay.status"
     serialized = json.dumps(document)

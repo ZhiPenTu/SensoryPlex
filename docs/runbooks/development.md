@@ -54,6 +54,16 @@ make media-check   # 带 gstreamer feature 的 clippy 编译门（需要 GStream
 CI 使用临时 PostgreSQL；集成测试必须显式通过，不能把跳过等同于验收。
 本地 DB 连接默认来自 `.env`，CI 可设置 `SENSORYPLEX_TEST_DATABASE_URL`。
 
+事件链路的两个常驻服务（`relay` / `index`）在 compose 的 `events` profile 里，不在默认栈中：
+`./deploy/up-events.sh` 起、`./deploy/down-events.sh [--volumes]` 停（见
+[ADR-027](../adr/ADR-027-事件链路分级背压与容器化常驻.md)）。检索面 `index:50077` **只**在 compose
+网络内暴露——api 经它做 `mode=semantic`，主机上不监听这个端口。常驻进程的落盘位置（仓库 bind mount，
+主机与容器同视角）：`.data/events/relay-status.json`、`.data/events/index-status.json`、
+`.data/events/index-ready.json`，向量库是 `.data/index/milvus.db`。
+深度上限由 `.env` 的 `SENSORYPLEX_EVENT_QUEUE_CAPACITY`（档位，`medium` = 32）与
+`SENSORYPLEX_EVENT_RELAY_BATCH` / `SENSORYPLEX_EVENT_CONSUME_BATCH` 决定；**越界即拒绝启动**
+（`event_inflight_exceeds_tier_cap`），缺变量是显式 `not_injected`。
+
 `make down` 停止本项目容器并保留卷。数据库回滚采用备份恢复或新增补偿迁移，
 不提供默认 drop-volume 操作。升级前保存镜像 digest、lockfile、配置和数据库备份。
 当前 Compose 是单机开发环境，不是对外生产部署。

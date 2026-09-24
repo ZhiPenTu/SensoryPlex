@@ -58,16 +58,23 @@ def free_port() -> int:
 class Process:
     """按行观察 stdout 的子进程；用于生产者与插件服务。"""
 
-    def __init__(self, name: str, command: list[str]):
+    def __init__(self, name: str, command: list[str], *, env: dict[str, str] | None = None):
         self.name = name
         self.command = command
+        # 环境默认继承宿主；验收需要"某一档位是否注入"这类确定性时显式传一份。
+        self.env = env
         self.lines: list[str] = []
         self.stderr: list[str] = []
         self.process: subprocess.Popen | None = None
 
     def start(self) -> None:
         self.process = subprocess.Popen(
-            self.command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1
+            self.command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            env=self.env,
         )
         for stream, sink in ((self.process.stdout, self.lines), (self.process.stderr, self.stderr)):
             threading.Thread(target=self._pump, args=(stream, sink), daemon=True).start()

@@ -1589,6 +1589,59 @@ emb_1953e314…|failed|milvus://material_text_bge_small_zh_v1_5_d512_v1/emb_1953
 "跑过了但没生效"，直到 `docker compose ... build gateway` 之后同一条命令才输出
 `Applied 0003_embedding_index`。已写进 `docs/runbooks/development.md`。
 
+#### 远端 CI：从"账号计费拦截"到第一次真跑（2026-09-24）
+
+本切片开 PR 后远端三个 job 全红，但**红的原因不是代码**：三个 job 的 `steps` 都是空数组、
+`runner_id = 0`，check-run 的注解原文是
+
+```
+The job was not started because recent account payments have failed or your spending limit
+needs to be increased. Please check the 'Billing & plans' section in your settings
+```
+
+分界线很清楚：最后一次全绿是 `#55`（2026-09-23 20:31Z，真 runner，三个 job 分别 14 / 20 / 14 个
+step），`#56`（20:36Z）起**连续 20 次**全红——其中包括 master 自己的 push（`#73` = `36fc487`，
+即已合并的 PR #13）。所以这段全红**既不能读成"PR #14 的代码验证失败"，也不能读成"流水线坏了"**：
+它是账号侧计费被拦，与提交内容无关，重跑没有意义。
+
+把仓库改成 public（标准 runner 对公开仓库免费）后重跑 `#75` 的 attempt 2，job 才第一次真正落到
+runner 上（`runner_id != 0`、`steps` 有内容）：`check-console` success，`check` 与
+`check-apple-silicon` 都停在 `test-contracts`——这才是本切片真正的第 5 条缺陷。
+
+| run | 触发 | 结论 | 说明 |
+| --- | --- | --- | --- |
+| `#55` | push `master` | success | 最后一次真跑成功的流水线 |
+| `#56`–`#74`（19 次） | push / pull_request | failure（无效） | `steps = []`、`runner = 0`：账号计费拦截 |
+| `#75` attempt 1 | pull_request `codex/index-pipeline` | failure（无效） | 同上 |
+| `#75` attempt 2 | pull_request `codex/index-pipeline` | failure（真实） | 公开仓库后真跑，暴露第 5 条缺陷（ADR-027 §10.5） |
+| `#76` / `#77` | push / pull_request `codex/index-pipeline` @ `e7c6480` | success | 第 5 条修好后三 job 全绿（`check` 15 step、`check-console` 14 step、`check-apple-silicon` 20 step），流水线恢复可用 |
+
+该缺陷的复现与修复（容器内摘掉 `SENSORYPLEX_DATABASE_URL` 以对齐 CI 条件——CI 既没有仓库
+`.env` 也没有这个变量，而本机容器两者都有）：
+
+```
+$ docker compose --env-file .env -f deploy/compose/docker-compose.poc.yml exec -T -w /workspace \
+    api sh -lc 'env -u SENSORYPLEX_DATABASE_URL /app/.venv/bin/python -m pytest tests/contracts -q'
+
+# 修前
+E   pydantic_core._pydantic_core.ValidationError: 1 validation error for Settings
+E   database_url
+E     Field required [type=missing, ...]
+FAILED tests/contracts/test_semantic_search_contract.py::test_blank_search_configuration_counts_as_unconfigured
+1 failed, 14 passed in 1.38s
+
+# 修后
+363 passed in 5.04s
+```
+
+修复后的本机回归（容器内，与 CI 同一组命令）：
+
+| 验证 | 结果 |
+| --- | --- |
+| `make lint-ruff` | `ruff check` 全过、`format --check` **161** 文件已格式化 |
+| `make test-py` | 契约 **363 passed**（4.68s）+ 集成 **65 passed**（21.72s） |
+| `make check` | 全过（ruff + 契约 + 集成 + cargo fmt/clippy/test） |
+
 #### 仍未验证（不得当成完成）
 
 - **常驻消费未接线**：没有 NATS/outbox 轮询把上游观测喂给 index-worker，本轮只有显式 CLI 调用，
@@ -2028,3 +2081,185 @@ repeated → 把"没这个键"读成"丢了 `None` 条"；状态行先写、进�
 记在 [ADR-025](adr/ADR-025-常驻消费循环与sink接线.md) §10。
 
 `golden_path_verified` 仍恒为 false：真实媒体端到端（真实视频 → Runtime/Timeline → 事件）仍未联调。
+
+### 事件链路分级背压与容器化常驻（ADR-027）（2026-09-24）
+
+切片：收掉 [ADR-025](adr/ADR-025-常驻消费循环与sink接线.md) §11 剩下的两句——**ADR-019 的分级上限
+接到事件链路**、**relay 与消费进 compose**。设计决策与未验证边界见
+[ADR-027](adr/ADR-027-事件链路分级背压与容器化常驻.md)。
+
+命令：`make events-up`（起常驻）、`make event-pipeline-check`（容器内闭环验收，接 ADR-019 / ADR-024 / ADR-025）、
+`make consume-check`（主机，回归）、容器内 `make test-py` 与 `make lint-ruff`。
+
+**真实角色（没有替身）**：真实写侧 `sensoryplex_api.infrastructure.materials.append_material`
+（素材 + 观测 + outbox 同一事务）→ compose 里**常驻**的 `relay` 服务 → 真实 NATS JetStream →
+compose 里**常驻**的 `index` 服务（真 BGE 编码 → 真 Milvus Lite → 检索面同进程）→ 运行中的 api 进程
+`POST /v1/materials:search`（`mode=semantic` 走真 gRPC）。
+
+#### 常驻形态（`make events-up`）
+
+```
+ Container sensoryplex-nats-1 Healthy
+ Container sensoryplex-index-1 Healthy
+ Container sensoryplex-migrate-1 Exited
+ Container sensoryplex-postgres-1 Healthy
+ Container sensoryplex-relay-1 Healthy
+NAME                  IMAGE                   COMMAND                  SERVICE   STATUS
+sensoryplex-index-1   sensoryplex-api:0.1.0   "/app/.venv/bin/pyth…"   index     Up 12 minutes (healthy)
+sensoryplex-relay-1   sensoryplex-api:0.1.0   "/app/.venv/bin/pyth…"   relay     Up 12 minutes (healthy)
+```
+
+`index-ready.json` 的消费块（真机产物）：
+
+```json
+{"command": "serve", "uri": "/workspace/.data/index/milvus.db",
+ "encoder": {"backend": "onnxruntime-1.30.0/CPUExecutionProvider", "dimension": 512,
+             "vector_index_key": "material_text_bge_small_zh_v1_5_d512_v1"},
+ "consume": {"batch": 32, "durable": "sensoryplex-index-sink", "inflight_capacity": 32,
+             "inflight_declared": 32, "inflight_state": "admitted", "resident_tier": "medium",
+             "stream": "sensoryplex-events", "subject": "sensoryplex.events.material.upserted"}}
+```
+
+#### 四条准入路径（relay 容器内实测，逐条对照 ADR-019 §3）
+
+| 输入 | 实测输出 | 退出码 |
+| --- | --- | --- |
+| 变量缺失（`env -u`，真没注入） | `{"batch": 200, "inflight_capacity": 0, "inflight_declared": 200, "inflight_state": "not_injected", "resident_tier": "not_injected", ...}` | 0 |
+| 空串 | `invalid_resident_limit: SENSORYPLEX_EVENT_QUEUE_CAPACITY is set but empty` | 1 |
+| 声明超档（默认 200 vs `medium` 32） | `event_inflight_exceeds_tier_cap: declared=200 tier_capacity=32 tier=medium` | 1 |
+| 声明超档（`small` 16 vs `--batch 64`） | `event_inflight_exceeds_tier_cap: declared=64 tier_capacity=16 tier=small` | 1 |
+| 消费侧默认 `--consume-batch 50` vs `medium` 32 | `event_inflight_exceeds_tier_cap: declared=50 tier_capacity=32 tier=medium` | 1 |
+
+**一条真实后果（本轮发现，不是缺陷）**：两个进程的**内置默认深度**在 `small` / `medium` 档都超标
+（relay 默认 200、消费默认 50，而两档上限是 16 / 32）。所以在注入了 `resident.env` 的机器上必须显式给
+`--batch` / `--consume-batch`；compose 给的是 `${SENSORYPLEX_EVENT_RELAY_BATCH:-16}` 与
+`${SENSORYPLEX_EVENT_CONSUME_BATCH:-32}`。这是**显式失败**而不是静默超限——原来的"默认 200 照跑"
+现在会被一句话挡住。
+
+#### `make event-pipeline-check`（容器内，连跑两次）
+
+| # | 步骤 | 第一次 | 第二次 |
+| --- | --- | --- | --- |
+| 1 | 常驻服务准入对账 + 越界探针 | `relay 档位=medium 上限=32 每轮认领=16；index 消费在飞=32`；越界拒绝 `declared=64 tier_capacity=16 tier=small` | 同左 |
+| 2 | 基线（写入前） | `unindexed_hits=4`（上一次运行留下的陈旧向量） | `unindexed_hits=5` |
+| 3 | 真实写侧落事件 | 2 条事件（顺带清理上次残留 0 行） | 同左 |
+| 4 | 向量落库 | 2 行 `ready`（`milvus://material_text_bge_small_zh_v1_5_d512_v1/emb_…`） | 2 行 `ready` |
+| 5 | HTTP 语义检索 | `hits=['compose_acceptance_<run>_alpha'] index_version=milvus-flat-cosine-v1`，**第一名是相关素材**（排名对，这才是要钉的） | 同左 |
+| 6 | 事实回查挡 stale | `materials=0 unindexed_hits=5`（删除事实后不再返回，陈旧向量如实计数） | 同左 |
+| 7 | 清理与不外泄 | `residual_rows: {}`，状态行/响应无 DSN、主机路径、令牌 | 同左 |
+
+结果行（第二次）：
+
+```json
+{"capacity": 32, "event": "event.pipeline.acceptance", "events": 2, "failures": [], "index_inflight": 32,
+ "mode": "semantic", "query_hits": 1, "relay_inflight": 16, "residual_rows": {}, "tier": "medium",
+ "unindexed_hits_after_cleanup": 5, "unindexed_hits_baseline": 5, "vectors": 2}
+```
+
+`query_hits` 一开始是 **2**（相关素材 + 无关素材都在窗口里），连跑几轮后变成 **1**：检索窗口是
+`limit=5`，而向量库里累积的陈旧向量（每次运行留下 2 条）会把无关素材挤出窗口。**这也正是"相对基线"
+判定与"第一名必须是相关素材"这两条断言存在的理由**——命中条数会随残留漂移，排名与
+`unindexed_hits` 的相对变化不会。
+
+**为什么判定是"相对基线"而不是"绝对为 0"**：向量本体不随事实行删除而消失（ADR-020 §2 的回查挡住了
+"陈旧向量被当成事实返回"，但向量库里的行还在）。脚本因此用**本次运行唯一的批次标记**写文本与查询
+——当前批次的向量必然排进窗口最前——并在通过时如实打印留下了几条。想从干净向量库重跑用
+`./deploy/down-events.sh --volumes`。
+
+**这条残留直接影响产品行为，不只影响验收**：陈旧向量会占满检索窗口（`limit=5`），所以随着累积，
+同一个查询能返回的真实素材条数会变少（其余位置被计入 `unindexed_hits`）。这是**向量 GC 缺失**的
+直接后果，不是验收脚本的假象——向量 GC（按 `material_unit_id` 删除 / 按 `indexed_at` 回收）是独立切片。
+
+#### 回归（容器内）
+
+| 验证 | 结果 |
+| --- | --- |
+| `make test-py` | 契约 **363 passed**（5.25s）+ 集成 **65 passed**（22.48s） |
+| `make lint-ruff` | `ruff check` 全过、`format --check` 161 文件已格式化 |
+| `make check`（收口：ruff + 契约 + 集成 + cargo fmt/clippy/test） | 全过——契约 363 + 集成 65 passed、Rust workspace 94 + 22 + 9 + 1 + 27 项通过（clippy `-D warnings`） |
+| `make consume-check`（主机，带新的档位注入与 4 个新字段） | 6 场景全过 |
+| `make semantic-check`（主机） | 全过，**9.2s**（§10 第 4 条修好后；修之前这一场在场景 2 超时 300s 失败） |
+
+#### 顺带修掉的缺陷（4 条）
+
+1. **契约与集成测试被宿主环境绑架**（真跑出来才看见）：api 容器现在真的配了检索面，于是
+   `Settings(database_url=...)` 的默认值随环境变——`tests/contracts/test_semantic_search_contract.py`
+   与 `tests/integration/test_metadata.py` / `test_semantic_search.py` 里三个"未配置检索面"的用例
+   在容器里立刻变红（`assert 'index:50077' == ''`）。这不是"测试太严"，而是**用例没有自己控制环境**
+   （`Settings` 既读进程环境也读仓库 `.env`）：新增 `tests/conftest.py::bare_settings`
+   （`_env_file=None` + 摘掉 `SENSORYPLEX_INDEX_SEARCH_*`），断言"未配置 / 半配置会被拒绝"的用例改用它。
+2. **空串配置会让 api 拒绝启动**：`${SENSORYPLEX_INDEX_SEARCH_TOKEN:-}` 只能给空串，而
+   `Settings.validate_index_search` 把它读成"配置了一半"（`index_search_endpoint_required`）——
+   任何早于本次改动的 `.env`（`make configure` 生成后不再覆盖）都会让 api 起不来。实测：
+   `docker compose exec -e SENSORYPLEX_INDEX_SEARCH_TOKEN= …` 直接 ValidationError；
+   第一次写 compose 接线时把 api 的终结点**硬编码**成 `index:50077`，把这个陷阱变成了"必然"
+   （终点写死 + 令牌缺省 = 半配置）。现在**空白读成没配**、半配置仍被 `*_required` 挡住，
+   契约测试补了三条断言；两条路径都在容器里复测过（空白 → `endpoint='' token=None` 正常启动；
+   配齐 → `/v1/health` 报 `semantic_search: true`）。
+3. **准入必须落在能被捕获的位置**：`consume_options_of` 原先在 `run_serve` 的 `try` 之外被调用，
+   它新增的准入检查抛 `ResidencyError`（不是 `ConsumerError`）→ 会冒成 traceback 而不是原因码退出。
+  现在参数越界与分级准入共用 `except ResidencyError → SystemExit(code)`。
+
+4. **检索面的配置来源曾经是"venv 放在哪"的函数**（主机上才复现，容器里是绿的）：`pymilvus.settings`
+   在 **import 期**调用 `load_dotenv()`，python-dotenv 从 `pymilvus/settings.py` 所在目录**向上找
+   `.env`**（`__main__` 没有 `__file__` 时退回用 cwd）。于是"读不读得到仓库 `.env`"取决于 venv 路径：
+
+   | 运行位置 | venv | 向上走到仓库根 | `find_dotenv()` | 后果 |
+   | --- | --- | --- | --- | --- |
+   | 主机（`make semantic-check`） | `<repo>/.venv/` | 能 | `/Users/.../SensoryPlex/.env` | 仓库 `.env` 被写进 `os.environ`，令牌"凭空"出现 |
+   | api / index 容器 | `/app/.venv` | 不能 | 空 | 令牌保持缺失 |
+
+   实测（主机，场景 2 的子进程真的红过）：
+
+   ```
+   $ make semantic-check
+   subprocess.TimeoutExpired: Command '[... '-m', 'sensoryplex_index_worker.cli', ... 'serve' ...]'
+   timed out after 300.0 seconds      # 没有 --auth-token 也起来了，说明令牌是"顺手"来的
+   ```
+
+   修法：不给第三方 import 决定配置来源。新增 `services/index-worker/src/sensoryplex_index_worker/environ.py`，
+   在**任何会写 `os.environ` 的 import 之前**取 `BASE_ENVIRON` 快照，`cli` 的令牌、`--uri` /
+   `--database-url` / `--nats-url` 默认值与分级背压准入一律只读快照（准入走
+   `read_event_backpressure(..., environ=BASE_ENVIRON)`）。`relay` 侧不动（它不 import `pymilvus`）。
+   修复后同一台主机、同一条命令：
+
+   ```
+   $ env -u SENSORYPLEX_INDEX_AUTH_TOKEN uv run --frozen python -m sensoryplex_index_worker.cli \
+       --uri /tmp/sp_probe.db --database-url postgresql://placeholder/none serve \
+       --vector-index-key material_text_bge_small_zh_v1_5_d512_v1 --port 60123 \
+       --model-dir /tmp/none --model-file onnx/model_quantized.onnx
+   index_auth_token_required
+   exit=1
+   ```
+
+    契约测试 `tests/contracts/test_index_environ_contract.py`（4 项）把顺序约束钉住：真造一次陷阱
+    （cwd 放 `.env` + `python -c`，dotenv 此时**一定**命中并写进 `os.environ`）并断言 `BASE_ENVIRON`
+   里没有它；另加三项覆盖 `serve` 的 fail-closed、命令行默认值、以及消费准入只读快照。
+   场景 2 里显式摘掉该变量的写法**保留**：那是为了让"操作者自己 export 过令牌"也不影响判定。
+
+   修复后的整场验收（同一台主机）：
+
+    ```
+    $ make semantic-check
+    ...
+    semantic search acceptance: real BGE -> Milvus Lite -> resident surface -> API hydration passed in 9.2s
+    exit=0
+    ```
+
+   排队中的两处一致性改动（同一次修复）：
+
+   - `tests/contracts/test_event_backpressure_contract.py` 里给 `index_cli` 注入档位**必须写进
+     `BASE_ENVIRON`**（注 `os.environ` 已经不起作用）——契约测试自己就是这条语义的第一份证据；
+   - `serve` 的 ready 行（`--out`）从"开端口之后"挪到"消费侧确认之后"再写：文件滞后一点，
+     但"文件说消费在跑"与"消费真的接上了"不再有窗口差。`index` 容器的健康检查仍是 TCP
+     （进程活着且监听），因为它不会被上一轮遗留的 ready 文件骗过。
+
+#### 仍未验证（不得当成完成）
+
+- 检索面停机时的降级路径（`semantic_index_unreachable`）由 `tests/integration/test_semantic_search.py`
+  覆盖，**不在**本切片的容器内闭环里；
+- 服务端 Milvus 形态（消费与检索拆成两个进程）、多副本消费（第二个 index 进程）、跨主机 NATS 集群、
+  `ack_wait` 到期后的自动重投：均未验收；
+- 吞吐与延迟曲线未测（本切片接的是**准入**，不是吞吐达标）；
+- 向量 GC 未做（见上）；
+- `golden_path_verified` 仍恒为 false：真实媒体端到端（真实视频 → Runtime/Timeline → 事件）仍未联调。

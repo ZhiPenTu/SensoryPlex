@@ -61,6 +61,7 @@ TEST_NATS_URL ?= $(if $(filter container,$(EXEC_MODE)),nats://nats:4222,nats://1
 .PHONY: stream-up stream-down stream-status stream-logs live-check model-check asr-check ocr-check embed-check index-check semantic-check parallelism-check plugin-artifact capability-check accelerator-check
 .PHONY: outbox-check outbox-run
 .PHONY: consume-check
+.PHONY: event-pipeline-check events-up events-down events-logs
 .PHONY: media-test resident-probe resident-install resident-uninstall resident-status
 .PHONY: lint-ruff test-py test-contracts test-integration proto-generate plugin-artifact-check
 
@@ -256,6 +257,19 @@ stream-status:
 stream-logs:
 	docker compose -f deploy/compose/docker-compose.stream.yml logs --tail 100 mediamtx
 
+# ── 事件链路常驻（ADR-024 / ADR-025 / ADR-027） ──────────────────────────────
+# relay（outbox → JetStream）与 index（消费 → 向量 → 检索面）在 compose 里属于 `events`
+# profile：`make up` / `make events-up` 之外的命令不会拉起它们，避免默认栈拖着 BGE 与向量库。
+# 主机侧只负责起停；链路验收在容器内执行（`make event-pipeline-check`）。
+events-up:
+	./deploy/up-events.sh
+
+events-down:
+	./deploy/down-events.sh
+
+events-logs:
+	$(COMPOSE) --profile events logs -f --tail 200 relay index
+
 # ── 演示账号种子（一次性） ────────────────────────────────────────────────
 # 在 api 容器内用 sensoryplex-user 创建 demo 账户，密码落到 /workspace/.data/demo-password，
 # 随后主机读这个文件并写入 .env 的 SENSORYPLEX_DEMO_PASSWORD，再 ./deploy/up.sh api 让
@@ -398,6 +412,15 @@ outbox-run:
 # （理由同 semantic-check / index-check）。
 consume-check:
 	$(PY_HOST) tools/verify_index_consume.py $(if $(DATABASE_URL),--database-url "$(DATABASE_URL)",) $(if $(NATS_URL),--nats-url "$(NATS_URL)",) $(if $(MODEL_DIR),--model-dir "$(MODEL_DIR)",) $(if $(PROVIDER),--provider "$(PROVIDER)",)
+
+# ── 事件链路常驻的容器内闭环验收（ADR-027，接 ADR-019 / ADR-024 / ADR-025） ──
+# 证据链：真实写侧落 outbox → **compose 里常驻的** relay 发到真 JetStream → **compose 里常驻的**
+# index 消费成 embedding_record(ready) → 真 Milvus Lite → api 的 `mode=semantic` 经真 gRPC 命中。
+# 在 api 容器内执行：真 PostgreSQL、真 JetStream、真向量库都在 compose 里，容器里没有"退回主机"的理由。
+# 与 consume-check 的分工：那个验"单进程内的消费正确性"（含 fail-stop / 重放 / 启动失败），
+# 这个验"两个常驻服务真的在 compose 里把链路跑通了"，并用真实 HTTP 语义检索收口。
+event-pipeline-check:
+	$(EXEC_API) $(PY_API) tools/verify_event_pipeline.py
 
 # ── 模型 worker 分级并发上限验收（M8 剩余，ADR-021） ────────────────────────
 # 上游必须是**真实** `ocr_blocks` 观测：每个 MEDIA 跑一次未改动的 tools/verify_ocr.py 真实链路

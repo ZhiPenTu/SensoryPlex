@@ -74,6 +74,15 @@ services:
       SENSORYPLEX_API_TOKEN: ${SENSORYPLEX_API_TOKEN:?Run make configure}
       SENSORYPLEX_PRINCIPAL: ${SENSORYPLEX_PRINCIPAL:-local-developer}
       PYTHONPATH: /workspace
+      # 语义检索的检索面（ADR-023 / ADR-027）：容器内必须用 compose 服务名（`index:50077`），
+      # 不能用 `.env` 里给主机工具用的回环地址——容器里的 127.0.0.1 是它自己。
+      # 两个变量都取自 `.env`（`.env.example` 里已给 `index:50077` + 随机令牌）：**都不给**时
+      # api 正常启动并把 semantic_search 报成显式不可用（ADR-023 的语义），**只给一个**才拒绝启动。
+      # 这里刻意不写死终结点：老 `.env` 由 `make configure` 生成且不会被覆盖，写死会变成
+      # "令牌缺失 → api 拒绝启动 → 整个栈起不来"，而沉默的 500 比"显式不可用"难查得多。
+      SENSORYPLEX_INDEX_SEARCH_ENDPOINT: ${SENSORYPLEX_INDEX_SEARCH_ENDPOINT:-}
+      SENSORYPLEX_INDEX_SEARCH_TOKEN: ${SENSORYPLEX_INDEX_SEARCH_TOKEN:-}
+      SENSORYPLEX_INDEX_VECTOR_INDEX_KEY: ${SENSORYPLEX_INDEX_VECTOR_INDEX_KEY:-material_text_bge_small_zh_v1_5_d512_v1}
       # 授权样本挂载点，media-* / handoff-check / model-check / asr-check 在容器内读取。
       HOST_MEDIA_DIR: /host-media
       # 演示账号：让登录页出现「填入演示账号」按钮。
@@ -133,6 +142,128 @@ services:
       interval: 10s
       timeout: 3s
       retries: 6
+    restart: unless-stopped
+
+  # ── 事件链路常驻（ADR-024 / ADR-025 / ADR-027）：outbox → JetStream → 消费 → 向量 → 检索面 ──
+  # 归在 `events` profile：`./deploy/up.sh` 与 `make up` **不会**拉起它们（默认栈保持轻量），
+  # 由 `./deploy/up-events.sh` 显式开启。两个服务与 api 共用同一份镜像与仓库 bind mount：
+  # workspace 依赖（sensoryplex-relay / sensoryplex-index-worker）就在这份镜像里。
+  relay:
+    profiles: ["events"]
+    image: sensoryplex-api:0.1.0
+    build:
+      context: ../..
+      dockerfile: services/api/Dockerfile
+    # 每轮认领深度（`--batch`）必须 <= 本档事件链路上限，否则进程按
+    # `event_inflight_exceeds_tier_cap` 拒绝启动（ADR-027）；这里两份值都来自 .env。
+    command:
+      - /app/.venv/bin/python
+      - -m
+      - sensoryplex_relay.cli
+      - --batch
+      - ${SENSORYPLEX_EVENT_RELAY_BATCH:-16}
+      - --interval-s
+      - "1.0"
+      - --status-out
+      - /workspace/.data/events/relay-status.json
+    environment:
+      SENSORYPLEX_DATABASE_URL: postgresql://sensoryplex:${POSTGRES_PASSWORD}@postgres:5432/sensoryplex
+      SENSORYPLEX_NATS_URL: nats://nats:4222
+      # 分级背压（ADR-019 §2/§4）：档位与上限只从 .env 来，进程只读不猜。
+      SENSORYPLEX_RESIDENT_TIER: ${SENSORYPLEX_RESIDENT_TIER:-medium}
+      SENSORYPLEX_EVENT_QUEUE_CAPACITY: ${SENSORYPLEX_EVENT_QUEUE_CAPACITY:-32}
+      PYTHONPATH: /workspace
+    working_dir: /workspace
+    volumes:
+      - type: bind
+        source: ${REPO_ROOT:-../../}
+        target: /workspace
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      nats: {condition: service_started}
+    # 健康 = 状态行还在滚动（每轮都会写一份）：停在那里的 relay 不该被读成"在跑"。
+    healthcheck:
+      test:
+        - CMD
+        - /app/.venv/bin/python
+        - -c
+        - |-
+          import pathlib, time
+          path = pathlib.Path("/workspace/.data/events/relay-status.json")
+          raise SystemExit(0 if path.is_file() and time.time() - path.stat().st_mtime < 15 else 1)
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    restart: unless-stopped
+
+  # 常驻消费 + 检索面同进程：Milvus Lite 的数据目录是进程独占的（ADR-020 §7），
+  # 所以"事件驱动写入的向量"必须由持有向量库的那个进程自己消费出来（ADR-025 §1）。
+  index:
+    profiles: ["events"]
+    image: sensoryplex-api:0.1.0
+    build:
+      context: ../..
+      dockerfile: services/api/Dockerfile
+    command:
+      - /app/.venv/bin/python
+      - -m
+      - sensoryplex_index_worker.cli
+      - serve
+      - --vector-index-key
+      - ${SENSORYPLEX_INDEX_VECTOR_INDEX_KEY:-material_text_bge_small_zh_v1_5_d512_v1}
+      # 跨容器接入必须显式开端口；令牌由 SENSORYPLEX_INDEX_AUTH_TOKEN 提供（缺失即拒绝启动）。
+      - --bind
+      - 0.0.0.0
+      - --port
+      - "50077"
+      # BGE 权重随仓库 bind mount 进来（`.data/models/` 被 git 忽略，绝不入库）；
+      # 目录缺失时进程按 `model_dir_required` / `model_file_not_found` 显式失败，不联网下载。
+      - --model-dir
+      - /workspace/.data/models/bge-small-zh-v1.5
+      - --model-file
+      - onnx/model_quantized.onnx
+      - --consume
+      - --consume-batch
+      - ${SENSORYPLEX_EVENT_CONSUME_BATCH:-32}
+      - --consume-status-out
+      - /workspace/.data/events/index-status.json
+      - --out
+      - /workspace/.data/events/index-ready.json
+    environment:
+      SENSORYPLEX_INDEX_DATABASE_URL: postgresql://sensoryplex:${POSTGRES_PASSWORD}@postgres:5432/sensoryplex
+      SENSORYPLEX_NATS_URL: nats://nats:4222
+      # 向量库落在仓库 bind mount 下的 `.data/index/`：命名卷的挂载点是 root 所有，而本容器以
+      # 非 root 用户运行（写不进去就是 PermissionError 而不是可读的原因码）。`.data/` 已被
+      # .gitignore 排除；flock 是进程级的，万一有第二个进程打开同一个文件，它会显式报
+      # `vector_store_locked` 而不是两份写入。
+      SENSORYPLEX_MILVUS_URI: /workspace/.data/index/milvus.db
+      SENSORYPLEX_INDEX_AUTH_TOKEN: ${SENSORYPLEX_INDEX_AUTH_TOKEN:-}
+      SENSORYPLEX_RESIDENT_TIER: ${SENSORYPLEX_RESIDENT_TIER:-medium}
+      SENSORYPLEX_EVENT_QUEUE_CAPACITY: ${SENSORYPLEX_EVENT_QUEUE_CAPACITY:-32}
+      PYTHONPATH: /workspace
+    working_dir: /workspace
+    volumes:
+      - type: bind
+        source: ${REPO_ROOT:-../../}
+        target: /workspace
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      nats: {condition: service_started}
+    # 健康 = 进程活着并已在监听：端口在**编码器与向量库契约之后**才开（模型起不来 / collection
+    # 漂移都开不了端口），但**早于**消费侧接上。所以"能连上"只说"检索面就绪"；"消费真的接上了"
+    # 的凭据是 ready 行（`--out`，在 `runner.wait_ready` 确认之后才写，见 cli.py）。
+    healthcheck:
+      test:
+        - CMD
+        - /app/.venv/bin/python
+        - -c
+        - |-
+          import socket
+          socket.create_connection(("127.0.0.1", 50077), 3).close()
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
     restart: unless-stopped
 
 volumes:

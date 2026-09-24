@@ -117,6 +117,10 @@ ADR-024 §9 把这条边界记成"不只是接线问题"，理由是：上游 ob
 `received` / `consumed` / `skipped` / `failed` / `embedded_total` / `consumed_total` /
 `duplicate_total` / `skipped_total` / `failed_total` / `error_code` / `error_detail`。
 
+> **修订（[ADR-027](ADR-027-事件链路分级背压与容器化常驻.md)，2026-09-24）：** 字段集合现在是 **20 项**
+> ——分级背压准入接上后追加 `inflight_state` / `inflight_declared` / `inflight_capacity` /
+> `resident_tier`（取值只有状态字符串、整数与档位名，`error_detail` 的口径不变）。
+
 - **只有计数、标识与稳定原因码**：不放载荷、文本、向量、令牌、DSN 或主机路径；`error_detail`
   只放稳定原因码与异常**类名**（异常文本可能带地址、DSN 或载荷片段）；
 - `--consume-status-out` 是**最新快照**（临时文件 + `rename` 原子替换），stdout 才是逐行流。
@@ -168,10 +172,16 @@ ADR-024 §9 把这条边界记成"不只是接线问题"，理由是：上游 ob
 - **没有 dead-letter，也没有按原因分流**：重投到上限就 fail-stop，事件留在队列里等人处理；
   元数据库不可用（`psycopg.Error`）走的也是 nak，同样会撞到 `max_deliver`；
 - **`ack_wait` 到期后的自动重投路径未单独验收**（验收走的是 nak 路径）；
-- **消费侧与 relay 都还没有进 compose**：常驻形态靠 `make outbox-run` / `serve --consume` 显式起；
+- ~~**消费侧与 relay 都还没有进 compose**：常驻形态靠 `make outbox-run` / `serve --consume` 显式起；~~
+  **已由 [ADR-027](ADR-027-事件链路分级背压与容器化常驻.md) 收口**（`events` profile 里的 `relay` /
+  `index` 两个服务 + `make event-pipeline-check` 的容器内闭环验收）；
 - **只支持 `material.upserted` 一种事件**；observation 级的事件契约仍未定义（本切片证明它不必要，
   但"未来要不要"是另一个问题）；
-- **吞吐与背压未测**：单批串行、在飞恒为 1，ADR-019 的队列上限没有接到这一层，也没有背压指标；
+- ~~**吞吐与背压未测**：单批串行、在飞恒为 1，ADR-019 的队列上限没有接到这一层，也没有背压指标；~~
+  **部分收口（[ADR-027](ADR-027-事件链路分级背压与容器化常驻.md)）**：ADR-019 的队列上限已作为
+  **准入**接到两层（`--batch` / `--consume-batch` 越本档上限即拒绝启动，状态行带
+  `inflight_state` / `inflight_declared` / `inflight_capacity` / `resident_tier`）。
+  **仍未测**：吞吐与延迟曲线（本切片接的是准入，不是吞吐达标）；
 - **真实媒体端到端未联调**：真实视频 → Runtime/Timeline → metadata writer 的 outbox 那条路仍未验收，
   所以"真实素材被抽帧后自动产出向量并检索到"还没有证据；
 - `golden_path_verified` 仍恒为 false。

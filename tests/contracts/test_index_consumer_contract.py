@@ -14,6 +14,7 @@ import pytest
 from edge_material_sdk import PluginError
 from edge_material_sdk.generated.common.v1.common_pb2 import EventEnvelope
 from sensoryplex_index_worker import consumer
+from sensoryplex_relay import residency
 
 STREAM = "sensoryplex-events"
 PREFIX = "sensoryplex.events"
@@ -300,10 +301,15 @@ def test_delivered_count_reads_the_jetstream_metadata():
 
 
 def test_status_document_carries_counts_and_no_payload():
-    options = consumer.ConsumerOptions()
+    # 在飞深度（本档上限）必须 >= 声明值，否则状态行是"准入失败"而不是一份真实状态行。
+    options = consumer.ConsumerOptions(batch=16)
     document = consumer.status_document(
         cycle=2,
         options=options,
+        backpressure=residency.read_event_backpressure(
+            options.batch,
+            environ={residency.TIER_VAR: "small", residency.CAPACITY_VAR: "16"},
+        ),
         received=3,
         consumed=2,
         skipped=1,
@@ -330,11 +336,17 @@ def test_status_document_carries_counts_and_no_payload():
         "failed_total",
         "error_code",
         "error_detail",
+        # 分级背压（ADR-027）：四个字段一起出现，缺一个都说明准入没被接上。
+        "inflight_state",
+        "inflight_declared",
+        "inflight_capacity",
+        "resident_tier",
     }
     text = json.dumps(document, ensure_ascii=False)
     for leaked in ("财务", "material:m1", "postgresql://", "/Users/", "vector", "blocks"):
         assert leaked not in text
     assert document["event"] == "consume.status"
+    assert document["inflight_state"] == "admitted"
 
 
 def test_json_line_is_stable_for_log_grepping():

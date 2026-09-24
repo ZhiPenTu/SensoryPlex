@@ -117,6 +117,22 @@
 
 - `docker compose logs -f --tail 200`；不带参数等于跟踪所有服务。
 
+### `./deploy/up-events.sh` / `./deploy/down-events.sh`（事件链路常驻，ADR-027）
+
+- 只操作 compose 的 `events` profile 里的两个服务：`relay`（outbox → JetStream）与 `index`
+  （消费 → 向量 → 检索面）。`./deploy/up.sh` **不**拉起它们。
+- `up-events.sh`：前置检查 `.env` 与 BGE 权重（`.data/models/bge-small-zh-v1.5/onnx/model_quantized.onnx`），
+  缺失就打印从 HF 缓存固化的命令并以非零退出（**不联网下载**）；然后
+  `docker compose --profile events up -d --wait relay index`。
+- `down-events.sh [--volumes]`：用 `rm -sf relay index` 只收这两个服务（不会拆掉 api/postgres）；
+  `--volumes` 额外删 `.data/index`（向量库目录）。
+- 等效 make 目标：`make events-up` / `make events-down` / `make events-logs`；链路验收是
+  `make event-pipeline-check`（**容器内**），单进程内的消费验收是 `make consume-check`（**主机**）。
+- 检索面 `index:50077` **只**在 compose 网络内暴露（api 经它做 `mode=semantic`），主机不监听该端口。
+- 深度上限来自 `.env` 的 `SENSORYPLEX_EVENT_QUEUE_CAPACITY`（档位）与
+  `SENSORYPLEX_EVENT_RELAY_BATCH` / `SENSORYPLEX_EVENT_CONSUME_BATCH`：**必须 <= 上限**，
+  否则两个服务在连任何东西之前就按 `event_inflight_exceeds_tier_cap` 拒绝启动（不夹取、不降级）。
+
 ## 演示账号
 
 `apps/console` 登录页底部在 **demo 模式**下会出现「填入演示账号」按钮。开启方式：

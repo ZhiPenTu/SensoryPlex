@@ -58,6 +58,7 @@ class Tier:
     min_bytes: int
     max_bytes: int | None
     media_queue_capacity: int
+    event_queue_capacity: int
     handoff_retained_limit: int
     handoff_arena_bytes: int
     model_parallelism: int
@@ -87,6 +88,7 @@ TIERS: tuple[Tier, ...] = (
         min_bytes=16 * GIB,
         max_bytes=24 * GIB,
         media_queue_capacity=16,
+        event_queue_capacity=16,
         handoff_retained_limit=16,
         handoff_arena_bytes=32 * MIB,
         model_parallelism=1,
@@ -97,6 +99,7 @@ TIERS: tuple[Tier, ...] = (
         min_bytes=24 * GIB,
         max_bytes=32 * GIB,
         media_queue_capacity=32,
+        event_queue_capacity=32,
         handoff_retained_limit=32,
         handoff_arena_bytes=64 * MIB,
         model_parallelism=2,
@@ -107,6 +110,7 @@ TIERS: tuple[Tier, ...] = (
         min_bytes=32 * GIB,
         max_bytes=64 * GIB,
         media_queue_capacity=64,
+        event_queue_capacity=64,
         handoff_retained_limit=64,
         handoff_arena_bytes=128 * MIB,
         model_parallelism=3,
@@ -117,6 +121,7 @@ TIERS: tuple[Tier, ...] = (
         min_bytes=64 * GIB,
         max_bytes=None,
         media_queue_capacity=128,
+        event_queue_capacity=128,
         handoff_retained_limit=128,
         handoff_arena_bytes=256 * MIB,
         model_parallelism=4,
@@ -255,6 +260,9 @@ def tier_values(tier: Tier) -> dict[str, str]:
     return {
         "TIER": tier.name,
         "MEDIA_QUEUE_CAPACITY": str(tier.media_queue_capacity),
+        # 事件链路（relay 每轮认领 / 消费在飞）的深度上限；今天与媒体队列同值——没有证据说明
+        # 两者应该不同，但它是**独立字段**，以后要分化就改这里，而不是悄悄复用媒体队列那个数。
+        "EVENT_QUEUE_CAPACITY": str(tier.event_queue_capacity),
         "HANDOFF_RETAINED_LIMIT": str(tier.handoff_retained_limit),
         "HANDOFF_ARENA_BYTES": str(tier.handoff_arena_bytes),
         "MODEL_PARALLELISM": str(tier.model_parallelism),
@@ -270,6 +278,7 @@ def resident_env_text(tier: Tier, probe: MemoryProbe, runtime_addr: str) -> str:
         f"SENSORYPLEX_UNIFIED_MEMORY_BYTES={probe.memory_bytes}",
         f"SENSORYPLEX_MEMORY_SOURCE={probe.source}",
         f"SENSORYPLEX_MEDIA_QUEUE_CAPACITY={tier.media_queue_capacity}",
+        f"SENSORYPLEX_EVENT_QUEUE_CAPACITY={tier.event_queue_capacity}",
         f"SENSORYPLEX_HANDOFF_RETAINED_LIMIT={tier.handoff_retained_limit}",
         f"SENSORYPLEX_HANDOFF_ARENA_BYTES={tier.handoff_arena_bytes}",
         f"SENSORYPLEX_MODEL_PARALLELISM={tier.model_parallelism}",
@@ -417,6 +426,8 @@ def summarize(tier: Tier, probe: MemoryProbe, runtime_addr: str) -> list[str]:
         f"handoff retained_limit={tier.handoff_retained_limit}"
         f"（单一种类 {tier.handoff_retained_limit // 2} 条）、"
         f"arena={tier.handoff_arena_bytes // MIB} MiB",
+        f"事件链路：每进程在飞上限 event_queue_capacity={tier.event_queue_capacity}"
+        "（relay 每轮认领 / 消费未 ack 深度，准入见 ADR-027）",
         f"模型：并发上限 {tier.model_parallelism} 个 worker，预算 {budget / GIB:.1f} GiB；"
         f"manifest 声明合计 {declared_total / GIB:.1f} GiB（声明值，不是实测 RSS）",
         f"运行控制端点 {runtime_addr}",

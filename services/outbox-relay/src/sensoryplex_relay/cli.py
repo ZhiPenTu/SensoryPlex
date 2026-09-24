@@ -28,6 +28,7 @@ from .relay import (
     json_line,
     run_relay,
 )
+from .residency import ResidencyError, read_event_backpressure
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -97,6 +98,12 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(error.code) from error
     if not arguments.database_url:
         raise SystemExit("database_url_required")
+    try:
+        # 分级背压准入（ADR-027）：每轮认领深度超本档上限就**不启动**——与参数越界同一位置，
+        # 都在连数据库/NATS 之前；夹取会让配置里的数与真实在飞的数长期不一致。
+        backpressure = read_event_backpressure(options.batch)
+    except ResidencyError as error:
+        raise SystemExit(error.code) from error
     if arguments.describe:
         print(
             json_line(
@@ -107,6 +114,7 @@ def main(argv: list[str] | None = None) -> int:
                     "subject_prefix": options.subject_prefix,
                     "batch": options.batch,
                     "max_batches": options.max_batches,
+                    **backpressure.document(),
                 }
             )
         )
@@ -122,6 +130,7 @@ def main(argv: list[str] | None = None) -> int:
                 database_url=arguments.database_url,
                 nats_url=arguments.nats_url,
                 options=options,
+                backpressure=backpressure,
                 emit=emit,
                 stop=stop,
             )

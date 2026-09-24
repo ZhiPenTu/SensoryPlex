@@ -40,6 +40,7 @@ from .contract import (
     stream_contract_diff,
     subject_for,
 )
+from .residency import EventBackpressure
 
 # 事件总线契约（stream / subject / 保留策略 / envelope 对账）只在 `contract.py` 一处定义，
 # 发布端与消费端取的是同一份常量。这里 import 进本模块，让既有读者与测试继续用
@@ -174,6 +175,7 @@ def status_document(
     *,
     cycle: int,
     options: RelayOptions,
+    backpressure: EventBackpressure,
     claimed: int,
     published: int,
     failed: int,
@@ -199,6 +201,8 @@ def status_document(
         "error_code": error_code,
         # 只放异常**类名**：异常文本可能带地址、DSN 或载荷片段。
         "error_detail": error_detail,
+        # 分级背压（ADR-027）：本进程每轮认领深度的准入结论（声明值 / 上限 / 档位）。
+        **backpressure.document(),
     }
 
 
@@ -251,7 +255,13 @@ async def relay_cycle(conn, js, options: RelayOptions, totals: dict) -> dict:
 
 
 async def run_relay(
-    *, database_url: str, nats_url: str, options: RelayOptions, emit, stop=None
+    *,
+    database_url: str,
+    nats_url: str,
+    options: RelayOptions,
+    backpressure: EventBackpressure,
+    emit,
+    stop=None,
 ) -> int:
     """常驻（或 `max_batches` 轮）循环；返回退出码，失败原因写在状态行里。"""
     import nats
@@ -272,6 +282,7 @@ async def run_relay(
                     "interval_s": options.interval_s,
                     "storage": "file",
                     "pending": pending_stats(conn)["pending"],
+                    **backpressure.document(),
                 }
             )
             cycle = 0
@@ -296,6 +307,7 @@ async def run_relay(
                     status_document(
                         cycle=cycle,
                         options=options,
+                        backpressure=backpressure,
                         claimed=outcome["claimed"],
                         published=outcome["published"],
                         failed=outcome["failed"],

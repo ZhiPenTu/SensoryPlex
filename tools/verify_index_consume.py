@@ -32,6 +32,10 @@
 - 启动即失败：stream 缺失（`event_stream_missing` 且**绝不**自动建流）、durable 契约漂移
   （`event_consumer_contract_mismatch`）、NATS 不可达（`nats_unreachable`）都必须在接上之前
   以退出码 1 失败——半启动的常驻进程是最难排查的失败形态；
+- 分级背压准入（ADR-027）：本脚本给消费侧**显式注入**一档（`large`），就绪行与状态行的
+  `inflight_state` 都必须是 `admitted` 且带上真实的上限数字；发布侧在本脚本被显式摘掉档位
+  变量，因此必须诚实地报 `not_injected`（`inflight_capacity=0`）——"没注入"与"注入后通过"
+  是两种不同结论，同一个产物里各出现一次；
 - 不外泄：状态行与就绪行里没有 DSN、主机路径、素材文本、令牌或向量库引用。
 
 刻意不做的事（未验证边界，见 ADR-025 的"未验证"一节）：不验服务端 Milvus 形态下的多进程
@@ -42,6 +46,7 @@
 import argparse
 import asyncio
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -67,7 +72,10 @@ from psycopg.conninfo import make_conninfo  # noqa: E402
 from sensoryplex_api.infrastructure import materials as api_materials  # noqa: E402
 from sensoryplex_api.settings import Settings  # noqa: E402
 from sensoryplex_index_worker import consumer  # noqa: E402
+from sensoryplex_relay import residency  # noqa: E402
+from sensoryplex_relay.relay import DEFAULT_BATCH as RELAY_DEFAULT_BATCH  # noqa: E402
 
+from tools import macos_resident  # noqa: E402
 from tools.migrate import migrate  # noqa: E402
 from tools.verify_embed import DEFAULT_MODEL_DIR, DEFAULT_MODEL_FILE  # noqa: E402
 from tools.verify_index import derive_database_url, describe_target  # noqa: E402
@@ -88,6 +96,11 @@ UPSTREAM_MODEL = "acceptance-upstream-text"
 KEY = Settings(database_url="postgresql://placeholder/none").index_vector_index_key
 DIMENSION = int(KEY.rsplit("_d", 1)[1].split("_", 1)[0])
 SURFACE_TOKEN = "index-consume-acceptance-token-0123456789abcdef"
+# 分级背压准入（ADR-027）：本脚本**显式注入**一次档位，让"准入通过"这件事有真实执行证据，
+# 而不是"没注入所以没判"的空过。档位数值只从 `tools/macos_resident.py` 的分级表取；
+# 消费侧"在飞未 ack"的深度就是 `--consume-batch` 的默认值，必须落在本档上限之内。
+ACCEPTANCE_TIER = next(tier for tier in macos_resident.TIERS if tier.name == "large")
+ACCEPTANCE_INFLIGHT = consumer.DEFAULT_BATCH
 UNREACHABLE_NATS = "nats://127.0.0.1:1"
 CLI_TIMEOUT_S = 900.0
 STATUS_TIMEOUT_S = 300.0
@@ -118,9 +131,30 @@ STATUS_FIELDS = frozenset(
         "failed_total",
         "error_code",
         "error_detail",
+        # 分级背压（ADR-027）：只放状态串、档位名与两个数字。
+        "inflight_state",
+        "inflight_declared",
+        "inflight_capacity",
+        "resident_tier",
     }
 )
 LEAK_NEEDLES = ("postgresql://", "/Users/", "password", "Bearer", SURFACE_TOKEN, "milvus://")
+
+
+def residency_environ(tier: macos_resident.Tier | None) -> dict[str, str]:
+    """给子进程的环境：注入档位就是 `admitted`，摘掉就是 `not_injected`。
+
+    摘掉而不是"随宿主环境"：开发者终端里若加载过 `resident.env`，发布这一跳默认的
+    `--batch 200` 会撞上任何一档上限而拒绝启动——验收结论不能取决于跑验收的那个 shell。
+    """
+
+    environ = dict(os.environ)
+    environ.pop(residency.TIER_VAR, None)
+    environ.pop(residency.CAPACITY_VAR, None)
+    if tier is not None:
+        environ[residency.TIER_VAR] = tier.name
+        environ[residency.CAPACITY_VAR] = str(tier.event_queue_capacity)
+    return environ
 
 
 # ── 事实落库：真实写侧（素材 + 观测 + outbox 同一个事务） ────────────────────
@@ -264,13 +298,20 @@ def run_cli(arguments: list[str], expected_exit: int, failures: list[str], *, la
 def run_relay(
     arguments: list[str], expected_exit: int, failures: list[str], *, label: str
 ) -> list[dict]:
-    """跑一次真实 relay 进程，把它打的 JSON 行解析回来。"""
+    """跑一次真实 relay 进程，把它打的 JSON 行解析回来。
+
+    发布这一跳在本脚本里**钉死**为 `not_injected`（显式摘掉档位变量）：relay 的 `--batch`
+    默认 200 超出所有档位，注入档位会让它按准入拒绝启动；relay 侧的 `admitted` 路径由
+    `tests/contracts/test_event_backpressure_contract.py` 与容器内的
+    `make event-pipeline-check` 各自负责。
+    """
     completed = subprocess.run(
         [sys.executable, "-m", RELAY_MODULE, *arguments],
         capture_output=True,
         text=True,
         cwd=str(ROOT),
         timeout=CLI_TIMEOUT_S,
+        env=residency_environ(None),
     )
     documents: list[dict] = []
     for line in completed.stdout.splitlines():
@@ -356,6 +397,7 @@ def surface_process(
     nak_delay_s: float | None = None,
     connect_timeout_s: float | None = None,
     consume_idle_exit: int | None = None,
+    tier: macos_resident.Tier | None = ACCEPTANCE_TIER,
 ) -> Process:
     command = [
         sys.executable,
@@ -403,7 +445,8 @@ def surface_process(
         command += ["--connect-timeout-s", str(connect_timeout_s)]
     if consume_idle_exit is not None:
         command += ["--consume-idle-exit", str(consume_idle_exit)]
-    process = Process(label, command)
+    # 消费侧带档位（默认 `large`），准入结论必须是 `admitted` 而不是 `not_injected`。
+    process = Process(label, command, env=residency_environ(tier))
     process.start()
     return process
 
@@ -559,6 +602,13 @@ def scenario_event_driven(
         "JetStream does not hold exactly the published events",
         failures,
     )
+    check(
+        status.get("inflight_state") == residency.NOT_INJECTED
+        and status.get("inflight_declared") == RELAY_DEFAULT_BATCH
+        and status.get("inflight_capacity") == 0,
+        f"the publishing hop did not report the honest not_injected state: {status}",
+        failures,
+    )
 
     port = free_port()
     out = workspace / "consume-surface.json"
@@ -593,6 +643,14 @@ def scenario_event_driven(
             "the resident consumer reported a bounded idle exit",
             failures,
         )
+        check(
+            consume_block.get("inflight_state") == residency.ADMITTED
+            and consume_block.get("inflight_declared") == ACCEPTANCE_INFLIGHT
+            and consume_block.get("inflight_capacity") == ACCEPTANCE_TIER.event_queue_capacity
+            and consume_block.get("resident_tier") == ACCEPTANCE_TIER.name,
+            f"the consuming hop did not report the injected tier admission: {consume_block}",
+            failures,
+        )
         release_id = str((ready.get("encoder") or {}).get("release_id", ""))
         check(bool(release_id), f"the surface reported no encoder identity: {ready}", failures)
 
@@ -614,6 +672,14 @@ def scenario_event_driven(
         check(
             set(final) == STATUS_FIELDS,
             f"the status line shape drifted: {sorted(final)}",
+            failures,
+        )
+        check(
+            final.get("inflight_state") == residency.ADMITTED
+            and final.get("inflight_declared") == ACCEPTANCE_INFLIGHT
+            and final.get("inflight_capacity") == ACCEPTANCE_TIER.event_queue_capacity
+            and final.get("resident_tier") == ACCEPTANCE_TIER.name,
+            f"the status line does not carry the admitted tier: {final}",
             failures,
         )
 

@@ -44,6 +44,7 @@ from sensoryplex_relay.contract import (
     require_stream,
     subject_for,
 )
+from sensoryplex_relay.residency import EventBackpressure
 
 from . import records
 from .errors import IndexContractError, VectorStoreError
@@ -492,6 +493,7 @@ async def consume_loop(
     index,
     encoder,
     emit,
+    backpressure: EventBackpressure,
     stop=None,
 ) -> ConsumeExit:
     """常驻（或 `idle_exit_cycles` 轮）消费循环；每条消息的 ack/nak 都有依据。"""
@@ -580,6 +582,7 @@ async def consume_loop(
                 status_document(
                     cycle=cycle,
                     options=options,
+                    backpressure=backpressure,
                     received=received,
                     consumed=cycle_consumed,
                     skipped=cycle_skipped,
@@ -617,6 +620,7 @@ def status_document(
     *,
     cycle: int,
     options: ConsumerOptions,
+    backpressure: EventBackpressure,
     received: int,
     consumed: int,
     skipped: int,
@@ -645,6 +649,8 @@ def status_document(
         "error_code": error_code,
         # 只放稳定原因码与异常**类名**：异常文本可能带地址、DSN 或载荷片段。
         "error_detail": error_detail,
+        # 分级背压（ADR-027）：本进程"在飞未 ack 的深度上限"是准入的结论，不是声明值。
+        **backpressure.document(),
     }
 
 
@@ -666,6 +672,7 @@ class ConsumerRunner:
         database_url: str,
         nats_url: str,
         options: ConsumerOptions,
+        backpressure: EventBackpressure,
         index,
         encoder,
         emit,
@@ -673,6 +680,7 @@ class ConsumerRunner:
     ):
         options.validate()
         self.options = options
+        self._backpressure = backpressure
         self.nats_url = nats_url
         self.exit = ConsumeExit()
         self.error: Exception | None = None
@@ -727,6 +735,7 @@ class ConsumerRunner:
                 "batch": self.options.batch,
                 "max_deliver": self.options.max_deliver,
                 "idle_exit_cycles": self.options.idle_exit_cycles,
+                **self._backpressure.document(),
             }
         )
         self._startup.set()
@@ -736,6 +745,7 @@ class ConsumerRunner:
                 subscription=subscription,
                 database_url=self._database_url,
                 options=self.options,
+                backpressure=self._backpressure,
                 index=self._index,
                 encoder=self._encoder,
                 emit=self._emit,
