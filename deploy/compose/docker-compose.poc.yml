@@ -30,6 +30,11 @@ services:
     command: ["/app/.venv/bin/python", "tools/migrate.py"]
     environment:
       SENSORYPLEX_DATABASE_URL: postgresql://sensoryplex:${POSTGRES_PASSWORD}@postgres:5432/sensoryplex
+    working_dir: /workspace
+    volumes:
+      - type: bind
+        source: ${REPO_ROOT:-../../}
+        target: /workspace
     depends_on:
       postgres: {condition: service_healthy}
     restart: "no"

@@ -2641,3 +2641,50 @@ JetStream、真实 Node Agent 生命周期或 `Process` 调用。`pipeline_publi
 - `make node-check`：多节点拓扑 6 大场景全绿（`exit 0`）；
 - `make test-py`：455 个单元、契约与集成测试全绿（`384 passed in contracts, 71 passed in integration`）；
 - `make lint-ruff`：全量 Python 源码格式化与静态检查通过（178 个文件）。
+
+---
+
+## 真实执行编排闭环（ADR-029 P1，2026-09-25）
+
+**背景与目标**：
+在 ADR-029 P0 编译内核的基础上，P1 落地真实持久执行编排闭环：通过追加数据库迁移、建立不可变 Revision 事实表、Run/Task/Edge/Assignment 持久化模型与调度租约，实现幂等提交、数据本地性调度守卫、级联解锁、取消传播、迟到结果安全丢弃、有界重试与崩溃租约回收。
+
+**关键落地链路**：
+1. **Proto 契约与接口**：
+   - 扩展 `proto/orchestration/v1/orchestration.proto`，补全 `TaskResult`、`SubmitPipelineRunRequest`、`CancelPipelineRunRequest`、`ClaimTaskRequest` 与 `OrchestrationService`；
+   - 运行 `make proto` 同步生成 Python SDK 命名空间代码与 Console TS 类型，`cargo check` 确认 Rust SDK 兼容。
+2. **数据库持久化模型（追加迁移 0008）**：
+   - 新增 `pipeline_definition` 与 `pipeline_revision`（挂载 `deny_fact_update` 触发器，阻止任何 UPDATE/DELETE）；
+   - 新增 `pipeline_run`（带 `pipeline_run_active_idempotency_idx` 部分唯一索引，确保同一活跃运行幂等）；
+   - 新增 `pipeline_task`（状态机：pending, ready, assigned, running, retry_wait, succeeded, failed, cancelled, blocked）与 `pipeline_task_edge`；
+   - 新增 `scheduler_assignment`（记录调度决策、租约期限 `lease_expires_at` 与本地性拒绝原因）与 `orchestration_audit`。
+3. **调度内核与状态机（infrastructure/orchestration.py）**：
+   - 严格 DAG 编译校验：拒绝环形图、悬空边、Modality 不匹配、非同机 `same_item` 关联；
+   - 调度器扫描：按 `data_plane_local` 约束排查候选节点，非同机显式记 `data_locality_violation` 拒绝；
+   - 结果对账守卫：严格核对 `(run_id, task_id, attempt, assignment_id)`，过期不匹配报 409 `stale_task_result`；
+   - 下游原子解锁：基于 `pipeline_task_edge`，当且仅当某任务的所有 required 前驱均 `succeeded` 时原子解锁为 `ready`；
+   - 取消优先原则：Run 取消级联所有未终态任务，迟到结果记入 `orchestration_audit` 并丢弃，绝不反向改写为成功；
+   - 有界重试：可重试失败转入 `retry_wait`，调度步进释放重试，耗尽则落 `retry_exhausted:<reason>` 并递归阻断下游（`blocked`）；
+   - 崩溃恢复器：扫描 `lease_expires_at < now()` 的过期租约，安全收敛或原子重放，防止任务永久挂起。
+4. **API 控制面（interfaces/orchestration.py）**：
+   - 注册 `/v1/orchestration/pipelines[:validate]`、`/v1/orchestration/runs[/:id/cancel]`、`/v1/orchestration/scheduler:step`、`/v1/orchestration/tasks/:id:result`；
+   - 严格受 `pipelines:manage`、`jobs:write`、`jobs:read` 权限保护。
+
+**验收证据（make orchestration-p1-check）**：
+
+| 验证场景 | 动作与验证项 | 实测结果 |
+| --- | --- | --- |
+| 1. DAG 编译与不可变性 | 验证环形图拒绝、`same_item` 跨机拒绝、合法 3 节点图发布及 PostgreSQL 防篡改触发器 | `PASS (cycle & locality rejected, rev=1 published, trigger active)` |
+| 2. 幂等提交与初始状态 | 提交新 Run，入度为 0 任务置 READY，依赖后继置 PENDING；重复提交返回 `is_duplicate=True` 与相同 `run_id` | `PASS (run_id unchanged, duplicate detected, states verified)` |
+| 3. 调度与本地性约束 | 远程节点申请 `data_plane_local` 被记 `data_locality_violation` 拒绝；同机节点成功派发并签发租约与 attempt | `PASS (locality violation recorded, local node assigned)` |
+| 4. 结果对账与级联解锁 | 假 assignment 被 409 拒绝；按序完成 source -> ocr -> embedding，下游原子解锁，Run 整体标记 SUCCEEDED | `PASS (stale result rejected, ocr/embedding unlocked, run completed)` |
+| 5. 取消传播与迟到丢弃 | Run 取消级联未完成任务，迟到成功结果被安全丢弃并记入审计表，任务与下游保持 CANCELLED | `PASS (all tasks cancelled, late result discarded)` |
+| 6. 有界重试与失败阻断 | 可重试失败转入 `retry_wait` 后重派为 attempt 2；预算耗尽落 `retry_exhausted`，下游递归标记 BLOCKED | `PASS (retry scheduled, attempt=2 exhausted, downstream blocked)` |
+| 7. 崩溃恢复与租约回收 | 模拟 Worker 崩溃租约超时，恢复器原子检测并回收重派，第 2 次尝试顺利执行完成并收敛终态 | `PASS (expired lease recovered, cleanly rescheduled attempt=2)` |
+
+**回归验证**：
+- `make orchestration-p1-check`：全 7 大场景全绿（`exit 0`）；
+- `pytest tests/integration/test_orchestration_api.py`：4 个持久化与 API 集成测试在真实 PostgreSQL 上全绿；
+- `make test-py`：459 个测试全绿（384 contract + 75 integration）；
+- `make lint-ruff`：全库 182 个 Python 源码文件格式与静态检查无 warning 无 error；
+- `cargo check --workspace` & `cargo test --workspace`：Rust 模块全部通过（172 tests passed）。

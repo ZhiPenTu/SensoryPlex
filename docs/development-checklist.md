@@ -36,12 +36,11 @@
 
 - [x] **GP-01 真实媒体自动入库与可回看 Golden Path**  
   状态：**已完成**（2026-09-25 经 `make golden-path-check` 9 个场景全量验证）。  
-  范围：串通 Console 上传 -> 方案发布 -> 任务创建与分发 -> 节点 Agent 调度 Runtime/模型/Timeline 融合 -> 数据库/outbox 授权追加 -> 常驻 relay/index 向量落库 -> 语义检索命中 -> 原片回看流式播放的完整业务闭环。  
-  完成条件：
-  - 使用一段授权本地文件，随后使用受控 SRT 流，各产生至少一个带 `stream_id + [start_ms, end_ms)`、来源、模型/版本、显式置信度语义与 revision 的 `MaterialUnit`。
-  - Timeline 能把 ASR/OCR/VLM observation 融合进素材；事务性 metadata/outbox 写入后，由既有事件链路生成 ready embedding。
-  - 通过 API/Console 按语义检索命中该素材，并准确回跳到授权原片相同时间区间；失败、缺模型、冲突和超时必须可见，不能补造结果。
-  - 新增可重复的端到端验收脚本与真实授权样本登记；容器内验证 API/Console/事件链路，按既定 Rust 例外验证实际媒体和宿主模型路径；记录端到端延迟，尚未达到 2–5 秒则明确失败或待优化。
+  范围：串通 Console 上传 -> 方案发布 -> 任务创建与分发 -> 节点 Agent 调度 Runtime/模型/Timeline 融合 -> 数据库/outbox 授权追加 -> 常驻 relay/index 向量落库 -> 语义检索命中 -> 原片回看流式播放的完整业务闭环。
+
+- [x] **OP-03 真实执行编排闭环（ADR-029 P1）**  
+  状态：**已完成**（2026-09-25 经 `make orchestration-p1-check` 7 个场景全量验证）。  
+  范围：追加数据库迁移落地 immutable Pipeline revision、Run、Task、Edge 与 assignment 租约；实现事务 CAS/幂等提交、取消传播、有界重试（`retry_wait` / `retry_exhausted`）、崩溃恢复（租约过期自动回收）与数据本地性拒绝（`data_locality_violation`）。
 
 - [ ] **GP-02 Timeline 语义冲突识别与 revision 策略**  
   状态：**未开始**；依赖 `GP-01`。  

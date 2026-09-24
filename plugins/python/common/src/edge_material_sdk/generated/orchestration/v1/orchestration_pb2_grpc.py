@@ -3,6 +3,7 @@
 import grpc
 import warnings
 
+from edge_material_sdk.generated.orchestration.v1 import orchestration_pb2 as orchestration_dot_v1_dot_orchestration__pb2
 
 GRPC_GENERATED_VERSION = '1.71.2'
 GRPC_VERSION = grpc.__version__
@@ -22,3 +23,419 @@ if _version_not_supported:
         + f' Please upgrade your grpc module to grpcio>={GRPC_GENERATED_VERSION}'
         + f' or downgrade your generated code using grpcio-tools<={GRPC_VERSION}.'
     )
+
+
+class OrchestrationServiceStub(object):
+    """Missing associated documentation comment in .proto file."""
+
+    def __init__(self, channel):
+        """Constructor.
+
+        Args:
+            channel: A grpc.Channel.
+        """
+        self.ValidatePipeline = channel.unary_unary(
+                '/edge.material.orchestration.v1.OrchestrationService/ValidatePipeline',
+                request_serializer=orchestration_dot_v1_dot_orchestration__pb2.ValidatePipelineRevisionRequest.SerializeToString,
+                response_deserializer=orchestration_dot_v1_dot_orchestration__pb2.ValidatePipelineRevisionResponse.FromString,
+                _registered_method=True)
+        self.PublishPipeline = channel.unary_unary(
+                '/edge.material.orchestration.v1.OrchestrationService/PublishPipeline',
+                request_serializer=orchestration_dot_v1_dot_orchestration__pb2.PublishPipelineRevisionRequest.SerializeToString,
+                response_deserializer=orchestration_dot_v1_dot_orchestration__pb2.PublishPipelineRevisionResponse.FromString,
+                _registered_method=True)
+        self.SubmitRun = channel.unary_unary(
+                '/edge.material.orchestration.v1.OrchestrationService/SubmitRun',
+                request_serializer=orchestration_dot_v1_dot_orchestration__pb2.SubmitPipelineRunRequest.SerializeToString,
+                response_deserializer=orchestration_dot_v1_dot_orchestration__pb2.SubmitPipelineRunResponse.FromString,
+                _registered_method=True)
+        self.GetRun = channel.unary_unary(
+                '/edge.material.orchestration.v1.OrchestrationService/GetRun',
+                request_serializer=orchestration_dot_v1_dot_orchestration__pb2.GetPipelineRunRequest.SerializeToString,
+                response_deserializer=orchestration_dot_v1_dot_orchestration__pb2.GetPipelineRunResponse.FromString,
+                _registered_method=True)
+        self.CancelRun = channel.unary_unary(
+                '/edge.material.orchestration.v1.OrchestrationService/CancelRun',
+                request_serializer=orchestration_dot_v1_dot_orchestration__pb2.CancelPipelineRunRequest.SerializeToString,
+                response_deserializer=orchestration_dot_v1_dot_orchestration__pb2.CancelPipelineRunResponse.FromString,
+                _registered_method=True)
+        self.RetryTask = channel.unary_unary(
+                '/edge.material.orchestration.v1.OrchestrationService/RetryTask',
+                request_serializer=orchestration_dot_v1_dot_orchestration__pb2.RetryPipelineTaskRequest.SerializeToString,
+                response_deserializer=orchestration_dot_v1_dot_orchestration__pb2.RetryPipelineTaskResponse.FromString,
+                _registered_method=True)
+        self.ClaimTask = channel.unary_unary(
+                '/edge.material.orchestration.v1.OrchestrationService/ClaimTask',
+                request_serializer=orchestration_dot_v1_dot_orchestration__pb2.ClaimTaskRequest.SerializeToString,
+                response_deserializer=orchestration_dot_v1_dot_orchestration__pb2.ClaimTaskResponse.FromString,
+                _registered_method=True)
+        self.ReportTaskResult = channel.unary_unary(
+                '/edge.material.orchestration.v1.OrchestrationService/ReportTaskResult',
+                request_serializer=orchestration_dot_v1_dot_orchestration__pb2.ReportTaskResultRequest.SerializeToString,
+                response_deserializer=orchestration_dot_v1_dot_orchestration__pb2.ReportTaskResultResponse.FromString,
+                _registered_method=True)
+        self.CancelTask = channel.unary_unary(
+                '/edge.material.orchestration.v1.OrchestrationService/CancelTask',
+                request_serializer=orchestration_dot_v1_dot_orchestration__pb2.CancelTaskRequest.SerializeToString,
+                response_deserializer=orchestration_dot_v1_dot_orchestration__pb2.CancelTaskResponse.FromString,
+                _registered_method=True)
+
+
+class OrchestrationServiceServicer(object):
+    """Missing associated documentation comment in .proto file."""
+
+    def ValidatePipeline(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def PublishPipeline(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SubmitRun(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetRun(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CancelRun(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RetryTask(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ClaimTask(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ReportTaskResult(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CancelTask(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+
+def add_OrchestrationServiceServicer_to_server(servicer, server):
+    rpc_method_handlers = {
+            'ValidatePipeline': grpc.unary_unary_rpc_method_handler(
+                    servicer.ValidatePipeline,
+                    request_deserializer=orchestration_dot_v1_dot_orchestration__pb2.ValidatePipelineRevisionRequest.FromString,
+                    response_serializer=orchestration_dot_v1_dot_orchestration__pb2.ValidatePipelineRevisionResponse.SerializeToString,
+            ),
+            'PublishPipeline': grpc.unary_unary_rpc_method_handler(
+                    servicer.PublishPipeline,
+                    request_deserializer=orchestration_dot_v1_dot_orchestration__pb2.PublishPipelineRevisionRequest.FromString,
+                    response_serializer=orchestration_dot_v1_dot_orchestration__pb2.PublishPipelineRevisionResponse.SerializeToString,
+            ),
+            'SubmitRun': grpc.unary_unary_rpc_method_handler(
+                    servicer.SubmitRun,
+                    request_deserializer=orchestration_dot_v1_dot_orchestration__pb2.SubmitPipelineRunRequest.FromString,
+                    response_serializer=orchestration_dot_v1_dot_orchestration__pb2.SubmitPipelineRunResponse.SerializeToString,
+            ),
+            'GetRun': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetRun,
+                    request_deserializer=orchestration_dot_v1_dot_orchestration__pb2.GetPipelineRunRequest.FromString,
+                    response_serializer=orchestration_dot_v1_dot_orchestration__pb2.GetPipelineRunResponse.SerializeToString,
+            ),
+            'CancelRun': grpc.unary_unary_rpc_method_handler(
+                    servicer.CancelRun,
+                    request_deserializer=orchestration_dot_v1_dot_orchestration__pb2.CancelPipelineRunRequest.FromString,
+                    response_serializer=orchestration_dot_v1_dot_orchestration__pb2.CancelPipelineRunResponse.SerializeToString,
+            ),
+            'RetryTask': grpc.unary_unary_rpc_method_handler(
+                    servicer.RetryTask,
+                    request_deserializer=orchestration_dot_v1_dot_orchestration__pb2.RetryPipelineTaskRequest.FromString,
+                    response_serializer=orchestration_dot_v1_dot_orchestration__pb2.RetryPipelineTaskResponse.SerializeToString,
+            ),
+            'ClaimTask': grpc.unary_unary_rpc_method_handler(
+                    servicer.ClaimTask,
+                    request_deserializer=orchestration_dot_v1_dot_orchestration__pb2.ClaimTaskRequest.FromString,
+                    response_serializer=orchestration_dot_v1_dot_orchestration__pb2.ClaimTaskResponse.SerializeToString,
+            ),
+            'ReportTaskResult': grpc.unary_unary_rpc_method_handler(
+                    servicer.ReportTaskResult,
+                    request_deserializer=orchestration_dot_v1_dot_orchestration__pb2.ReportTaskResultRequest.FromString,
+                    response_serializer=orchestration_dot_v1_dot_orchestration__pb2.ReportTaskResultResponse.SerializeToString,
+            ),
+            'CancelTask': grpc.unary_unary_rpc_method_handler(
+                    servicer.CancelTask,
+                    request_deserializer=orchestration_dot_v1_dot_orchestration__pb2.CancelTaskRequest.FromString,
+                    response_serializer=orchestration_dot_v1_dot_orchestration__pb2.CancelTaskResponse.SerializeToString,
+            ),
+    }
+    generic_handler = grpc.method_handlers_generic_handler(
+            'edge.material.orchestration.v1.OrchestrationService', rpc_method_handlers)
+    server.add_generic_rpc_handlers((generic_handler,))
+    server.add_registered_method_handlers('edge.material.orchestration.v1.OrchestrationService', rpc_method_handlers)
+
+
+ # This class is part of an EXPERIMENTAL API.
+class OrchestrationService(object):
+    """Missing associated documentation comment in .proto file."""
+
+    @staticmethod
+    def ValidatePipeline(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/edge.material.orchestration.v1.OrchestrationService/ValidatePipeline',
+            orchestration_dot_v1_dot_orchestration__pb2.ValidatePipelineRevisionRequest.SerializeToString,
+            orchestration_dot_v1_dot_orchestration__pb2.ValidatePipelineRevisionResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def PublishPipeline(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/edge.material.orchestration.v1.OrchestrationService/PublishPipeline',
+            orchestration_dot_v1_dot_orchestration__pb2.PublishPipelineRevisionRequest.SerializeToString,
+            orchestration_dot_v1_dot_orchestration__pb2.PublishPipelineRevisionResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SubmitRun(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/edge.material.orchestration.v1.OrchestrationService/SubmitRun',
+            orchestration_dot_v1_dot_orchestration__pb2.SubmitPipelineRunRequest.SerializeToString,
+            orchestration_dot_v1_dot_orchestration__pb2.SubmitPipelineRunResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetRun(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/edge.material.orchestration.v1.OrchestrationService/GetRun',
+            orchestration_dot_v1_dot_orchestration__pb2.GetPipelineRunRequest.SerializeToString,
+            orchestration_dot_v1_dot_orchestration__pb2.GetPipelineRunResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CancelRun(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/edge.material.orchestration.v1.OrchestrationService/CancelRun',
+            orchestration_dot_v1_dot_orchestration__pb2.CancelPipelineRunRequest.SerializeToString,
+            orchestration_dot_v1_dot_orchestration__pb2.CancelPipelineRunResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RetryTask(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/edge.material.orchestration.v1.OrchestrationService/RetryTask',
+            orchestration_dot_v1_dot_orchestration__pb2.RetryPipelineTaskRequest.SerializeToString,
+            orchestration_dot_v1_dot_orchestration__pb2.RetryPipelineTaskResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ClaimTask(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/edge.material.orchestration.v1.OrchestrationService/ClaimTask',
+            orchestration_dot_v1_dot_orchestration__pb2.ClaimTaskRequest.SerializeToString,
+            orchestration_dot_v1_dot_orchestration__pb2.ClaimTaskResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ReportTaskResult(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/edge.material.orchestration.v1.OrchestrationService/ReportTaskResult',
+            orchestration_dot_v1_dot_orchestration__pb2.ReportTaskResultRequest.SerializeToString,
+            orchestration_dot_v1_dot_orchestration__pb2.ReportTaskResultResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CancelTask(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/edge.material.orchestration.v1.OrchestrationService/CancelTask',
+            orchestration_dot_v1_dot_orchestration__pb2.CancelTaskRequest.SerializeToString,
+            orchestration_dot_v1_dot_orchestration__pb2.CancelTaskResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
