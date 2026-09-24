@@ -3,6 +3,9 @@
 Milvus 不是事实源：它只回答"哪条 embedding_id 离查询最近"。一条命中要被返回，必须同时
 满足 PostgreSQL 里的 `state='ready'`、material 行存在、并且当前 principal 是该 source 的
 owner——否则丢弃并计数（`unindexed_hits`），不得把 Milvus 里的字段当授权依据。
+
+本模块同时承载 outbox 事件的**消费去重**原语（`consumed_event`，见 ADR-024）：它和
+`embedding_record` 同属"PostgreSQL 侧事实"，且是同一个 sink 在同一个事务里写的。
 """
 
 import hashlib
@@ -183,3 +186,59 @@ def collection_model_releases(conn, vector_index_key: str, *, limit: int = 2) ->
         (vector_index_key, limit),
     ).fetchall()
     return [row[0] for row in rows]
+
+
+# ── outbox 事件的消费去重（ADR-024） ─────────────────────────────────────────
+#
+# `consumed_event(event_id, consumer_name, consumed_at)` 的主键就是幂等键。
+# 表里 `consumed_at` 是 `NOT NULL DEFAULT now()`，**没有**"在飞（in-flight）"这一态：只要
+# 插进去就等于"这个 consumer 已经处理完了"。因此这里刻意**不**提供"先认领、再干活、最后
+# 收尾"的两相接口——那样会在"插了行、还没干完"的窗口里崩溃，而重投时那行会让事件被**永久
+# 跳过**（悄悄把 at-least-once 变成 at-most-once，事件丢了也没人知道）。正确顺序是反的：
+#
+#     1. 先做幂等工作（`embedding_id` 是确定性的，`begin_pending` 撞 PK 会校验身份，
+#        重跑得到同一份向量）；
+#     2. 干完了再 `record_consumed`。
+#
+# 于是崩溃最多让工作重做一遍，绝不会让事件消失；`consumed_at` 也回到它字面上的意思——
+# "这个 consumer 在哪一刻处理完的"。
+
+
+def is_consumed(conn, *, event_id: str, consumer_name: str) -> bool:
+    """本 consumer 是否已经把这条事件处理完（用于跳过重复投递带来的重复工作）。"""
+    return (
+        conn.execute(
+            "SELECT 1 FROM consumed_event WHERE event_id=%s AND consumer_name=%s",
+            (event_id, consumer_name),
+        ).fetchone()
+        is not None
+    )
+
+
+def record_consumed(conn, *, event_id: str, consumer_name: str) -> bool:
+    """记录"处理完成"。True = 本次写入（首次完成）；False = 之前已记录（幂等的重复完成）。
+
+    重复完成**不是**错误：JetStream 的重投与 relay 的重复发布（ADR-024 §4）都会让同一条事件
+    再来一次，此时 `False` 是预期结果，调用方应把它当"无需再做什么"，而不是失败。
+    """
+    row = conn.execute(
+        "INSERT INTO consumed_event(event_id, consumer_name) VALUES (%s, %s) "
+        "ON CONFLICT (event_id, consumer_name) DO NOTHING RETURNING event_id",
+        (event_id, consumer_name),
+    ).fetchone()
+    return row is not None
+
+
+def consumed_state(conn, *, event_id: str, consumer_name: str) -> dict | None:
+    """这条事件在本 consumer 视角下的记账状态；`None` 表示从未处理过（可重投）。"""
+    row = conn.execute(
+        "SELECT consumed_at FROM consumed_event WHERE event_id=%s AND consumer_name=%s",
+        (event_id, consumer_name),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "event_id": event_id,
+        "consumer_name": consumer_name,
+        "consumed_at": row[0].isoformat(),
+    }
