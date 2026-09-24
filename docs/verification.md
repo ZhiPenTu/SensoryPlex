@@ -57,6 +57,7 @@ arm64，M2 Max，32 GB 统一内存）。本次改动只涉及能力上报契约
 - `gst-inspect-1.0` 报告 2 个 blacklist 文件（`libgstpython.dylib`、`libgstvalidatessim.dylib`）与一条 GLib GIRepository typelib 警告（找不到 `libgobject-2.0.0.dylib`）。SRT 与 VideoToolbox 元素不受影响，但依赖 GObject introspection 的路径需再验证。
 - 没有编写任何 GStreamer pipeline 代码：真实 File/SRT 回放、PTS 正确性、lease 生命周期与断流重连仍属第 2 周交付物，本次未产出任何媒体或模型结果。
 - CoreML/Metal 后端仍为 `execution_backend_not_implemented`，`DescribeCapabilities` 只报告其不存在与原因，不代表能力可用。
+  （2026-09-24 收口：宿主侧"有没有"已由 ADR-022 的 `host_accelerators` 单独上报，见文末；该句其余判断仍然有效。）
 
 ## 媒体接入切片：锚点、重排与 lease（2026-09-22）
 
@@ -152,7 +153,8 @@ make media-replay MEDIA=/Users/tuzhipeng/Documents/SensoryPlex/video/1.mp4
   其余判断仍然有效。）
 - SRT 仍为 `UnavailableSource`；没有 SRT 端点，也没有断流重连验证。
   （本条记录的是当时状态；该范围已于 2026-09-23 补齐，见下文"M4"一节，其余判断仍然有效。）
-- 模型链路全部未接入：ASR/OCR/VLM/BGE 无实现，CoreML/Metal 后端仍报 `execution_backend_not_implemented`。
+- 模型链路全部未接入：ASR/OCR/VLM/BGE 无实现，CoreML/Metal 后端仍报 `execution_backend_not_implemented`
+  （2026-09-24 收口：执行后端仍是"本进程不执行推理"，宿主"有没有"改由 ADR-022 的 `host_accelerators` 回答，见文末）。
 - 该样本由 FFmpeg 生成/转码（`encoder=Lavf58.20.100`），不是设备直出；静态投屏、翻页切换、运动/多人对话
   三类样本尚未回放，抽帧覆盖率结论不成立。
 - 检查在 `macos-aarch64` 本地完成；macOS CI job 与 `linux-x86_64` 侧解码验收未执行。
@@ -661,7 +663,8 @@ retained_total == retained + released_total + expired_total        # 每条保�
 
 **仍未验证（不得当作完成）：**
 
-- 只有 VLM 一个模型：ASR / OCR / BGE **未接入**；CoreML / Metal 仍 `execution_backend_not_implemented`。
+- 只有 VLM 一个模型：ASR / OCR / BGE **未接入**；CoreML / Metal 仍 `execution_backend_not_implemented`
+  （2026-09-24 收口：宿主"有没有"改由 ADR-022 的 `host_accelerators` 回答，见文末）。
 - **模型输出质量不稳定**：`moondream:v2` 是极小 VLM，同一帧两次推理可能给出不同文本，
   本轮实测到一次明显退化输出（非空、但明显是幻觉）。此项只证明**链路语义**正确，
   **不**证明描述可用；本节的 `payload.text` 不作为语义质量证据。
@@ -950,7 +953,8 @@ MLX Whisper 产出带锚点/来源/显式置信度语义的转写 observation。
 
 #### 仍未验证（不得当作完成）
 
-- 只有两个模型（VLM + ASR）；**OCR 与 BGE 未接入**；CoreML / Metal 仍 `execution_backend_not_implemented`。
+- 只有两个模型（VLM + ASR）；**OCR 与 BGE 未接入**；CoreML / Metal 仍 `execution_backend_not_implemented`
+  （2026-09-24 收口：宿主"有没有"改由 ADR-022 的 `host_accelerators` 回答，见文末）。
 - 只在本机 `macos-aarch64` 验收；`linux-x86_64` 与 **Mac mini / 跨机未验证**——ASR 后端的
   `mlx` 是 Apple Silicon 专属，Linux 侧需要另选后端（ADR-014 §7）。
 - 转写**质量**未验收：本节只证明链路语义（锚点、摘要、来源、账目、显式未知）正确，
@@ -1365,9 +1369,10 @@ VLM 走 ollama），`metal` 不作为后端引入。
   只命名了 collection，Milvus 建索引、写入与检索都未验证。
 - 维度版本化的**迁移**：换模型或换维度后旧向量重建还是并存，尚未决策。
 - CoreML 收益：见上，实测更慢；动态 shape 与量化算子的分区回退未解决。
-- 运行时（Rust）加速后端的能力上报仍把加速后端记为不可用：本版本没有任何 in-process
-  `ExecutionBackend` 实现（`model_inference` 仍在 `unavailable_capabilities`）。这张表**不是**
-  "CoreML 不可用"的证据，只说明"运行时自己不做推理"。
+- 运行时（Rust）执行后端仍记为不可用：本版本没有任何 in-process `ExecutionBackend` 实现
+  （`model_inference` 仍在 `unavailable_capabilities`）。这张表**不是**"CoreML 不可用"的证据，
+  只说明"运行时自己不做推理"；宿主侧"有没有这块加速器"已由 ADR-022 的 `host_accelerators`
+  单独探测并上报（见文末"M8 剩余：宿主加速器能力探测与上报（ADR-022）"）。
 - `linux-x86_64`、Mac mini / 跨机未验证；插件未签名（只在 manifest 写明白原因），SBOM 只有结构预检；
   "绝不联网"只有 manifest 声明，没有 DNS/egress 强制执行。
 - worker 的 durable 幂等与 lease 崩溃回收仍未做；observation 路径没有 lease，但这不改变 buffer
@@ -1695,3 +1700,88 @@ attempts=10 completed=4 failed=0 exhausted=0 retries=6 peak_in_flight=4 max_atte
 
 本轮**没有**动 `deploy/up.sh`——工作区里它有一处与 ADR-021 无关的既有改动（console 反代 reload），
 保持未提交状态。
+
+### M8 剩余：宿主加速器能力探测与上报（ADR-022）（2026-09-24）
+
+**本轮问题。** ADR-012 §"未验证范围"、ADR-016 §9、ADR-017 §8 与 `docs/TODO.md` 记的是同一个缺口：
+`capability::backends()` 把 `cpu` / `coreml` / `metal` **一律**记为 `execution_backend_not_implemented`。
+这对**本进程**是事实（`crates/execution` 至今只有 trait，没有任何实现），但报告里再也读不到
+"这台宿主有没有这块加速器"，于是"运行时自己不做推理"极易被读成"这台机器没有 CoreML"。
+两件事被塌进了同一个字段。
+
+**改动。** `proto/runtime/v1/runtime.proto` 新增 `AcceleratorState`（`AVAILABLE` / `UNAVAILABLE` /
+`UNKNOWN` + `UNSPECIFIED`）与 `HostAccelerator`，`DescribeCapabilitiesResponse` 新增
+`repeated HostAccelerator host_accelerators = 7`；`crates/runtime/src/accelerator.rs` 做真实探测
+（`PROBE_TIMEOUT = 3s`，超时即 kill 并落 `UNKNOWN`），`capability::describe()` 接线，
+`serve` 启动日志多一行 `accelerators=...`。`backends` 的语义**没有**改动，仍然全部 `Unavailable`
+（本版本没有任何 in-process `ExecutionBackend`）。
+
+#### 四路对账（`make accelerator-check`，本机 Apple M2 Max / `macos-aarch64`）
+
+| 路径 | 断言 | 实测 |
+| --- | --- | --- |
+| ① 基线与**独立解析**的宿主直读逐条对账 | 状态与版本必须逐字等于 `system_profiler` / `plutil` 的直读值；`evidence` 无路径、有界 | `coreml=available(3520.5.1)`、`metal=available(metal4)` |
+| ② `LANG=zh_CN.UTF-8` | `(accelerator, state, runtime_version)` 完全不变 | 与基线相同（判定只认 `spdisplays_*` / `sppci_*` 键名） |
+| ③ `PATH=/nonexistent` | 工具缺失者必须落 `UNKNOWN` 且原因是 `probe_tool_missing:<source>`，**不许**落 `UNAVAILABLE` | `coreml=unknown`、`metal=unknown` |
+| ④ 与执行后端分离 | 同一份报告里 `backends` 仍全部 `unavailable` 且带原因 | 3 条后端全 `unavailable`，加速器表不覆盖它 |
+
+```
+$ make accelerator-check
+平台 macos-aarch64；被测二进制 /Users/tuzhipeng/Documents/SensoryPlex/target/release/sensoryplex-runtime
+① 基线与宿主直读对账
+  [('coreml', 1, '3520.5.1'), ('metal', 1, 'metal4')]
+  coreml: framework_info ['framework=CoreML.framework', 'cf_bundle_version=3520.5.1']
+  metal: system_profiler ['sppci_model=Apple M2 Max', 'sppci_cores=30', 'spdisplays_mtlgpufamilysupport=spdisplays_metal4']
+② LANG=zh_CN.UTF-8 下判定不变
+  [('coreml', 1, '3520.5.1'), ('metal', 1, 'metal4')]
+③ PATH=/nonexistent：探测工具缺失必须落 unknown，不能落 unavailable
+  [('coreml', 3, ''), ('metal', 3, '')]
+④ 宿主加速器表不得替执行后端说话
+  backends 全部 unavailable（3 条），accelerators 见 ①：两者结论互不覆盖
+宿主加速器上报验收: PASS; platform=macos-aarch64; host_accelerators=[('coreml', 1, '3520.5.1'), ('metal', 1, 'metal4')]
+```
+
+（`1` = `ACCELERATOR_STATE_AVAILABLE`，`3` = `ACCELERATOR_STATE_UNKNOWN`。）
+
+#### `serve` 启动日志（`RUST_LOG=info`，ADR-015 的同一行）
+
+```json
+{"timestamp":"2026-09-24T00:15:07.174461Z","level":"INFO","fields":{"message":"runtime control endpoint started","address":"127.0.0.1:50998","platform":"macos-aarch64","state":"degraded","accelerators":"coreml=available(3520.5.1),metal=available(metal4)","tier":"not_injected","media_queue_capacity":0,"model_parallelism":0},"target":"sensoryplex_runtime"}
+```
+
+#### 顺带修掉的既有缺陷：`make runtime-smoke` 在本机（容器模式）**必然失败**
+
+改动前该目标在容器内执行 `tools/smoke_runtime.py`，而它启动的是**主机构建的 Mach-O 二进制**
+（`target/debug/sensoryplex-runtime`）：Linux 容器 `exec` 不了它，结果是超时失败——
+"验证跑的是旧契约"的另一种形态。现在这一步与 `embed-check` / `parallelism-check` 同类，
+固定在主机侧执行（`PY_HOST`），并且脚本会断言加速器行、`backends` 与"探测不到 ≠ 不存在"。
+被验收的二进制不存在时脚本直接显式失败，不再靠超时暴露问题。
+
+```
+$ make runtime-smoke
+Rust server / Python gRPC client: PASS; platform=macos-aarch64; host accelerators=[coreml=available(3520.5.1), metal=available(metal4)]; unavailable backends and capabilities reported explicitly
+```
+
+#### 静态与回归检查
+
+| 检查 | 结果 |
+| --- | --- |
+| `make check EXEC_MODE=container`（重建 api 镜像后） | ruff（`All checks passed!`）、契约 **233 passed**、集成 **31 passed**、cargo fmt / clippy（`-D warnings`）/ test 全过，exit 0 |
+| `cargo test --locked -p sensoryplex-runtime --lib` | **22 passed**（新增 13 项：解析器分支、三个探测函数的三态、`probe_*` 原因串、超时被 kill） |
+| `make accelerator-check` | 四路对账 PASS（见上） |
+
+#### 仍未验证（不得当成完成）
+
+- **`linux-x86_64` 的 `cuda` 分支从未在真机上跑过**：只有夹具单测，没有 NVIDIA 主机的
+  `make accelerator-check` 记录，也没有带 GPU 的 CI job。远端 `check` job 是无 GPU 的 ubuntu
+  runner，那里 `cuda` 只能落 `unknown(probe_*:nvidia_smi)`——`make runtime-smoke` 在那种环境下会
+  接受这个结论，这正是"探测不到 ≠ 不存在"该有的行为，但它**不构成**cuda 分支可用性证据。
+- **`linux-aarch64` 没有任何探测路径**（报告里 0 条），不是"已验证没有加速器"。
+- **Mac mini / 跨机未验证**：只在开发机 `macos-aarch64` 上实测。Mac mini 是明确的端侧目标
+  （ADR-008），需要单独跑一次 `make accelerator-check` 才能当作已验收。
+- **`tensorrt` 只存在于 proto 的命名说明里**，没有探测路径，也不会被上报。
+- **加速器可用 ≠ 推理可用**：Rust 侧仍无任何 in-process `ExecutionBackend`，`model_inference` 继续在
+  `unavailable_capabilities` 中；插件侧的后端选择（ADR-016 / ADR-017）与本表不共享数据。
+- `metal` 的 `runtime_version` 是 Metal **家族令牌**（`metal4`），`coreml` 的是 framework 的
+  `CFBundleVersion`，两者不同名，不得横向比较。
+- 探测是**首次 `DescribeCapabilities` 时做一次并缓存**（`OnceLock`），不是持续监控。

@@ -24,6 +24,14 @@
   4 个真实授权样本实测 `limit=4 source=flag peak_in_flight=4 retries=6`，插件侧 `concurrency_limit`
   真实发生并被重试吸收，4/4 全产出且无输入消失。证据见 `docs/verification.md` 的
   "M8 剩余：模型 worker 按分级并发上限限流（ADR-021）"。
+- [x] **宿主加速器能力已真实探测并上报（ADR-022）**：`DescribeCapabilities` 新增
+  `host_accelerators`，与 `backends`（"本进程能不能执行推理"）分成两张表；三态
+  `available / unavailable / unknown` 不得互相塌陷——探测工具缺失、超时或输出读不懂一律落 `unknown`
+  并带 `probe_*:<source>` 原因。本机 `make accelerator-check` 四路对账通过：
+  `coreml=available(3520.5.1)`、`metal=available(metal4)` 与宿主直读逐字一致；`LANG=zh_CN.UTF-8` 下判定不变；
+  `PATH=/nonexistent` 下两条都落 `unknown` 且**不**被写成"不存在"。证据见 `docs/verification.md` 的
+  "M8 剩余：宿主加速器能力探测与上报（ADR-022）"。**仍未验证**：`cuda` 分支无真机（见 §M6）、
+  Mac mini 未跑、`tensorrt` 无探测路径。
 - [ ] **真实媒体端到端**：Runtime → Timeline → metadata writer/outbox → 查询与回看尚未联调验收。
   Timeline 融合核心已在独立分支 `codex/timeline-fusion` 提交 `bdb00ef`，尚未合并主线。
 - [ ] **语义冲突识别与消解**：当前融合核心只保留显式冲突标记；不推断自然语言矛盾。
@@ -143,9 +151,13 @@
     上限做准入与在飞调用限流，越界与坏值在连插件之前 exit 2，报告 `model_concurrency` 记 `peak_in_flight`
     与重试账目（[ADR-021](adr/ADR-021-模型worker按分级并发上限限流.md)；真机 4 样本实测见
     `docs/verification.md` 的"M8 剩余：模型 worker 按分级并发上限限流（ADR-021）"）。
+  - [x] 宿主加速器事实被真实探测并单独上报：`host_accelerators` 与执行后端分开，三态不塌陷，
+    探测有界（3s 超时即 kill）（[ADR-022](adr/ADR-022-宿主加速器能力探测与上报.md)；本机四路对账实测见
+    `docs/verification.md` 的"M8 剩余：宿主加速器能力探测与上报（ADR-022）"）。
   - [ ] **未验证**：`small` 档（16 GiB）与 Mac mini 各档位未实跑；高帧率下的背压样本、`retry_exhausted`
     的真实插件路径未跑；`MODEL_PARALLELISM` 只约束**单次 worker 进程内**的在飞调用数，不约束"同时起几个
-    worker"；断电重启、休眠唤醒、小时级长稳未验证。这些不得当成已完成。
+    worker"；断电重启、休眠唤醒、小时级长稳未验证；宿主加速器只在开发机 `macos-aarch64` 上实测过，
+    Mac mini / 跨机与 `linux-x86_64` 的 `cuda` 探测都还没有真机记录。这些不得当成已完成。
 
 ### M6 linux-x86_64 侧验收
 
@@ -183,8 +195,9 @@
 ### M8 模型插件（ASR/OCR/VLM/BGE）
 
 - 状态：**进行中**——四个真实端侧模型（**VLM**、**ASR**、**OCR**、**BGE 文本向量**）已接入并通过验收，
-  BGE 向量也已能落库并检索回来（Milvus **Lite** 形态）；仍未做的是运行时加速后端的能力上报、
-  常驻 index-worker 消费、以及网关侧把这批向量接进 `mode=semantic`。
+  BGE 向量也已能落库并检索回来（Milvus **Lite** 形态），宿主加速器事实也已真实探测并单独上报
+  （[ADR-022](adr/ADR-022-宿主加速器能力探测与上报.md)）；仍未做的是常驻 index-worker 消费、
+  以及网关侧把这批向量接进 `mode=semantic`。
   证据见 `docs/verification.md` 的 "M8 模型插件：真实 VLM 端侧接入与观察语义"、
   "M10 模型插件：真实 ASR 端侧接入与音频样本布局契约"、"M8 OCR"、"M8 BGE" 与
   "M8 剩余：向量索引落库与检索闭环（ADR-020）"；设计决策见
@@ -248,11 +261,13 @@
   Milvus standalone **起不来也未验收**；Milvus Lite 是**进程独占**的（目录 flock，
   被占用即 `vector_store_locked`），因此 edge 是单写进程。详见
   [ADR-020](adr/ADR-020-向量索引落库与检索闭环.md)。
-- 剩余子项：运行时加速后端的能力上报（Rust 侧本版本没有任何 in-process `ExecutionBackend`，
-  `coreml`/`metal` 因此仍记为不可用）、常驻 index-worker 消费（NATS/outbox 未接线）、
+- 剩余子项：常驻 index-worker 消费（NATS/outbox 未接线）、
   网关侧语义检索与排序（`mode=semantic` 仍 501；RRF/混合检索未做）、
   向量质量验收（无带参考文本的检索样本 → 无 recall/MRR）、
-  以及按机型档位选择模型（依赖 M5）。
+  按机型档位选择模型（依赖 M5），
+  以及宿主加速器探测的真机覆盖面（`cuda` 分支与 Mac mini 未验收；
+  Rust 侧仍没有任何 in-process `ExecutionBackend`，`model_inference` 继续在 `unavailable_capabilities` 中——这
+  与 `host_accelerators` 是两件事，见 [ADR-022](adr/ADR-022-宿主加速器能力探测与上报.md)）。
 
 ### M9 格式准入与显式拒绝（ADR-009，新增格式之前必须先做）
 
