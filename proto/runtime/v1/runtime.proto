@@ -78,6 +78,40 @@ message BackendCapability {
   string unavailable_reason = 8;
 }
 
+// How a *host* accelerator probe ended. "The probe could not tell" is a third answer and must
+// never be collapsed into "unavailable".
+enum AcceleratorState {
+  ACCELERATOR_STATE_UNSPECIFIED = 0;
+  ACCELERATOR_STATE_AVAILABLE = 1;
+  ACCELERATOR_STATE_UNAVAILABLE = 2;
+  ACCELERATOR_STATE_UNKNOWN = 3;
+}
+
+// Host-side accelerator facts, probed independently of `backends` (ADR-022).
+//
+// `backends` answers "can *this process* execute model inference?"; this message answers
+// "does *this host* have the accelerator?". Collapsing the two would either claim acceleration
+// this runtime does not use, or hide an accelerator the host does have. An accelerator reported
+// available here is therefore never a claim that this process executes on it: nothing in the
+// runtime executes inference, and that fact stays visible in `unavailable_capabilities`.
+message HostAccelerator {
+  // Stable name: coreml | metal | cuda | tensorrt.
+  string accelerator = 1;
+  string platform = 2;
+  AcceleratorState state = 3;
+  // Which probe produced this line: system_profiler | framework_info | nvidia_smi | unavailable.
+  // Probes read the host itself; nothing here is inferred from a config file.
+  string detection_source = 4;
+  // Read back from the host by the probe. Empty means the probe could not learn it, never a guess.
+  string runtime_version = 5;
+  // Bounded, controlled facts the decision was made from, for example
+  // spdisplays_mtlgpufamilysupport=metal4 or cf_bundle_version=3520.5.1.
+  // Never a filesystem path and never unbounded tool output.
+  repeated string evidence = 6;
+  // Stable reason; required whenever state != ACCELERATOR_STATE_AVAILABLE.
+  string unavailable_reason = 7;
+}
+
 // Residency limits carried by this process from the host tier (ADR-015 / ADR-019).
 //
 // This endpoint only *carries* them: `serve` runs no pipeline, so it has no queue to bound.
@@ -103,6 +137,9 @@ message DescribeCapabilitiesResponse {
   repeated string unavailable_capabilities = 4;
   // Memory kinds the runtime admits on this platform; media admission must not exceed it.
   repeated string admitted_memory_kinds = 5;
+  // Host accelerator facts (ADR-022). Present on every target that expects an accelerator; each
+  // entry states how it was probed, and is never read as "this process uses it".
+  repeated HostAccelerator host_accelerators = 7;
   // Host tier limits this process was started with (ADR-015). Always present; an absent tier
   // is reported by an empty `tier` and zero limits, never by omitting the message.
   ResidencyLimits residency = 6;

@@ -42,6 +42,10 @@ jobs:
       # tests/integration 需要 SENSORYPLEX_TEST_DATABASE_URL，由上面的 postgres service 提供。
       - run: make check
       - run: make runtime-smoke
+      # 宿主加速器上报（ADR-022）要真读宿主（system_profiler / CoreML framework），
+      # 这个 job 是目前唯一能提供"远端 Apple Silicon 真机"证据的地方（开发机之外）。
+      # 无头虚拟机上拿不到显示报告时，脚本会显式打印"无法独立对账"，不会静默放宽断言。
+      - run: make accelerator-check
 
   check-console:
     runs-on: ubuntu-latest
@@ -99,3 +103,6 @@ jobs:
       # 同一条主机 cargo 命令），所以这里用 make 而不是裸 cargo。
       - run: make media-test
       - run: make runtime-smoke
+      # 宿主加速器上报（ADR-022）的远端真机证据就在这个 job：它是开发机之外唯一能真跑
+      # `system_profiler` / 读到 CoreML framework 的地方（这也是 Mac mini 的同类目标）。
+      - run: make accelerator-check

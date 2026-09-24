@@ -12,7 +12,7 @@ use sensoryplex_media::sampler::SamplingPolicy;
 use sensoryplex_media::segment::{MAX_AUDIO_SEGMENT_MS, MIN_AUDIO_SEGMENT_MS};
 use sensoryplex_media::source::{drain_source, FileSource, MediaSource, UnavailableSource};
 use sensoryplex_media::MediaError;
-use sensoryplex_runtime::{capability, MediaQueueAdmission, Pipeline, ResidentLimits};
+use sensoryplex_runtime::{accelerator, capability, MediaQueueAdmission, Pipeline, ResidentLimits};
 use sensoryplex_sdk::media::{
     DecodedDataPlane, LiveIngestReport, LiveStreamStats,
     MediaQueueAdmission as MediaQueueAdmissionProto, MediaSourceDescription, MediaSourceKind,
@@ -1168,6 +1168,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         %address,
         platform = %capability::platform(),
         state = capability::state(),
+        // 宿主加速器与"本进程能不能执行推理"是两回事，日志里也分开写（ADR-022）。
+        accelerators = %accelerator::summary(),
         tier = residency.tier.as_deref().unwrap_or("not_injected"),
         media_queue_capacity = residency
             .media_queue_capacity

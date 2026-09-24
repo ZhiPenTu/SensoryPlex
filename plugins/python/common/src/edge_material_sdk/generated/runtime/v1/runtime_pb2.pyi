@@ -14,9 +14,20 @@ class CapabilityState(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     CAPABILITY_STATE_UNSPECIFIED: _ClassVar[CapabilityState]
     CAPABILITY_STATE_AVAILABLE: _ClassVar[CapabilityState]
     CAPABILITY_STATE_UNAVAILABLE: _ClassVar[CapabilityState]
+
+class AcceleratorState(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    ACCELERATOR_STATE_UNSPECIFIED: _ClassVar[AcceleratorState]
+    ACCELERATOR_STATE_AVAILABLE: _ClassVar[AcceleratorState]
+    ACCELERATOR_STATE_UNAVAILABLE: _ClassVar[AcceleratorState]
+    ACCELERATOR_STATE_UNKNOWN: _ClassVar[AcceleratorState]
 CAPABILITY_STATE_UNSPECIFIED: CapabilityState
 CAPABILITY_STATE_AVAILABLE: CapabilityState
 CAPABILITY_STATE_UNAVAILABLE: CapabilityState
+ACCELERATOR_STATE_UNSPECIFIED: AcceleratorState
+ACCELERATOR_STATE_AVAILABLE: AcceleratorState
+ACCELERATOR_STATE_UNAVAILABLE: AcceleratorState
+ACCELERATOR_STATE_UNKNOWN: AcceleratorState
 
 class DescribeRequest(_message.Message):
     __slots__ = ()
@@ -152,6 +163,24 @@ class BackendCapability(_message.Message):
     unavailable_reason: str
     def __init__(self, backend: _Optional[str] = ..., platform: _Optional[str] = ..., runtime_version: _Optional[str] = ..., precisions: _Optional[_Iterable[str]] = ..., memory_kinds: _Optional[_Iterable[str]] = ..., max_concurrency: _Optional[int] = ..., state: _Optional[_Union[CapabilityState, str]] = ..., unavailable_reason: _Optional[str] = ...) -> None: ...
 
+class HostAccelerator(_message.Message):
+    __slots__ = ("accelerator", "platform", "state", "detection_source", "runtime_version", "evidence", "unavailable_reason")
+    ACCELERATOR_FIELD_NUMBER: _ClassVar[int]
+    PLATFORM_FIELD_NUMBER: _ClassVar[int]
+    STATE_FIELD_NUMBER: _ClassVar[int]
+    DETECTION_SOURCE_FIELD_NUMBER: _ClassVar[int]
+    RUNTIME_VERSION_FIELD_NUMBER: _ClassVar[int]
+    EVIDENCE_FIELD_NUMBER: _ClassVar[int]
+    UNAVAILABLE_REASON_FIELD_NUMBER: _ClassVar[int]
+    accelerator: str
+    platform: str
+    state: AcceleratorState
+    detection_source: str
+    runtime_version: str
+    evidence: _containers.RepeatedScalarFieldContainer[str]
+    unavailable_reason: str
+    def __init__(self, accelerator: _Optional[str] = ..., platform: _Optional[str] = ..., state: _Optional[_Union[AcceleratorState, str]] = ..., detection_source: _Optional[str] = ..., runtime_version: _Optional[str] = ..., evidence: _Optional[_Iterable[str]] = ..., unavailable_reason: _Optional[str] = ...) -> None: ...
+
 class ResidencyLimits(_message.Message):
     __slots__ = ("tier", "media_queue_capacity", "model_parallelism")
     TIER_FIELD_NUMBER: _ClassVar[int]
@@ -167,17 +196,19 @@ class DescribeCapabilitiesRequest(_message.Message):
     def __init__(self) -> None: ...
 
 class DescribeCapabilitiesResponse(_message.Message):
-    __slots__ = ("platform", "host", "backends", "unavailable_capabilities", "admitted_memory_kinds", "residency")
+    __slots__ = ("platform", "host", "backends", "unavailable_capabilities", "admitted_memory_kinds", "host_accelerators", "residency")
     PLATFORM_FIELD_NUMBER: _ClassVar[int]
     HOST_FIELD_NUMBER: _ClassVar[int]
     BACKENDS_FIELD_NUMBER: _ClassVar[int]
     UNAVAILABLE_CAPABILITIES_FIELD_NUMBER: _ClassVar[int]
     ADMITTED_MEMORY_KINDS_FIELD_NUMBER: _ClassVar[int]
+    HOST_ACCELERATORS_FIELD_NUMBER: _ClassVar[int]
     RESIDENCY_FIELD_NUMBER: _ClassVar[int]
     platform: str
     host: HostResources
     backends: _containers.RepeatedCompositeFieldContainer[BackendCapability]
     unavailable_capabilities: _containers.RepeatedScalarFieldContainer[str]
     admitted_memory_kinds: _containers.RepeatedScalarFieldContainer[str]
+    host_accelerators: _containers.RepeatedCompositeFieldContainer[HostAccelerator]
     residency: ResidencyLimits
-    def __init__(self, platform: _Optional[str] = ..., host: _Optional[_Union[HostResources, _Mapping]] = ..., backends: _Optional[_Iterable[_Union[BackendCapability, _Mapping]]] = ..., unavailable_capabilities: _Optional[_Iterable[str]] = ..., admitted_memory_kinds: _Optional[_Iterable[str]] = ..., residency: _Optional[_Union[ResidencyLimits, _Mapping]] = ...) -> None: ...
+    def __init__(self, platform: _Optional[str] = ..., host: _Optional[_Union[HostResources, _Mapping]] = ..., backends: _Optional[_Iterable[_Union[BackendCapability, _Mapping]]] = ..., unavailable_capabilities: _Optional[_Iterable[str]] = ..., admitted_memory_kinds: _Optional[_Iterable[str]] = ..., host_accelerators: _Optional[_Iterable[_Union[HostAccelerator, _Mapping]]] = ..., residency: _Optional[_Union[ResidencyLimits, _Mapping]] = ...) -> None: ...

@@ -2,6 +2,12 @@ use serde::Deserialize;
 use std::num::NonZeroUsize;
 use tokio::sync::mpsc;
 
+/// 宿主加速器探测（ADR-022）。
+///
+/// 与 `capability` 分工：`capability::backends()` 回答"**本进程**能不能执行推理"，
+/// 本模块回答"**这台宿主**有没有这块加速器"。两张表分开，任何一张都不能替另一张说话。
+pub mod accelerator;
+
 /// 平台、宿主资源清单与后端能力上报。
 ///
 /// 尚未实现的能力会按稳定顺序列在"不可用"中，并附上原因；调用方不会把
@@ -110,6 +116,7 @@ pub mod capability {
             backends: backends(),
             unavailable_capabilities: unavailable_capabilities(),
             admitted_memory_kinds: admitted_memory_kinds(),
+            host_accelerators: crate::accelerator::report().to_vec(),
             residency: Some(limits.describe_residency()),
         }
     }
@@ -579,6 +586,71 @@ mod capability_tests {
         if platform() == "macos-aarch64" {
             assert!(names.contains(&"coreml".to_string()));
             assert!(names.contains(&"metal".to_string()));
+        }
+    }
+
+    /// 宿主加速器表必须与"本进程能不能执行"分开报告，且三态不得互相塌陷（ADR-022）。
+    #[test]
+    fn host_accelerators_never_collapse_probe_failure_into_absence() {
+        use sensoryplex_sdk::runtime::AcceleratorState;
+
+        let described = describe(&crate::ResidentLimits::default());
+        let facts = described.host_accelerators;
+        assert_eq!(
+            facts.len(),
+            crate::accelerator::expected().len(),
+            "报告条数必须等于本目标的预期加速器清单，不能凭空增减"
+        );
+        let mut seen = Vec::new();
+        for fact in &facts {
+            assert!(
+                crate::accelerator::expected().contains(&fact.accelerator.as_str()),
+                "{} 不在本目标的预期清单里",
+                fact.accelerator
+            );
+            assert!(
+                !seen.contains(&fact.accelerator),
+                "{} 重复上报",
+                fact.accelerator
+            );
+            seen.push(fact.accelerator.clone());
+            assert_eq!(fact.platform, platform());
+            let state = AcceleratorState::try_from(fact.state).expect("state must be known");
+            assert_ne!(
+                state,
+                AcceleratorState::Unspecified,
+                "{} 必须给出三种结局之一，不能留 unspecified",
+                fact.accelerator
+            );
+            assert!(!fact.detection_source.is_empty());
+            // 只有"宿主确实有"才允许去掉原因；其余两态都必须解释自己。
+            assert_eq!(
+                fact.unavailable_reason.is_empty(),
+                state == AcceleratorState::Available,
+                "{} 在 {state:?} 下的原因串与状态不匹配",
+                fact.accelerator
+            );
+            // 证据里不允许出现文件系统路径或整段工具输出。
+            for item in &fact.evidence {
+                assert!(!item.contains('/'), "evidence 不得携带路径: {item}");
+                assert!(item.len() <= 128, "evidence 过长: {item}");
+            }
+        }
+        if platform() == "macos-aarch64" {
+            // `AVAILABLE` 必须带真读到的版本；这条是实现的硬不变量。
+            // 反过来的"本目标不许出现 unknown"不在这里断言：无头 macOS 虚拟机可能拿不到
+            // 显示报告，那是环境的真结论，不是回归——对账交给 tools/verify_accelerator_report.py
+            // 用独立探测出的宿主事实去比。
+            for fact in &facts {
+                let state = AcceleratorState::try_from(fact.state).expect("known state");
+                if state == AcceleratorState::Available {
+                    assert!(
+                        !fact.runtime_version.is_empty(),
+                        "{} 报 available 就必须带上真读到的版本",
+                        fact.accelerator
+                    );
+                }
+            }
         }
     }
 }
