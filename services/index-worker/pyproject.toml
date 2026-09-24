@@ -10,6 +10,11 @@ dependencies = [
   "psycopg[binary,pool]>=3.2,<4",
   "pymilvus>=2.6,<3",
   "milvus-lite>=2.4",
+  # 常驻消费（ADR-025）：nats-py 是本服务自己要 import 的依赖，不从 relay 那边"顺带拿到"。
+  "nats-py>=2.9,<3",
+  # 事件总线契约（stream / subject / 保留策略 / envelope 对账）只有一份实现，发布端与
+  # 消费端都取自 `sensoryplex_relay.contract`——复制常量等于承认两条会各自漂移的事实源。
+  "sensoryplex-relay",
 ]
 
 [project.scripts]
@@ -20,6 +25,7 @@ sensoryplex-index = "sensoryplex_index_worker.cli:main"
 # 所以这里**引入插件而不复制它的装配逻辑**。
 edge-material-plugin-embed-bge-onnx = { workspace = true }
 edge-material-sdk = { workspace = true }
+sensoryplex-relay = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

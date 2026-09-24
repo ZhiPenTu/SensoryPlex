@@ -357,8 +357,30 @@ reserved，破坏语义的修改进入新的协议 major。当前为开发预览
 [ADR-024](../adr/ADR-024-outbox分发接线与消费去重边界.md) 接上（`services/outbox-relay`：
 `published_at` 只在 JetStream 确认之后写、`Nats-Msg-Id = event_id` 由 duplicate window 吸收重发、
 stream 漂移只报不改）；消费去重原语在 `records.is_consumed` / `record_consumed`，键是
-`(event_id, consumer_name)`。但**消费循环没有**：上游 observation 没有 `event_id`，
-唯一存在的 `material.upserted` 携带不了 BGE 需要的 `ocr_blocks` 文本。因此仍不能把
-“已写 outbox”解释为“已由 index-worker 常驻消费”（“已发布 NATS”现在有了证据，
-`make outbox-check` 会把 subject / `Nats-Msg-Id` / 载荷逐字节对回来）。
-语义检索本身已接线，但它的输入仍是显式调用（`sensoryplex-index index`），不是 NATS 消费。
+`(event_id, consumer_name)`。
+
+**消费（JetStream → sink）**已按 [ADR-025](../adr/ADR-025-常驻消费循环与sink接线.md) 接上
+（`sensoryplex-index serve --consume`：消费与检索面**同进程**，因为 Milvus Lite 的数据目录是
+进程级 flock）。这一侧的契约面写死为：
+
+- 事件只是**通知**：`payload_ref` 必须是 `material:<material_unit_id>:<revision>`（revision 为正整数），
+  形状不符即 `invalid_payload_ref`；可编码文本按引用回查 `observation.payload_jsonb`
+  （读 payload 的规则仍只有 BGE 插件那一份实现），回查不到即 `event_missing_facts`
+  ——事实与事件同事务，查不到是写侧缺陷，不是"没数据"；
+- 订阅是**精确 subject**（`<prefix>.material.upserted`），不用 `>` 通配；不支持的 `event_type`
+  记账跳过（`unsupported_event_type`）并 ack，不重投到天荒地老；
+- durable 契约六项逐字比：`durable_name` / `filter_subject` / `ack_policy=explicit` / `ack_wait` /
+  `max_deliver` / `max_ack_pending=batch`。**消费端不建 stream**（缺失即 `event_stream_missing`），
+  只建自己的 durable；stream 与 durable 漂移一律**只报不改**
+  （`event_stream_contract_mismatch` / `event_consumer_contract_mismatch`）；
+- 顺序是**先干活后记账**：编码 → 落库 → 确认写入 → `record_consumed` → `ack`。
+  少一条向量就不算消费完成：重投到 `max_deliver` 上限后以 `event_retry_exhausted` **退出码 3**
+  显式停止（本切片没有 dead-letter）；
+- 状态行 `consume.status` 只有 16 个字段（计数 + 标识 + 稳定原因码），不放载荷、文本、向量、
+  令牌、DSN 或主机路径。
+
+因此"已写 outbox"仍**不能**解释为"已被消费"——它只表示事件被可靠地记了下来；
+"已发布 NATS"由 `make outbox-check` 出证据（subject / `Nats-Msg-Id` / 载荷逐字节对回来），
+"已被消费成向量、并且能被同一个检索面检索到"由 `make consume-check` 出证据。
+语义检索本身已接线；它的输入除了显式调用（`sensoryplex-index index`），现在也可以来自
+NATS 消费（走同一个进程）。

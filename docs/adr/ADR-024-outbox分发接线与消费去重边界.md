@@ -143,10 +143,13 @@ NATS 或 PostgreSQL 不可达时**异常退出，不跳过**；`make outbox-run`
 
 **仍未验证（不得声称完成）：**
 
-- **NATS → sink 的常驻消费仍未接线**：本轮做的是"发布这一跳"。而且它**不只是接线问题**——
-  唯一存在的事件 `material.upserted` 不携带可编码文本，BGE 需要 `ocr_blocks`，而 observation
-  连 `event_id` 都没有。补齐 observation 契约（谁为哪种观测发事件、事件里带什么引用）是**后续切片**；
-  在此之前 `outbox-check` 通过**不等于**"向量已被事件驱动地写进去了"；
+- **NATS → sink 的常驻消费（本切片内）未接线**：本轮做的是"发布这一跳"。当时判断它**不只是
+  接线问题**——唯一存在的事件 `material.upserted` 不携带可编码文本，BGE 需要 `ocr_blocks`，
+  而 observation 连 `event_id` 都没有，因此当时把"补齐 observation 契约"记成了前置条件。
+  **该结论已被下一个切片改写**：[ADR-025](ADR-025-常驻消费循环与sink接线.md) 证明不需要新增
+  observation 事件契约——事件只是通知，消费侧按 `payload_ref` 回查 `observation.payload_jsonb`
+  就能拿到可编码文本。消费循环已落地并通过 `make consume-check`；
+  在此之前（以及本节记录的那个时点）`outbox-check` 通过**不等于**"向量已被事件驱动地写进去了"；
 - **relay 尚未进 compose**：常驻形态目前靠 `make outbox-run` 显式起（JetStream 里没有消费者，
   先常驻一个只发不收的进程没有意义，也会让开发栈默认产生无人消费的事件）；
 - **没有 dead-letter 与重试上限**：`attempt` 只被计数，超过阈值的处理方式未定义（TODO）；

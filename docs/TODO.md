@@ -48,12 +48,23 @@
   检索面答了但不是本契约 502），`retryable` 是独立标记（503 也可能不可重试）。本切片只做纯语义：
   筛选项显式 422，keyword 不排名、`hits` 为空。`make semantic-check` 真实 BGE → Milvus Lite →
   常驻检索面 → API 走 HTTP **13 个场景**通过。证据见 `docs/verification.md` 的
-  "网关语义检索接线（ADR-023）"。**仍未验证**：常驻消费（NATS/outbox）、RRF/混合检索与相关性校准、
-  向量质量（recall/MRR）、服务端 Milvus 拓扑与跨机/跨容器部署。
-- [ ] **NATS → sink 的常驻消费循环**：`ADR-024` 只做了"发布这一跳"。补它首先需要补
-  observation 契约（谁为哪种观测发事件、事件里带什么受控引用）——BGE 要的是上游 `ocr_blocks`，
-  而 observation 连 `event_id` 都没有，`material.upserted` 也带不了可编码文本。
-  同时未定义：`attempt` 超过阈值的处理方式（没有 dead-letter）、relay 是否进 compose。
+  "网关语义检索接线（ADR-023）"。**仍未验证**：RRF/混合检索与相关性校准、向量质量（recall/MRR）、
+  服务端 Milvus 拓扑与跨机/跨容器部署。（常驻消费已由 [ADR-025](adr/ADR-025-常驻消费循环与sink接线.md)
+  接上，见下面那条。）
+- [x] **NATS → sink 的常驻消费循环（ADR-025）**：`sensoryplex-index serve --consume` 把常驻消费挂在
+  **持有向量库的那个进程**上（Milvus Lite 目录是进程级 flock，拆两个进程要么新向量对检索面不可见、
+  要么直接 `vector_store_locked`）。事件只是通知：`payload_ref = material:<id>:<rev>` 形状显式校验，
+  可编码文本按引用回查 `observation.payload_jsonb`（因此**不需要**新增 observation 事件契约——
+  这改写了 ADR-024 §9 当时的判断），回查不到即 `event_missing_facts`（写侧缺陷，不是"没数据"）。
+  先干活后记账（编码 → 落库 → 确认写入 → `record_consumed` → ack），少一条向量就不算消费完成
+  （重投到 `max_deliver` 上限 → `event_retry_exhausted` + **退出码 3**；没有 dead-letter）。
+  消费端**绝不自动建 stream**（`event_stream_missing`），只建自己的 durable，漂移一律只报不改。
+  `make consume-check` 用真实写侧 + 真实 relay + 真 JetStream + 真实 BGE 权重 + 真实 Milvus Lite +
+  真实 gRPC 检索面跑 **6 个场景**全过（事件驱动写入→同一进程立刻检索到、换 durable 重放不重复、
+  目录锁与优雅停止、坏事件 fail-stop、三类启动期显式失败、状态行不外泄）。
+  证据见 `docs/verification.md` 的"常驻消费循环与 sink 接线（ADR-025）"。
+  **仍未做**：dead-letter 与按原因分流、`ack_wait` 到期重投的单独验收、消费侧/relay 进 compose、
+  吞吐与背压（ADR-019 的队列上限没接到这一层）。
 - [x] **outbox 分发已接线（ADR-024）**：新增 `services/outbox-relay`，把事务性 outbox 的事件
   **确认发到** NATS JetStream。四条写死的语义：`published_at` 只在确认之后写（发失败时保持 NULL，
   否则事件永久消失）；`Nats-Msg-Id = event_id`，重发由 duplicate window 吸收；认领用
@@ -63,8 +74,9 @@
   `consumed_at` 是 `NOT NULL`，两相认领会把重投变成事件永久丢失）。`make outbox-check`
   在真 PostgreSQL + 真 JetStream 上 **9 个场景**通过，`make outbox-run` 是常驻形态。
   证据见 `docs/verification.md` 的"outbox 分发与消费去重边界（ADR-024）"。
-  **边界（不得含糊）**：这是"发布这一跳"，NATS → sink 的**消费循环仍未接线**（见上一条），
-  所以本项完成**不等于**"向量已被事件驱动地写进去了"。
+  **边界（不得含糊）**：这一项只是"发布这一跳"。当时 NATS → sink 的消费循环还没接线，
+  所以 `outbox-check` 通过**不等于**"向量已被事件驱动地写进去了"——消费那一跳由
+  [ADR-025](adr/ADR-025-常驻消费循环与sink接线.md) 的 `make consume-check` 单独出证据。
 - [ ] **真实媒体端到端**：Runtime → Timeline → metadata writer/outbox → 查询与回看尚未联调验收。
   Timeline 融合核心已在独立分支 `codex/timeline-fusion` 提交 `bdb00ef`，尚未合并主线。
 - [ ] **语义冲突识别与消解**：当前融合核心只保留显式冲突标记；不推断自然语言矛盾。
@@ -231,7 +243,8 @@
   BGE 向量也已能落库并检索回来（Milvus **Lite** 形态），宿主加速器事实也已真实探测并单独上报
   （[ADR-022](adr/ADR-022-宿主加速器能力探测与上报.md)），网关侧也已把这批向量接进真实语义检索
   （[ADR-023](adr/ADR-023-网关语义检索接线与索引检索面.md)）；outbox → JetStream 的**发布**也已接
-  （[ADR-024](adr/ADR-024-outbox分发接线与消费去重边界.md)），仍未做的是那个消费循环。
+  （[ADR-024](adr/ADR-024-outbox分发接线与消费去重边界.md)），消费那一跳也已接上
+  （[ADR-025](adr/ADR-025-常驻消费循环与sink接线.md)：`serve --consume` + `make consume-check`）。
   证据见 `docs/verification.md` 的 "M8 模型插件：真实 VLM 端侧接入与观察语义"、
   "M10 模型插件：真实 ASR 端侧接入与音频样本布局契约"、"M8 OCR"、"M8 BGE" 与
   "M8 剩余：向量索引落库与检索闭环（ADR-020）"、"网关语义检索接线（ADR-023）"；设计决策见
@@ -296,8 +309,9 @@
   Milvus standalone **起不来也未验收**；Milvus Lite 是**进程独占**的（目录 flock，
   被占用即 `vector_store_locked`），因此 edge 是单写进程。详见
   [ADR-020](adr/ADR-020-向量索引落库与检索闭环.md)。
-- 剩余子项：常驻 index-worker 消费**循环**（outbox → JetStream 的**发布**已接，见
-  [ADR-024](adr/ADR-024-outbox分发接线与消费去重边界.md)；消费循环还缺 observation 事件契约）、
+- 剩余子项：dead-letter 与按原因分流、把消费侧/relay 进 compose（消费**循环**本身已接：
+  outbox → JetStream 的发布见 [ADR-024](adr/ADR-024-outbox分发接线与消费去重边界.md)，
+  JetStream → sink 的消费见 [ADR-025](adr/ADR-025-常驻消费循环与sink接线.md)）、
   语义检索的排序面（`mode=semantic` 已接真实检索，但只有单路 COSINE 距离：
   RRF/混合检索与相关性校准未做，见 [ADR-023](adr/ADR-023-网关语义检索接线与索引检索面.md)）、
   向量质量验收（无带参考文本的检索样本 → 无 recall/MRR）、

@@ -3,11 +3,10 @@
 两个形态：
 
 - `index` / `search` / `inspect`：**显式调用**，各自一个短命进程（落库、按向量检索、看契约）；
-- `serve`：**常驻检索面**（ADR-023）。Milvus Lite 是进程独占的，因此"持有索引的进程"与
-  "回答语义检索的进程"必须是同一个：`serve` 打开向量库后一直持有，调用方只提交查询文本。
-
-常驻消费（NATS 事件 / outbox 轮询）仍未接线，因此这里不做"看起来在跑"的消费循环，
-也不谎报 ready。
+- `serve`：**常驻节点**（ADR-023 检索面 + ADR-025 常驻消费）。Milvus Lite 的数据目录是
+  进程独占的，因此"持有索引的进程"与"回答语义检索的进程"必须是同一个；`--consume` 因此
+  挂在同一个进程上——事件驱动写入的向量必须对同一个进程里的检索面立刻可见。加不加
+  `--consume` 是两件事：不加就只是检索面，加了才是"发布端 → 消费 → 索引 → 检索"整条链路。
 """
 
 import argparse
@@ -16,9 +15,25 @@ import os
 import pathlib
 import signal
 import sys
+import tempfile
+import threading
 
 import psycopg
+from sensoryplex_relay.contract import DEFAULT_STREAM, DEFAULT_SUBJECT_PREFIX
 
+from .consumer import (
+    DEFAULT_ACK_WAIT_S,
+    DEFAULT_BATCH,
+    DEFAULT_CONNECT_TIMEOUT_S,
+    DEFAULT_DURABLE,
+    DEFAULT_FETCH_TIMEOUT_S,
+    DEFAULT_MAX_DELIVER,
+    DEFAULT_NAK_DELAY_S,
+    ConsumerError,
+    ConsumerOptions,
+    ConsumerRunner,
+    json_line,
+)
 from .errors import IndexContractError, VectorStoreError
 from .milvus_store import VectorIndex
 from .query_encoder import QueryEncoderError, build_query_encoder
@@ -188,14 +203,36 @@ def run_inspect(arguments) -> int:
     return 0
 
 
+def consume_options_of(arguments) -> ConsumerOptions | None:
+    """把命令行折成消费参数面；`--consume` 未开时返回 None（这就是"只做检索面"）。"""
+    if not arguments.consume:
+        return None
+    options = ConsumerOptions(
+        stream=arguments.stream,
+        subject_prefix=arguments.subject_prefix,
+        durable=arguments.durable,
+        batch=arguments.consume_batch,
+        ack_wait_s=arguments.ack_wait_s,
+        fetch_timeout_s=arguments.fetch_timeout_s,
+        max_deliver=arguments.max_deliver,
+        nak_delay_s=arguments.nak_delay_s,
+        connect_timeout_s=arguments.connect_timeout_s,
+        idle_exit_cycles=arguments.consume_idle_exit,
+    )
+    # 参数越界在**占向量库的锁之前**失败：先崩在参数上，不要去抢一个别人正在用的目录。
+    options.validate()
+    return options
+
+
 def run_serve(arguments) -> int:
-    """常驻检索面：先建编码器（失败就不占向量库的锁），再开库、开库成功才对外服务。"""
+    """常驻节点：先建编码器（失败就不占向量库的锁），再开库、开库成功才对外服务。"""
     if not arguments.database_url:
         raise SystemExit("database_url_required")
     auth_token = arguments.auth_token or os.getenv("SENSORYPLEX_INDEX_AUTH_TOKEN", "")
     if not auth_token:
         # 检索面一旦跨容器接入就必须显式开端口；没有令牌的服务不允许起来。
         raise SystemExit("index_auth_token_required")
+    consume_options = consume_options_of(arguments)
     try:
         encoder = build_query_encoder(
             model_dir=arguments.model_dir,
@@ -229,16 +266,74 @@ def run_serve(arguments) -> int:
             "index_version": INDEX_VERSION,
             "max_concurrency": arguments.max_concurrency,
             "encoder": encoder.describe(),
+            # 消费侧要么明确关着（null），要么把契约原样写出来：不写"看起来在跑"的 ready。
+            "consume": None
+            if consume_options is None
+            else {
+                "stream": consume_options.stream,
+                "subject": consume_options.subject,
+                "durable": consume_options.durable,
+                "batch": consume_options.batch,
+                "max_deliver": consume_options.max_deliver,
+                "idle_exit_cycles": consume_options.idle_exit_cycles,
+            },
         },
         arguments.out,
     )
-    # SIGTERM 走优雅停止：进程退出即释放 Milvus Lite 的目录锁，锁是瞬时的容量约束。
-    signal.signal(signal.SIGTERM, lambda *_: server.stop(SERVE_GRACE_SECONDS))
-    signal.signal(signal.SIGINT, lambda *_: server.stop(SERVE_GRACE_SECONDS))
+    runner = None
+    if consume_options is not None:
+        runner = ConsumerRunner(
+            database_url=arguments.database_url,
+            nats_url=arguments.nats_url,
+            options=consume_options,
+            index=index,
+            encoder=encoder,
+            emit=StatusWriter(arguments.consume_status_out),
+            # 消费侧以 `event_retry_exhausted` 结束时不允许静默降级：整个进程按原因退出。
+            on_fatal=lambda: server.stop(SERVE_GRACE_SECONDS),
+        )
+        runner.start()
+        # 有界等待"真的接上了"：NATS 不可达、流缺失、stream/durable 契约漂移都是**启动失败**，
+        # 不能让进程带着一个没接上的消费侧对外服务。
+        if not runner.wait_ready(timeout=consume_options.connect_timeout_s * 3):
+            failure = ConsumerError(
+                "consumer_start_timeout", f"{consume_options.connect_timeout_s * 3}s"
+            )
+        else:
+            failure = runner.error
+        if failure is not None:
+            _emit(
+                {
+                    "command": "consume",
+                    "stream": consume_options.stream,
+                    "subject": consume_options.subject,
+                    "durable": consume_options.durable,
+                    "error_code": failure.code,
+                    "error_detail": failure.detail,
+                },
+                arguments.consume_status_out,
+            )
+            runner.stop()
+            server.stop(0)
+            pool.close()
+            index.close()
+            return 1
+
+    def stop_everything(*_):
+        # SIGTERM 走优雅停止：进程退出即释放 Milvus Lite 的目录锁，锁是瞬时的容量约束。
+        server.stop(SERVE_GRACE_SECONDS)
+        if runner is not None:
+            runner.stop()
+
+    signal.signal(signal.SIGTERM, stop_everything)
+    signal.signal(signal.SIGINT, stop_everything)
     server.wait_for_termination()
+    if runner is not None:
+        runner.stop()
     pool.close()
     index.close()
-    return 0
+    # 消费侧 fatal = 整个进程 fatal：退出码把"为什么停了"带到进程边界之外。
+    return runner.exit.code if runner is not None else 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -299,15 +394,70 @@ def build_parser() -> argparse.ArgumentParser:
         help="共享令牌；也可用环境变量 SENSORYPLEX_INDEX_AUTH_TOKEN，缺失即拒绝启动",
     )
     serve.add_argument("--out", type=pathlib.Path, default=None)
+    # 常驻消费（ADR-025）：默认关闭。开与不开是两个事实，绝不"看起来在跑"。
+    serve.add_argument(
+        "--consume",
+        action="store_true",
+        help="把 JetStream → sink 的常驻消费挂在本进程上（ADR-025）",
+    )
+    serve.add_argument(
+        "--nats-url",
+        default=os.getenv("SENSORYPLEX_NATS_URL", "nats://127.0.0.1:24222"),
+        help="NATS 端点；容器内是 nats://nats:4222，主机是 127.0.0.1",
+    )
+    serve.add_argument("--stream", default=DEFAULT_STREAM, help="JetStream stream 名")
+    serve.add_argument("--subject-prefix", default=DEFAULT_SUBJECT_PREFIX)
+    serve.add_argument("--durable", default=DEFAULT_DURABLE, help="durable 名 = 去重作用域")
+    serve.add_argument("--consume-batch", type=int, default=DEFAULT_BATCH)
+    serve.add_argument("--ack-wait-s", type=float, default=DEFAULT_ACK_WAIT_S)
+    serve.add_argument("--fetch-timeout-s", type=float, default=DEFAULT_FETCH_TIMEOUT_S)
+    serve.add_argument("--max-deliver", type=int, default=DEFAULT_MAX_DELIVER)
+    serve.add_argument("--nak-delay-s", type=float, default=DEFAULT_NAK_DELAY_S)
+    serve.add_argument("--connect-timeout-s", type=float, default=DEFAULT_CONNECT_TIMEOUT_S)
+    serve.add_argument(
+        "--consume-idle-exit",
+        type=int,
+        default=0,
+        help="连续 N 轮拉不到消息就退出（0 = 常驻）；用于有界排空",
+    )
+    serve.add_argument("--consume-status-out", type=pathlib.Path, default=None)
     serve.set_defaults(handler=run_serve)
     return parser
+
+
+class StatusWriter:
+    """消费状态行：同时进 stdout 与（可选的）文件；文件用临时文件 + rename 原子替换。
+
+    消费循环在自己的线程里，主线程也在写 stdout，所以这里加锁并逐行写完——交叉写出的
+    JSON 行既不是状态行，也不是任何可解析的东西。
+    """
+
+    def __init__(self, out: pathlib.Path | None):
+        self._out = out
+        self._lock = threading.Lock()
+
+    def __call__(self, document: dict) -> None:
+        line = json_line(document)
+        with self._lock:
+            print(line, flush=True)
+            if self._out is None:
+                return
+            self._out.parent.mkdir(parents=True, exist_ok=True)
+            handle, path = tempfile.mkstemp(dir=str(self._out.parent), prefix=".consume-status-")
+            with os.fdopen(handle, "w", encoding="utf-8") as stream:
+                stream.write(line + "\n")
+            os.replace(path, self._out)
 
 
 def main(argv: list[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
     if not arguments.uri:
         raise SystemExit("milvus_uri_required")
-    return arguments.handler(arguments)
+    try:
+        return arguments.handler(arguments)
+    except ConsumerError as error:
+        # 参数越界在占向量库锁之前就失败：给原因码，不给 traceback。
+        raise SystemExit(error.code) from error
 
 
 if __name__ == "__main__":

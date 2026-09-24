@@ -33,8 +33,8 @@
 window 吸收重发、stream 漂移只报不改、NATS 不可达显式失败而不是静默挂着），sink 侧去重原语
 `is_consumed` / `record_consumed` 的键是 `(event_id, consumer_name)`，`make outbox-check`
 **9 个场景**在真 PostgreSQL + 真 JetStream 上通过（见 `docs/verification.md` 的
-"outbox 分发与消费去重边界（ADR-024）"与 ADR-024），以及**网关语义检索接线**：`mode=semantic` 从 501 变成真实检索——常驻检索面（`sensoryplex-index serve`）是持有向量库的唯一进程，API 只转发查询 + 按 `(material_unit_id, revision)` 水合事实，查询向量用 BGE 插件自己的 `Start` 编码并按 `model_release_id` 做 collection 级同源守卫（异源或混装整请求拒绝），未配置/不可达/令牌不符与"检索面答了但不是本契约"按失败发生位置分 503/502，`retryable` 是独立标记（503 也可能是不可重试的配置错误），`make semantic-check` **13 个场景**通过（见 `docs/verification.md` 的"网关语义检索接线（ADR-023）"与 ADR-023） | Rust 侧仍没有任何 in-process `ExecutionBackend`（`model_inference` 恒在 `unavailable_capabilities`；宿主加速器探测只在开发机 `macos-aarch64` 实测，`cuda` 分支与 Mac mini 均未验收）；**常驻消费循环仍未写**（outbox → JetStream 的**发布**已接，但上游 observation 没有事件、
-`material.upserted` 也带不了可编码文本，见 ADR-024 §9）；RRF/混合检索与相关性校准未做；服务端 Milvus 形态（本机 Docker Hub 不可达，未验收）；ASR 的 Linux 后端（`mlx` 是 Apple Silicon 专属）；插件**未签名**（`local_native` 形态，签名/SBOM 只有结构预检）；旋转的采集与应用（v1 未实现） |
+"outbox 分发与消费去重边界（ADR-024）"与 ADR-024），以及**网关语义检索接线**：`mode=semantic` 从 501 变成真实检索——常驻检索面（`sensoryplex-index serve`）是持有向量库的唯一进程，API 只转发查询 + 按 `(material_unit_id, revision)` 水合事实，查询向量用 BGE 插件自己的 `Start` 编码并按 `model_release_id` 做 collection 级同源守卫（异源或混装整请求拒绝），未配置/不可达/令牌不符与"检索面答了但不是本契约"按失败发生位置分 503/502，`retryable` 是独立标记（503 也可能是不可重试的配置错误），`make semantic-check` **13 个场景**通过（见 `docs/verification.md` 的"网关语义检索接线（ADR-023）"与 ADR-023） | Rust 侧仍没有任何 in-process `ExecutionBackend`（`model_inference` 恒在 `unavailable_capabilities`；宿主加速器探测只在开发机 `macos-aarch64` 实测，`cuda` 分支与 Mac mini 均未验收）；**常驻消费循环（当时）未写**——outbox → JetStream 的**发布**已接，但当时判断上游 observation 没有事件、
+`material.upserted` 也带不了可编码文本——该判断已由 ADR-025 改写）；RRF/混合检索与相关性校准未做；服务端 Milvus 形态（本机 Docker Hub 不可达，未验收）；ASR 的 Linux 后端（`mlx` 是 Apple Silicon 专属）；插件**未签名**（`local_native` 形态，签名/SBOM 只有结构预检）；旋转的采集与应用（v1 未实现） |
 | 工程 | uv/Cargo 锁文件、Docker、检查命令、CI（`check`/`check-console` + **Apple Silicon** `check-apple-silicon`，远端 `macos-15-arm64` 已真实通过）、macOS `launchd` 常驻形态与统一内存分级（`tools/macos_resident.py`，见 ADR-015） | 真视频 Golden Path、Linux NVIDIA 侧 CI、压测、监控仪表盘 |
 
 下一里程碑：**本地文件 → GStreamer → PTS 正确的 frame/audio descriptor**，先完成
@@ -136,7 +136,7 @@ failed 不返回、幂等、维度篡改、库不可达、collection 契约漂�
 不换路径），因此 edge 形态是单写进程；服务端拓扑见
 `deploy/compose/docker-compose.vector.yml`，但本机 Docker Hub 不可达
 （`milvusdb/milvus` 拉取 EOF），**standalone 形态未经写入与检索验收**；常驻消费（NATS/outbox）
-仍未接线，向量质量（recall/MRR）未验收。决策见
+已由 [ADR-025](adr/ADR-025-常驻消费循环与sink接线.md) 接上（消费与检索面同进程），向量质量（recall/MRR）未验收。决策见
 [ADR-020](adr/ADR-020-向量索引落库与检索闭环.md)，实测见 `docs/verification.md` 的
 "M8 剩余：向量索引落库与检索闭环（ADR-020）"一节。
 
@@ -170,10 +170,29 @@ JetStream 确认之后写（发布失败时保持 `NULL`，"压根没发出去"�
 / `duplicate_window` 都写死上限），**漂移只报不改**（静默改小保留策略会丢掉还没被消费的事件）。
 `make outbox-check` 在真实 PostgreSQL + 真实 JetStream 上 **9 个场景**通过（含逐字节对账、
 重放去重、漂移不被修好、NATS 不可达时一行都不写），`make outbox-run` 是常驻形态。
-**边界**：这是"发布这一跳"；NATS → sink 的**消费循环仍未接线**，而且它不只是接线问题——
-上游 observation 连 `event_id` 都没有，`material.upserted` 也携带不了 BGE 需要的 `ocr_blocks`
-文本。sink 侧的消费去重原语（`is_consumed` / `record_consumed`，键 `(event_id, consumer_name)`）
-已就绪并有测试，但**没有任何常驻消费者在用它**。
+**边界（当时）**：这一项只是"发布这一跳"。当时判断消费循环"不只是接线问题"——上游 observation
+连 `event_id` 都没有，`material.upserted` 也携带不了 BGE 需要的 `ocr_blocks` 文本；
+sink 侧的消费去重原语（`is_consumed` / `record_consumed`，键 `(event_id, consumer_name)`）
+已就绪并有测试，但当时**没有任何常驻消费者在用它**。
+
+**消费那一跳也已接上**（[ADR-025](adr/ADR-025-常驻消费循环与sink接线.md)）：
+`sensoryplex-index serve --consume` 把常驻消费挂在**持有向量库的那个进程**上（Milvus Lite 的
+数据目录是进程级 flock，拆两个进程要么新写入的向量对检索面不可见、要么第二个进程直接
+`vector_store_locked`）。前一段"要先补 observation 事件契约"的判断被这一切片**改写**：事件只是
+通知，`payload_ref = material:<id>:<rev>` 形状显式校验，可编码文本按引用回查
+`observation.payload_jsonb`（读 payload 的规则仍只有插件那一份实现），回查不到即
+`event_missing_facts`（事实与事件同事务 → 那是写侧缺陷，不是"没数据"）。顺序是
+编码 → 落库 → 确认写入 → `record_consumed` → `ack`；少一条向量就不算消费完成——重投到
+`--max-deliver` 上限后以 `event_retry_exhausted` **退出码 3** 显式停止（没有 dead-letter）。
+消费端**绝不自动建 stream**（`event_stream_missing`），只建自己的 durable；stream/durable 漂移
+一律只报不改（`event_stream_contract_mismatch` / `event_consumer_contract_mismatch`），
+subject 是精确订阅而不是 `>` 通配。`make consume-check` 用真实写侧 + 真实 relay + 真 JetStream +
+真实 BGE 权重 + 真实 Milvus Lite + 真实 gRPC 检索面跑 **6 个场景**全过（事件驱动写入 → **同一进程**
+的检索面立刻检索到、换 durable 重放不重复、目录锁与优雅停止、坏事件 fail-stop、三类启动期显式失败、
+状态行不外泄）。决策见 [ADR-025](adr/ADR-025-常驻消费循环与sink接线.md)，实测见
+`docs/verification.md` 的"常驻消费循环与 sink 接线（ADR-025）"一节。
+**仍未做**：dead-letter 与按原因分流、`ack_wait` 到期重投的单独验收、消费侧/relay 进 compose、
+吞吐与背压（ADR-019 的队列上限没有接到这一层）。
 
 媒体格式准入（M9）已按 [ADR-009](adr/ADR-009-媒体格式支持矩阵与拒绝语义.md) 落地：承诺矩阵写成
 数据（容器 → 编码 → 位深 → 色彩 → 采样格式 → 声道），判定输入是**解码前采集的源格式上下文**加上
