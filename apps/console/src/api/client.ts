@@ -37,7 +37,10 @@ const messages: Record<string, string> = {
     upload_incomplete: '原片尚未完整上传。',
     invalid_time_range: '时间范围无效，结束时间需要晚于开始时间。',
     invalid_confidence: '最低置信度需要在 0 到 1 之间。',
-    semantic_index_not_configured: '语义检索尚未接入。',
+    semantic_search_unavailable: '语义检索尚未接入：本节点未配置向量检索面。',
+    semantic_index_unreachable: '向量检索面暂时不可达，请稍后重试。',
+    semantic_index_unauthenticated: '向量检索面拒绝了网关的访问：令牌不一致，需要运维改配置。',
+    semantic_filters_not_supported: '语义检索暂不支持筛选条件，请只用查询文字与条数。',
 };
 
 export class RequestError extends Error {
