@@ -269,6 +269,8 @@
     align-items: center;
     font-size: 11px;
     margin: 0;
+    flex-shrink: 0;
+    white-space: nowrap;
 }
 .material-player-controls input {
     accent-color: var(--green);
