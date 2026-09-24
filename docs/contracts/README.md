@@ -353,6 +353,12 @@ reserved，破坏语义的修改进入新的协议 major。当前为开发预览
   两边的解析必须给出**逐字相同**的原因串（Python 侧刻意不用裸 `int()`，见该 ADR §3）。
 
 `append_material` 是受信 timeline/storage 进程的内部入口；当前无公共写入 API。
-事实写入和 outbox 在同一事务完成。outbox 分发、NATS 消费去重和重试器尚待实现，
-因此不能把“已写 outbox”解释为“已发布 NATS”或“已由 index-worker 常驻消费”。
+事实写入和 outbox 在同一事务完成。**分发**已按
+[ADR-024](../adr/ADR-024-outbox分发接线与消费去重边界.md) 接上（`services/outbox-relay`：
+`published_at` 只在 JetStream 确认之后写、`Nats-Msg-Id = event_id` 由 duplicate window 吸收重发、
+stream 漂移只报不改）；消费去重原语在 `records.is_consumed` / `record_consumed`，键是
+`(event_id, consumer_name)`。但**消费循环没有**：上游 observation 没有 `event_id`，
+唯一存在的 `material.upserted` 携带不了 BGE 需要的 `ocr_blocks` 文本。因此仍不能把
+“已写 outbox”解释为“已由 index-worker 常驻消费”（“已发布 NATS”现在有了证据，
+`make outbox-check` 会把 subject / `Nats-Msg-Id` / 载荷逐字节对回来）。
 语义检索本身已接线，但它的输入仍是显式调用（`sensoryplex-index index`），不是 NATS 消费。
