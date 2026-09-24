@@ -145,8 +145,10 @@ Rust 侧因此**不新增任何数据库/网络依赖**，`crates/storage` 的 `
 - `relay_publish_not_exercised`：`timeline_handoff.py` 把 outbox 行写进**同一个事务**，但它不发事件；
   "发到总线"是 relay 那一跳的事（ADR-024/027）。因此它的产物里必须写着这一条；
 - `vector_index_not_exercised` / `semantic_search_not_exercised`：`timeline` 命令与
-  `timeline_handoff.py` 都**不**发事件、不写向量；向量那一跳由 ADR-020/023/025 的既有证据负责，
-  真实媒体素材接进去的那一次端到端由 `make timeline-check` 单独出证据；
+  `timeline_handoff.py` 都**不**发事件、不写向量（这条 blocker 对本命令**仍然成立**）；向量那一跳由
+  ADR-020/023/025 的既有证据负责，而"**融合出来的**素材接进常驻 relay/index 再被语义检索命中"
+  由 `make timeline-resident-check`（`tools/verify_timeline_semantic.py`）单独出证据，见 §9 与
+  [验证记录](../verification.md)；
 - `golden_path_verified` 仍恒为 `false`：本命令不改变这个事实。
 
 ## 7. 失败语义（稳定原因串）
@@ -191,6 +193,14 @@ stream（不复用开发用的库与 stream），跑完即删。**因此本目�
 证据汇总见 [验证记录](../verification.md) 的"真实媒体端到端：Runtime → Timeline 融合与授权追加
 （ADR-028）"。
 
+**续：`make timeline-resident-check MEDIA=<授权样本>`**（同一切片的第二段，本轮新增）把这条链接着
+走到检索面：融合产物经**常驻** `relay` / `index`（compose `events` profile）变成向量，再由运行中
+api 的 `POST /v1/materials:search`（`mode=semantic`）命中。它同样**固定在主机执行**（runtime 二进制
+是主机 Mach-O、真实 OCR 权重与本机模型端点只在主机），但**不复用** `timeline-check` 的隔离 schema
+与 stream——它必须落在常驻进程真正在盯的那一份库与那条 stream 上，否则"常驻搬走了它"无从谈起。
+脚本**刻意不清理**自己写下的行（素材 / outbox / consumed_event 与向量行就是凭据），判定与实测见
+[验证记录](../verification.md) 的"真实媒体端到端（续）"一节。
+
 ## 9. 后果与仍未验证范围
 
 已落地：`crates/runtime` 的 `timeline` 子命令与 pipeline `timeline_fusion` 策略、
@@ -198,9 +208,16 @@ stream（不复用开发用的库与 stream），跑完即删。**因此本目�
 
 **仍未验证（不得声称完成）：**
 
-- **relay → 常驻消费 → 向量 → 语义检索这一段没接上**：本切片停在"事件被确认发到 JetStream"。
+- ~~**relay → 常驻消费 → 向量 → 语义检索这一段没接上**：本切片停在"事件被确认发到 JetStream"。
   `consume-check` / `event-pipeline-check` 覆盖的确实包括"事件驱动写入向量并被检索到"，
-  但它们跑的不是 timeline 融合出来的素材；"融合出的素材能被语义检索到"仍未验收；
+  但它们跑的不是 timeline 融合出来的素材；"融合出的素材能被语义检索到"仍未验收；~~
+  **已收口（2026-09-25）**：`make timeline-resident-check`（`tools/verify_timeline_semantic.py`）
+  用**融合出来的**素材跑完"常驻 relay 发布 → 常驻 index 消费成向量 → api 语义检索命中"。
+  实测（`editing-basics-sandboxes.vp8.webm`）：5 条素材 / 6 条可编码观测 → 常驻搬运
+  `published +5`、`consumed +5`、`embedded +6` → 6 行向量 ready → 语义检索
+  **28 条命中里包含本次全部 5 条素材**，用作查询的那条观测相似度 `1.0000`；
+  第二个样本（`officehours-panel.480p.vp9.webm`，2231 s / 447 窗）同样通过，并真的遇到 1 条空文本
+  观测（按原因计数跳过、素材照旧拿到其余 5 行向量、常驻容器 `RestartCount=0`）；
 - **该素材经 HTTP 查询与回看未验收**：追加后的事实具备查询所需字段（`media_source.owner`、
   `media_asset.sha256`、`timeline_item`），但查询侧那一跳没有被本切片走一遍；
 - **revision 前进**：本切片一律 `previous=None` ⇒ `revision=1`；"读回最新 revision 再融合下一版"
@@ -209,8 +226,12 @@ stream（不复用开发用的库与 stream），跑完即删。**因此本目�
 - **常驻 timeline worker**：真正的常驻形态（消费描述符/观测流 → 融合 → 追加）未实现，
   本切片是**单次运行**；
 - **实时源（SRT/RTMP）**：`timeline` 命令只接文件源；实时接入的窗口选择与 clock 对齐未设计；
-- **多模态同窗**：本切片的验收只用 VLM 观测；ASR/OCR/BGE 与 VLM 混窗时的
-  `fast_modalities`/`enrichment_modalities` 组合未被真实验收；
+- ~~**多模态同窗**：本切片的验收只用 VLM 观测；ASR/OCR/BGE 与 VLM 混窗时的
+  `fast_modalities`/`enrichment_modalities` 组合未被真实验收；~~
+  **已收口（2026-09-25）**：`make timeline-resident-check` 的验收里，两遍回放分别产出
+  `vision.scene_description` 与 `ocr_blocks`，**同一窗口**的素材同时带这两种模态
+  （实测 5/5 条素材"同窗含 VLM + ocr_blocks"），且 `ocr_blocks` 被常驻 index 编码成向量。
+  **仍未验**：ASR（`asr_segment`）与其它模态的混窗组合，以及 `enrichment_modalities` 的更多组合；
 - **素材粒度策略**：固定栅格只是"先搭基座"的确定性选择；按内容切窗（场景变化、
   语音段边界）未做，也不在本切片假装做过；
 - `golden_path_verified` 仍恒为 `false`（完整 Golden Path 还要求查询侧与回看侧的验收）。

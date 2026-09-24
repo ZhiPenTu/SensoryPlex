@@ -1,0 +1,52 @@
+apiVersion: edge.material/v1
+kind: Pipeline
+metadata:
+  name: orchestrated-file-material-p0
+spec:
+  source:
+    type: file
+    uri_secret_ref: SOURCE_URI
+  queue_capacity: 32
+  data_egress: local_only
+  processors:
+    - type: adaptive_sampler
+    - type: ocr
+      model: paddleocr-v5
+    - type: embedding
+      model: bge-m3
+  slow_enrichment: []
+  sinks:
+    - type: vector_store
+  orchestration:
+    # P0 只验证这张图与状态机；没有 worker 调用、数据库或任务分发。
+    nodes:
+      - id: runtime_frames
+        plugin_id: runtime.file-source
+        consumes: []
+        produces: [media.video_frame]
+        placement: data_plane_local
+        deadline_ms: 1000
+        max_attempts: 1
+      - id: ocr
+        plugin_id: org.sensoryplex.ocr-rapidocr
+        consumes: [media.video_frame]
+        produces: [observation.ocr_blocks]
+        placement: data_plane_local
+        deadline_ms: 5000
+        max_attempts: 2
+      - id: embedding
+        plugin_id: org.sensoryplex.embed-bge-onnx
+        consumes: [observation.ocr_blocks]
+        produces: [observation.text_embedding]
+        placement: object_ref_allowed
+        deadline_ms: 120000
+        max_attempts: 2
+    edges:
+      - from: runtime_frames
+        to: ocr
+        modality: media.video_frame
+        join: same_item
+      - from: ocr
+        to: embedding
+        modality: observation.ocr_blocks
+        join: same_stream_window

@@ -18,7 +18,8 @@ message SearchRequest {
 message SearchHit {
   string material_unit_id = 1;
   uint32 revision = 2;
-  double distance = 3; // COSINE distance (smaller is closer); keyword mode never fills this.
+  // COSINE similarity (larger is closer; hits are in descending order); keyword mode never fills this.
+  double distance = 3;
   string embedding_id = 4;
   string vector_ref = 5;
   string observation_id = 6;

@@ -2,6 +2,10 @@ use serde::Deserialize;
 use std::num::NonZeroUsize;
 use tokio::sync::mpsc;
 
+pub mod orchestration;
+
+use orchestration::{CompiledGraph, OrchestrationGraph};
+
 pub use sensoryplex_timeline::{
     FusionEngine, FusionInput, FusionLimits, FusionOutcome, FusionPolicy, FusionReport,
     FusionRequest, MaterialScope,
@@ -200,6 +204,10 @@ pub struct PipelineSpec {
     /// 既不报错也没有实现，这种"声明与实现不一致"不允许再出现。
     #[serde(default)]
     pub timeline_fusion: Option<TimelinePolicy>,
+    /// ADR-029 的可执行图。缺失仍表示旧式静态声明；一旦给出就必须通过 DAG 编译，
+    /// 不能把非法图留到后续调度阶段才发现。
+    #[serde(default)]
+    pub orchestration: Option<OrchestrationGraph>,
 }
 
 /// 素材窗口与 readiness 策略；由 pipeline 声明，不由命令行临时指定。
@@ -319,6 +327,9 @@ impl Pipeline {
             return Err("missing_processor_capability".into());
         }
         Self::validate_timeline(&p)?;
+        if let Some(graph) = &p.spec.orchestration {
+            graph.compile()?;
+        }
         Ok(p)
     }
 
@@ -364,6 +375,15 @@ impl Pipeline {
             .as_ref()
             .ok_or_else(|| "timeline_policy_absent".to_string())?;
         Ok((policy, policy.pipeline_version(&self.metadata.name)))
+    }
+
+    /// 取得已编译的编排图。没有声明时显式失败，避免把老式 processor 列表误读成已可执行 DAG。
+    pub fn compile_orchestration(&self) -> Result<CompiledGraph, String> {
+        self.spec
+            .orchestration
+            .as_ref()
+            .ok_or_else(|| "orchestration_graph_absent".to_string())?
+            .compile()
     }
 }
 
@@ -568,6 +588,20 @@ mod tests {
             Pipeline::parse(&example.replace("queue_capacity: 32", "queue_capacity: 0")).is_err()
         );
         assert!(Pipeline::parse(&example.replace("local_only", "cloud")).is_err());
+    }
+
+    #[test]
+    fn pipeline_requires_an_explicit_graph_before_claiming_orchestration() {
+        let example = include_str!("../../../config/pipelines/file-material.yaml");
+        let pipeline = Pipeline::parse(example).expect("static pipeline remains valid");
+        assert_eq!(
+            pipeline.compile_orchestration().unwrap_err(),
+            "orchestration_graph_absent"
+        );
+        let orchestrated =
+            include_str!("../../../config/pipelines/orchestrated-file-material.yaml");
+        let pipeline = Pipeline::parse(orchestrated).expect("graph must compile at parse time");
+        assert_eq!(pipeline.compile_orchestration().unwrap().node_count(), 3);
     }
 
     #[test]

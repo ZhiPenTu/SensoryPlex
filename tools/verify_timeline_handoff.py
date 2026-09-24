@@ -140,14 +140,42 @@ def probe_identity(report_path: pathlib.Path) -> dict:
     }
 
 
-def produce_timeline(media_path: pathlib.Path, workspace: pathlib.Path, failures: list) -> dict:
-    """步骤 1–5：真解码 → 真 VLM 观测 → 真融合，返回 timeline 报告。"""
+def replay_pass(
+    media_path: pathlib.Path,
+    workspace: pathlib.Path,
+    failures: list,
+    *,
+    plugin_module: str,
+    report_name: str,
+    worker_report_name: str,
+    plugin_config: dict | None = None,
+    label: str = "vlm",
+    max_frames: int = MAX_FRAMES,
+    allow_frame_failures: bool = False,
+) -> dict:
+    """一遍真实回放：Runtime 生产者（真解码 + 描述符账本）→ 插件消费者 → worker。
+
+    一次回放**只服务一个插件**：数据面的保留表按 lease 发缓冲区，同一条 buffer 同一时刻只能
+    被一个消费者持有（`buffer_already_leased`），所以多模态是"同一批描述符窗口跑多遍"，不是
+    "多个消费者抢同一条 buffer"。两遍得到的窗口由解码本身决定，逐点相同。
+
+    `allow_frame_failures`：调用失败（`error` 行，没有描述符窗口）是**真实媒体路径**上的常态
+    （模型端点偶发 5xx 就会走到），默认仍按失败处理；调用方显式打开时会把这些行单独计数并
+    放进 `_failed_frames`，让"几帧没跑成"成为可读的事实，而不是被混进窗口校验里。
+    """
     data_plane = f"127.0.0.1:{free_port()}"
     plugin_address = f"127.0.0.1:{free_port()}"
-    replay_report = workspace / "replay.pb"
-    worker_report = workspace / "ai-worker.json"
-    material_dir = workspace / "materials"
-    timeline_report = workspace / "timeline.json"
+    replay_report = workspace / report_name
+    worker_report = workspace / worker_report_name
+    config_path = workspace / f"{worker_report_name}.plugin-config.json"
+
+    plugin_command = [sys.executable, "-m", plugin_module, "--port", plugin_address.split(":")[1]]
+    if plugin_config is not None:
+        # 配置是**输入的一部分**：它进插件身份（`config_hash`），所以必须显式、稳定，
+        # 不能让"这次恰好没传"变成另一份模型身份。
+        config_path.write_text(
+            json.dumps(plugin_config, sort_keys=True, ensure_ascii=False), encoding="utf-8"
+        )
 
     producer = Process(
         "runtime",
@@ -172,40 +200,44 @@ def produce_timeline(media_path: pathlib.Path, workspace: pathlib.Path, failures
             str(IDLE_TIMEOUT_MS),
         ],
     )
-    plugin = Process(
-        "plugin",
-        [sys.executable, "-m", PLUGIN_MODULE, "--port", plugin_address.split(":")[1]],
-    )
+    plugin = Process(label, plugin_command)
     producer.start()
     try:
         ready = producer.wait_for("handoff_ready", timeout=READY_TIMEOUT_S)
-        check(ready.get("listen") == data_plane, f"unexpected data plane: {ready}", failures)
-        check(int(ready.get("retained", "0")) > 0, "no frame was retained", failures)
+        check(
+            ready.get("listen") == data_plane,
+            f"[{label}] unexpected data plane: {ready}",
+            failures,
+        )
+        check(int(ready.get("retained", "0")) > 0, f"[{label}] no frame was retained", failures)
 
         identity = probe_identity(replay_report)
         print(
-            f"probe: stream={identity['stream_id']} source={identity['source_id']} "
+            f"[{label}] probe: stream={identity['stream_id']} source={identity['source_id']} "
             f"duration_ms={identity['duration_ms']} codecs={identity['codecs']}"
         )
 
         plugin.start()
         plugin.wait_for("plugin ready", timeout=120.0)
 
+        worker_command = [
+            sys.executable,
+            str(WORKER),
+            "--data-plane",
+            data_plane,
+            "--plugin",
+            plugin_address,
+            "--source-id",
+            identity["source_id"],
+            "--max-frames",
+            str(max_frames),
+            "--report",
+            str(worker_report),
+        ]
+        if plugin_config is not None:
+            worker_command += ["--plugin-config", str(config_path)]
         completed = subprocess.run(
-            [
-                sys.executable,
-                str(WORKER),
-                "--data-plane",
-                data_plane,
-                "--plugin",
-                plugin_address,
-                "--source-id",
-                identity["source_id"],
-                "--max-frames",
-                str(MAX_FRAMES),
-                "--report",
-                str(worker_report),
-            ],
+            worker_command,
             capture_output=True,
             text=True,
             check=False,
@@ -213,7 +245,7 @@ def produce_timeline(media_path: pathlib.Path, workspace: pathlib.Path, failures
         )
         check(
             completed.returncode == 0,
-            f"ai worker failed ({completed.returncode}): {completed.stderr[-2000:]}",
+            f"[{label}] ai worker failed ({completed.returncode}): {completed.stderr[-2000:]}",
             failures,
         )
     finally:
@@ -222,33 +254,68 @@ def produce_timeline(media_path: pathlib.Path, workspace: pathlib.Path, failures
             producer.finish(timeout=RUN_TIMEOUT_S)
         except subprocess.TimeoutExpired:
             producer.kill()
-            failures.append("runtime replay never returned after the consumer left")
+            failures.append(f"[{label}] runtime replay never returned after the consumer left")
 
-    worker = json.loads(worker_report.read_text()) if worker_report.is_file() else {}
+    document = json.loads(worker_report.read_text()) if worker_report.is_file() else {}
     check(
-        worker.get("input_mode") == "buffer",
-        f"worker ran in {worker.get('input_mode')!r}",
+        document.get("input_mode") == "buffer",
+        f"[{label}] worker ran in {document.get('input_mode')!r}",
         failures,
     )
-    check(worker.get("failures") == [], f"worker failures: {worker.get('failures')}", failures)
-    frames = worker.get("frames", [])
     check(
-        len(frames) == MAX_FRAMES,
-        f"worker observed {len(frames)} of {MAX_FRAMES} frames; "
+        document.get("failures") == [],
+        f"[{label}] worker failures: {document.get('failures')}",
+        failures,
+    )
+    frames = document.get("frames", [])
+    check(
+        len(frames) == max_frames,
+        f"[{label}] worker observed {len(frames)} of {max_frames} frames; "
         f"producer tail={producer.lines[-3:]}",
         failures,
     )
+    failed = [frame for frame in frames if "error" in frame]
+    processed = [frame for frame in frames if "error" not in frame]
+    if failed and not allow_frame_failures:
+        failures.append(
+            f"[{label}] {len(failed)} frame(s) never reached the model: "
+            f"{[frame.get('error', {}).get('reason') for frame in failed]}"
+        )
     check(
-        all(frame.get("source_time_range_ms") for frame in frames),
-        "a frame carried no Runtime-issued descriptor window",
+        all(frame.get("source_time_range_ms") for frame in processed),
+        f"[{label}] a frame carried no Runtime-issued descriptor window",
         failures,
     )
     check(
-        all(frame.get("source_time_range_ms") == frame.get("time_range_ms") for frame in frames),
-        "an observation was re-anchored away from its descriptor window",
+        all(frame.get("source_time_range_ms") == frame.get("time_range_ms") for frame in processed),
+        f"[{label}] an observation was re-anchored away from its descriptor window",
         failures,
     )
+    print(
+        f"[{label}] observations={len(document.get('observations', []))} "
+        f"frames={len(frames)} failed_frames={len(failed)}"
+    )
+    document["_replay_report"] = str(replay_report)
+    document["_worker_report"] = str(worker_report)
+    document["_failed_frames"] = [
+        (frame.get("error") or {}).get("reason", "unknown") for frame in failed
+    ]
+    return document
 
+
+def fuse_timeline(
+    media_path: pathlib.Path,
+    workspace: pathlib.Path,
+    replay_report: pathlib.Path,
+    worker_report: pathlib.Path,
+    failures: list,
+    *,
+    material_dir_name: str = "materials",
+    report_name: str = "timeline.json",
+) -> dict:
+    """真融合：按 pipeline 栅格选窗 → 逐条准入 → 写素材 protobuf 与报告。"""
+    material_dir = workspace / material_dir_name
+    timeline_report = workspace / report_name
     timeline = subprocess.run(
         [
             str(runtime_binary()),
@@ -287,6 +354,25 @@ def produce_timeline(media_path: pathlib.Path, workspace: pathlib.Path, failures
     return document
 
 
+def produce_timeline(media_path: pathlib.Path, workspace: pathlib.Path, failures: list) -> dict:
+    """步骤 1–5：真解码 → 真 VLM 观测 → 真融合，返回 timeline 报告。"""
+    worker = replay_pass(
+        media_path,
+        workspace,
+        failures,
+        plugin_module=PLUGIN_MODULE,
+        report_name="replay.pb",
+        worker_report_name="ai-worker.json",
+    )
+    return fuse_timeline(
+        media_path,
+        workspace,
+        pathlib.Path(worker["_replay_report"]),
+        pathlib.Path(worker["_worker_report"]),
+        failures,
+    )
+
+
 def run_handoff(
     report_path: pathlib.Path,
     material_dir: pathlib.Path,
@@ -294,6 +380,7 @@ def run_handoff(
     *,
     owner: str = OWNER,
     out: pathlib.Path | None = None,
+    trace_id: str = TRACE_ID,
 ) -> subprocess.CompletedProcess:
     command = [
         sys.executable,
@@ -305,7 +392,7 @@ def run_handoff(
         "--owner",
         owner,
         "--trace-id",
-        TRACE_ID,
+        trace_id,
         "--database-url",
         database_url,
     ]
@@ -361,7 +448,13 @@ def relay_status(documents: list[dict]) -> dict:
     return {}
 
 
-def verify_media_chain(document: dict, failures: list) -> dict:
+def verify_media_chain(
+    document: dict,
+    failures: list,
+    *,
+    items_expected: int = MAX_FRAMES,
+    frames_without_window_expected: int = 0,
+) -> dict:
     """素材与报告之间的一致性（不碰数据库）：身份派生、栅格、原片引用。"""
     if not document:
         failures.append("timeline produced no report")
@@ -400,8 +493,10 @@ def verify_media_chain(document: dict, failures: list) -> dict:
         failures,
     )
     check(
-        document["run"]["worker_frames_without_descriptor_window"] == 0,
-        "a frame reached the ledger without a descriptor window",
+        document["run"]["worker_frames_without_descriptor_window"]
+        == frames_without_window_expected,
+        f"{document['run']['worker_frames_without_descriptor_window']} frame(s) reached the "
+        f"ledger without a descriptor window (expected {frames_without_window_expected})",
         failures,
     )
     check(
@@ -416,7 +511,11 @@ def verify_media_chain(document: dict, failures: list) -> dict:
         f"asset id is not digest-derived: {source['asset_id']}",
         failures,
     )
-    check(len(document["items"]) == MAX_FRAMES, f"{len(document['items'])} ledger items", failures)
+    check(
+        len(document["items"]) == items_expected,
+        f"{len(document['items'])} ledger items (expected {items_expected})",
+        failures,
+    )
 
     seen = set()
     for entry in document["materials"]:

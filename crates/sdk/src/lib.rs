@@ -36,12 +36,18 @@ pub mod edge {
                 tonic::include_proto!("edge.material.node.v1");
             }
         }
+        pub mod orchestration {
+            pub mod v1 {
+                tonic::include_proto!("edge.material.orchestration.v1");
+            }
+        }
     }
 }
 
 pub use edge::material::{
-    common::v1 as common, gateway::v1 as gateway, index::v1 as index, node::v1 as node, material::v1 as material,
-    media::v1 as media, runtime::v1 as runtime,
+    common::v1 as common, gateway::v1 as gateway, index::v1 as index, material::v1 as material,
+    media::v1 as media, node::v1 as node, orchestration::v1 as orchestration,
+    runtime::v1 as runtime,
 };
 
 #[derive(Debug, thiserror::Error)]

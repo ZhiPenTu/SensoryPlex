@@ -134,7 +134,12 @@ cargo test --workspace --locked
 3. 验收：`make timeline-check MEDIA=<授权样本>`（主机执行，真实媒体 → 真解码 → 真 VLM → 真融合 →
    真 PostgreSQL → 真 outbox → 真 JetStream）。证据见
    [验证记录](../../docs/verification.md) 的 ADR-028 一节。
+4. 续篇（2026-09-25）：`make timeline-resident-check MEDIA=<授权样本>` 把**融合出来的**素材交给
+   compose 里**常驻**的 `relay` / `index`，再让运行中 api 的 `POST /v1/materials:search`
+   （`mode=semantic`）命中——与第 3 条不同，它**不隔离**库与 stream，因为要被证明的正是"常驻进程
+   搬走了它"。它跑**两遍**回放（VLM + OCR），所以素材同窗带两种模态。证据见
+   [验证记录](../../docs/verification.md) 的"真实媒体端到端（续）"一节。
 
 仍**未**由这条接线实现或验收的：跨模态语义冲突判定、常驻 timeline worker（当前是单次运行）、
-`revision` 前进（当前一律 `revision=1`）、实时源与内容切窗，以及"融合出的素材被事件驱动写成向量、
-再被语义检索到并经 HTTP 查询回看"这一段。
+`revision` 前进（当前一律 `revision=1`）、实时源与内容切窗，以及"融合出的素材经 HTTP 查询与
+**回看**"这一段（"被事件驱动写成向量、再被语义检索到"已由上面第 4 条收口）。

@@ -306,8 +306,10 @@ reserved，破坏语义的修改进入新的协议 major。当前为开发预览
 - **命中是引用，不是事实源也不是鉴权依据**：调用方按 `(material_unit_id, material_revision)`
   重新水合事实；水合不出来的命中计入 `unresolved_hits`，检索面丢弃的命中计入 `unindexed_hits`，
   结果集不静默变小。
-- **`distance` 是 COSINE 距离**（FLAT 精确检索，越小越近），**不是置信度**：本切片不做相关性校准，
-  RRF / 混合检索未做，筛选条件只在 keyword 模式生效。
+- **`distance` 是 COSINE 相似度**（FLAT 精确检索，**越大越近**，`hits` 按相似度**降序**返回；
+  字段名是历史遗留，值不是距离），**不是置信度**：本切片不做相关性校准，RRF / 混合检索未做，
+  筛选条件只在 keyword 模式生效。取一条观测的整段文本当查询，它自己的相似度就是 `1.0`——
+  与上面"命中可复算"是同一个口径。
 - **同源守卫**：collection 里的 `model_release_id` 必须**唯一且等于**本次查询编码器，否则整请求拒绝
   （`vector_index_model_release_mixed` / `query_model_release_mismatch`）。刻意不按 principal 过滤
   ——collection 是所有 owner 共用的，混装会让**所有人**的距离失去可比性。

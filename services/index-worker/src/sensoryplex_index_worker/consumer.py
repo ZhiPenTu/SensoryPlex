@@ -13,9 +13,11 @@
 3. **先干活后记账**。`consumed_event` 只有"已完成"这一态（ADR-024 §6），所以顺序是
    "编码 → 落库 → 确认写入" → `record_consumed` → `ack`。崩在中间只会让工作重做一遍，
    而 `embedding_id` 是确定性的，重做得到同一份向量。
-4. **少一条向量就不算消费完成**。本事件应产出的向量没有全部写出来，事件就**不记账、不 ack**，
+4. **少一条向量就不算消费完成**。本事件**应产出**的向量没有全部写出来，事件就**不记账、不 ack**，
    交给 JetStream 重投；重投达到上限时进程以 `event_retry_exhausted` **显式停止**，而不是把
-   "丢了一条向量"写成"事件已消费"。死信流（dead-letter）与按原因分流是后续切片。
+   "丢了一条向量"写成"事件已消费"。"应产出"由文本契约决定：一条观测给不出可编码文本
+   （没文字、或取值越过插件上限）就**不产出**向量，按原因计数（`TEXT_SKIP_FIELDS`）后继续，
+   而不是让整条素材陪着它耗尽重投。死信流（dead-letter）与按原因分流是后续切片。
 
 刻意不做的事：不自动建 stream、不自动建 durable 之外的拓扑——流必须已存在且符合契约
 （`require_stream`），因为"消费端凭空建一个流"会把"发布端还没部署"伪装成"链路已经通了"；
@@ -73,6 +75,33 @@ MAX_IDLE_EXIT_CYCLES = 10_000
 # "消费侧编码"会各自漂移（同 ADR-023 的查询编码器口径）。
 EMBEDDABLE_MODALITY = bge_text.INPUT_MODALITY
 PRODUCED_MODALITY = bge_plugin.MODALITY
+# "这一帧没有文字"与"这个观测不合契约"是两件事：前者是真实媒体里**常态**
+# （黑场、转场、纯画面帧），插件用 `blocks=[]` + `empty_reason` 明确表达；后者是
+# 形状错误（缺 `blocks`、块不是字符串）。前者的观测**不产出向量**，但这条素材的其余观测
+# 照样往下走：一个 5 s 窗口里只要有一帧没文字，整条素材就永远拿不到向量、被重投到耗尽后
+# 丢弃，那是**真实媒体的常见路径**被当成异常处理。因此它走 `skipped_modality` 同族的计数
+# 跳过：不写任何行，但状态行里看得见（`skipped_empty_text`）。
+EMPTY_TEXT_REASON = "input_text_empty"
+# 同一族的第二个原因类：**取值越过插件上限**（ADR-017 §4 的 `MAX_TEXTS` / `MAX_TOTAL_CHARS`）。
+# 它跟"形状错误"的区别是**它由真实媒体的取值决定**：一帧密集屏录（实测 4158 字符的
+# Wikipedia 监视列表页）就会越过 4096 的字符上限，插件按 ADR-017 §4"越界是失败而不是截断"
+# 照旧失败，消费侧则把这条观测记成"不产出向量"。
+# 不这么分的代价是实测过的：那个 4158 字符的帧让整条素材的事件重投耗尽
+# （`event_retry_exhausted` / `observation_text_rejected`）→ 常驻 index 按 exit 3 退出重启，
+# 事件被丢弃、素材永远拿不到向量。ADR-025 §5 的 fail-stop 是给**契约/事实缺陷**用的，
+# 不能让它被一条合法的真实帧触发。
+OVER_BOUND_REASONS = frozenset({"input_text_exceeds_bound", "input_block_count_exceeds_bound"})
+# 消费侧把上面两个插件原因码归成一类上报：状态行只放计数，分类名由消费侧定，不直传插件串。
+OVER_BOUND_TEXT_REASON = "input_text_over_bound"
+# 消费侧原因类 → 状态行里的计数字段。写成映射而不是 if 链：分类只有这一份，`_sink_observation`
+# 用它决定跳过类、`status_document` 的字段名与它逐项对应。再加一类"不产出向量的取值"要同步
+# 三处：这一行、`status_document` 的字面量字段名（ADR-025 §8：状态行不做动态拼名）、以及
+# ADR-025 §8 的字段清单——刻意不做 `f"skipped_{reason}"` 那种拼名，因为 `reason` 来自上游文案，
+# 拼出来的字段名会让"状态行的字段集合"变成上游的函数。
+TEXT_SKIP_FIELDS = {
+    EMPTY_TEXT_REASON: "skipped_empty_text",
+    OVER_BOUND_TEXT_REASON: "skipped_over_bound",
+}
 # 消费侧整轮失败的退出码：与"启动参数/契约错"（1）分开，便于运维按码分流。
 FATAL_EXIT_CODE = 3
 
@@ -235,7 +264,18 @@ class SinkReport:
     observations: int = 0
     embedded: int = 0
     skipped_modality: int = 0
+    # 可编码模态、但这条观测不产出向量：消费侧原因类 → 计数（见 `TEXT_SKIP_FIELDS`）。
+    # 按原因分类而不是一个总数：空文本与越界要分开看，前者是模型这一帧没找到字，
+    # 后者是"这一帧的字太多、超过插件上限"，两者的处置（要不要调上限/要不要切窗口）不同。
+    skipped_text: dict[str, int] = field(default_factory=dict)
     embedding_ids: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class SinkSkip:
+    """这条观测不产出向量：`reason` 是消费侧原因类（状态行里的字段名见 `TEXT_SKIP_FIELDS`）。"""
+
+    reason: str
 
 
 def consume_event(
@@ -286,6 +326,11 @@ def consume_event(
             item=facts_item,
             register_model_release=not model_release_registered,
         )
+        if isinstance(outcome, SinkSkip):
+            # 这条观测给不出可编码文本（模型这一帧没找到文字，或文本越过插件上限）：
+            # 本 sink 不处理、不写行，但整条素材照样往下走——其它观测仍然可以被编码成向量。
+            report.skipped_text[outcome.reason] = report.skipped_text.get(outcome.reason, 0) + 1
+            continue
         model_release_registered = True
         report.embedded += 1
         report.embedding_ids.append(outcome.embedding_id)
@@ -306,16 +351,25 @@ def _sink_observation(
 ):
     """单条观测的 sink：插件文本契约 → 编码 → 维度守卫 → Milvus → 确认 → 事实。
 
-    失败一律抛 `ConsumerError`（带稳定原因码），调用方据此判定"这条事件还没完成"。
-    文本契约失败（空文本、块数/字符数越界）发生在**拿到身份之前**，因此不写
-    `embedding_record`——与插件进程里同一条失败的表现一致（插件同样不会产出观测）。
+    返回 `SinkSkip` 表示"这条观测没有可编码文本"：不写任何行，由调用方按消费侧原因类计数
+    （跳过原因类 → 状态行字段的映射只有一份，见 `TEXT_SKIP_FIELDS`）。
+    两种原因都在 `TEXT_SKIP_FIELDS` 里：`blocks=[]`（模型这一帧没找到文字）与取值越过插件
+    上限。**形状错误仍然抛 `ConsumerError`**，调用方据此判定"这条事件还没完成"——
+    "真实媒体的取值"与"契约缺陷"是两件事，前者不该让事件耗尽重投后被丢。
+    文本契约失败发生在**拿到身份之前**，因此不写 `embedding_record`——与插件进程里同一条
+    失败的表现一致（插件同样不会产出观测）。
     """
     upstream = upstream_observation(item)
     try:
         source = bge_text.collect_text(upstream)
     except PluginError as error:
+        reason = str(error.reason_code or "")
+        if reason == EMPTY_TEXT_REASON:
+            return SinkSkip(reason=EMPTY_TEXT_REASON)
+        if reason in OVER_BOUND_REASONS:
+            return SinkSkip(reason=OVER_BOUND_TEXT_REASON)
         # `stable_code` 会把不合形状的串折成通用码：插件原因串里不该出现主机路径。
-        raise ConsumerError("observation_text_rejected", stable_code(str(error))) from error
+        raise ConsumerError("observation_text_rejected", stable_code(reason)) from error
     try:
         vector = encoder.encode(source.text)
     except QueryEncoderError as error:
@@ -497,7 +551,15 @@ async def consume_loop(
     stop=None,
 ) -> ConsumeExit:
     """常驻（或 `idle_exit_cycles` 轮）消费循环；每条消息的 ack/nak 都有依据。"""
-    totals = {"consumed": 0, "duplicate": 0, "skipped": 0, "failed": 0, "embedded": 0}
+    totals = {
+        "consumed": 0,
+        "duplicate": 0,
+        "skipped": 0,
+        "failed": 0,
+        "embedded": 0,
+        # 消费侧跳过原因类 → 累计计数（字段名见 `status_document`）。
+        "skipped_text": {},
+    }
     cycle = 0
     idle_cycles = 0
     last_error_code = ""
@@ -510,6 +572,7 @@ async def consume_loop(
             received = 0
             cycle_consumed = 0
             cycle_skipped = 0
+            cycle_skipped_text: dict[str, int] = {}
             cycle_failed = 0
             try:
                 messages = await subscription.fetch(options.batch, timeout=options.fetch_timeout_s)
@@ -574,6 +637,9 @@ async def consume_loop(
                     totals["consumed"] += 1
                     cycle_consumed += 1
                 totals["embedded"] += report.embedded
+                for reason, count in report.skipped_text.items():
+                    totals["skipped_text"][reason] = totals["skipped_text"].get(reason, 0) + count
+                    cycle_skipped_text[reason] = cycle_skipped_text.get(reason, 0) + count
             # 累计失败数：只报本轮计数的话，常驻进程里"这一轮刚好没坏事件"就会让
             # `failed_total` 一直是 0——运维看到的是"从没失败过"，而实际失败过。
             totals["failed"] += cycle_failed
@@ -586,6 +652,7 @@ async def consume_loop(
                     received=received,
                     consumed=cycle_consumed,
                     skipped=cycle_skipped,
+                    skipped_text=cycle_skipped_text,
                     failed=cycle_failed,
                     embedded=totals["embedded"],
                     totals=totals,
@@ -624,6 +691,7 @@ def status_document(
     received: int,
     consumed: int,
     skipped: int,
+    skipped_text: dict[str, int],
     failed: int,
     embedded: int,
     totals: dict,
@@ -645,6 +713,13 @@ def status_document(
         "consumed_total": totals["consumed"],
         "duplicate_total": totals["duplicate"],
         "skipped_total": totals["skipped"],
+        # 可编码模态但这条观测不产出向量：**看得见的跳过**，不是静默丢弃。
+        # 字段名在这里逐项写死（ADR-025 §8 / ADR-027 的状态行是契约，不做动态拼名）；
+        # 计数按 `TEXT_SKIP_FIELDS` 的原因类分开——空文本与越界混成一个数字就查不出原因。
+        "skipped_empty_text": skipped_text.get(EMPTY_TEXT_REASON, 0),
+        "skipped_over_bound": skipped_text.get(OVER_BOUND_TEXT_REASON, 0),
+        "skipped_empty_text_total": totals["skipped_text"].get(EMPTY_TEXT_REASON, 0),
+        "skipped_over_bound_total": totals["skipped_text"].get(OVER_BOUND_TEXT_REASON, 0),
         "failed_total": totals["failed"],
         "error_code": error_code,
         # 只放稳定原因码与异常**类名**：异常文本可能带地址、DSN 或载荷片段。

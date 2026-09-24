@@ -78,6 +78,14 @@ BGE 是本项目第四个端侧模型插件，也是第一个**消费上游观�
   （空块被跳过并计数）、`char_count`、`source_modality`。
 - **边界是失败而不是截断**：块数 > `MAX_TEXTS`(256) → `input_block_count_exceeds_bound`；
   拼接后 > `MAX_TOTAL_CHARS`(4096) → `input_text_exceeds_bound`；一段文字都没有 → `input_text_empty`。
+
+  > **补充（2026-09-25）：** 这三条在**插件侧**的行为一个字没改，但它们越过的是**真实媒体的取值**
+  > 而不是契约缺陷，所以**消费侧**（`index-worker` 的常驻消费）不该把它们当坏事件：空文本与两类越界
+  > 都是"这条观测不产出向量"，按原因计数跳过、素材的其余观测照常落 ready（见
+  > [ADR-025](ADR-025-常驻消费循环与sink接线.md) §5）。实测：一帧密集屏录（Wikipedia 监视列表页）
+  > 有 109 块 / 4158 字符，越界在旧消费侧会让整条事件重投耗尽并被 JetStream 终止、常驻 index 按 3
+  > 退出重启。**代价与取舍**：`MAX_TOTAL_CHARS = 4096` 对密集屏录确实偏紧，"切窗口而不是丢观测"
+  > 是后续项（见 [TODO](../TODO.md)）；当前口径是"如实计数、如实不产出向量"，不截断、不编造。
 - `content_hash` 与 payload 的 `text_sha256` 是同一个值，且**可被任何持有该文本的人复算**；
   验收脚本按同一条规则**独立重拼**一遍再比对，不采信插件自己的说法。
 - 上游观测的身份与锚点另写 `input.*`：`observation_id` / `modality` / `content_hash` / `stream_id` /

@@ -22,7 +22,9 @@ message SemanticHit {
   string embedding_id = 1;
   string material_unit_id = 2;
   uint32 material_revision = 3;
-  // COSINE 距离（FLAT 精确检索）：越小越近。**未做相关性校准**，不要当置信度用。
+  // COSINE similarity of the FLAT index: **larger is closer** and hits are returned in
+  // descending order. It is not a calibrated relevance score — never use it as confidence
+  // (ADR-023 §6). The field name is historical; the value is a similarity, not a distance.
   double distance = 4;
   string vector_ref = 5;
   string observation_id = 6;

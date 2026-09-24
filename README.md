@@ -127,8 +127,23 @@ PostgreSQL 与 NATS 仍在 compose 里，从宿主回环端口连）：真解码
 真 relay `--once` 把事件确认发到真 JetStream。实测：6 帧观测 → 7 窗（5 窗有观测）→ 5 条素材、
 `rejected=0`；入库字节与磁盘 protobuf 逐字节相同；第二遍追加 `appended=0 replayed=5`、relay 第二遍
 `published=0`；owner 漂移 / 同 revision 换内容 / 报告视图被改三类失败都显式拒绝。
-**边界**：只接文件源与单次运行（`revision=1`），且只有 VLM 一种模态 ⇒ 每条素材 `status=partial`；
-验收停在"事件已发到 JetStream"，**没有**验"融合出的素材被写成向量、再被语义检索到并经 HTTP 查询回看"。
+**边界**：`make timeline-check` 自己只接文件源与单次运行（`revision=1`），且只有 VLM 一种模态
+⇒ 每条素材 `status=partial`；它停在"事件已发到 JetStream"。
+
+`make timeline-resident-check MEDIA=/absolute/path/to/authorized-sample-with-text.webm` 是同一段链路的
+**续篇**：融合出的素材由 compose 里**常驻**的 `relay` / `index`（`make events-up` 的 `events` profile）
+搬走并编码成向量，再由运行中 api 的 `POST /v1/materials:search`（`mode=semantic`）命中。它与
+`timeline-check` 的分工是"**不隔离**"——必须落在常驻进程真正在盯的那份库与那条 stream 上，否则
+"常驻搬走了它"就无从谈起，因此脚本**刻意不清理**自己写下的行（素材 / outbox / `consumed_event` 与
+向量行就是凭据）。同样固定在**主机执行**（runtime 二进制是主机 Mach-O，真实 OCR 权重与本机模型端点
+只在主机）；样本必须**带文字**。实测（`editing-basics-sandboxes.vp8.webm`）：5 条素材 / 6 条可编码观测
+→ 常驻搬运 `published +5` / `consumed +5` / `embedded +6` → 6 行向量 `ready` → 语义检索 **28 条命中里
+包含本次全部 5 条素材**，用作查询的那条观测相似度 `1.0000`；第二个样本
+（`officehours-panel.480p.vp9.webm`）同样通过，并真的遇到 1 条空文本观测 → 按原因计数跳过而不是
+fail-stop（两个常驻容器 `RestartCount=0`）。证据见
+[验证记录](docs/verification.md) 的"真实媒体端到端（续）"。
+**边界**：HTTP 查询**回看**、`revision` 前进、SRT 实时源与向量 GC 仍未验收 ⇒ `golden_path_verified`
+仍是 `false`。
 
 `make embed-check` 是唯一**不接数据面**的链路：它先跑一遍真实 OCR 产出文字块，再让 BGE 消费这些
 文字（`acceptsMemoryKinds: []`，喂字节以 `buffer_reader_not_attached` 明确拒绝），产出维度版本化的

@@ -21,6 +21,7 @@ node agent、节点注册/心跳、Web 安装位置选择、5 项硬性预检、
 | --- | --- | --- |
 | Rust Core | 6 crate workspace、Proto、配置校验、有界队列、descriptor 校验 | Pipeline 生命周期、调度、进程与 lease 实际管理 |
 | Runtime 服务 | gRPC Health + DescribeCapabilities（平台、宿主内存、允许的 memory kind、每个不可用后端的原因） | NATS JetStream 指令与任务分发 |
+| 可编排插件执行核心 | P0 已实现：`orchestration/v1` Proto、受限 DAG 编译、modality/placement 校验、确定性 Run/Task 状态机、`orchestration-check`；已有数据面 lease、节点预检与部署意图 | P1：持久任务、outbox 分发和单节点真实插件调用；当前**没有** Runtime Scheduler、持久 PipelineRun 或可执行 PipelineRun |
 | Python SDK | Proto 绑定、输入校验、deadline、取消 token、并发限制、结构化错误；worker 侧生命周期 gRPC 服务、`LeaseBufferReader` 读字节与 lease 归还（已在 vlm-moondream 插件落地，见 ADR-012） | 持久幂等、崩溃后的 lease 回收、沙箱与外发策略执行 |
 | Timeline | Material/Observation 校验 | ASR/OCR/VLM 实际融合、冲突判定 |
 | PostgreSQL | 显式迁移、不可变素材与模型版本、来源校验、事务 outbox | 保留与归档策略、outbox 消费与补偿 |
@@ -37,6 +38,24 @@ window 吸收重发、stream 漂移只报不改、NATS 不可达显式失败而�
 "outbox 分发与消费去重边界（ADR-024）"与 ADR-024），以及**网关语义检索接线**：`mode=semantic` 从 501 变成真实检索——常驻检索面（`sensoryplex-index serve`）是持有向量库的唯一进程，API 只转发查询 + 按 `(material_unit_id, revision)` 水合事实，查询向量用 BGE 插件自己的 `Start` 编码并按 `model_release_id` 做 collection 级同源守卫（异源或混装整请求拒绝），未配置/不可达/令牌不符与"检索面答了但不是本契约"按失败发生位置分 503/502，`retryable` 是独立标记（503 也可能是不可重试的配置错误），`make semantic-check` **13 个场景**通过（见 `docs/verification.md` 的"网关语义检索接线（ADR-023）"与 ADR-023） | Rust 侧仍没有任何 in-process `ExecutionBackend`（`model_inference` 恒在 `unavailable_capabilities`；宿主加速器探测只在开发机 `macos-aarch64` 实测，`cuda` 分支与 Mac mini 均未验收）；**常驻消费循环（当时）未写**——outbox → JetStream 的**发布**已接，但当时判断上游 observation 没有事件、
 `material.upserted` 也带不了可编码文本——该判断已由 ADR-025 改写）；RRF/混合检索与相关性校准未做；服务端 Milvus 形态（本机 Docker Hub 不可达，未验收）；ASR 的 Linux 后端（`mlx` 是 Apple Silicon 专属）；插件**未签名**（`local_native` 形态，签名/SBOM 只有结构预检）；旋转的采集与应用（v1 未实现） |
 | 工程 | uv/Cargo 锁文件、Docker、检查命令、CI（`check`/`check-console` + **Apple Silicon** `check-apple-silicon`，远端 `macos-15-arm64` 已真实通过）、macOS `launchd` 常驻形态与统一内存分级（`tools/macos_resident.py`，见 ADR-015） | 真视频 Golden Path、Linux NVIDIA 侧 CI、压测、监控仪表盘 |
+
+## 可编排插件执行核心（ADR-029）：P0 编译内核已实现，执行面尚未接线
+
+已新增 `proto/orchestration/v1/orchestration.proto`、Runtime 内的 `orchestration` 模块与
+`config/pipelines/orchestrated-file-material.yaml`。P0 在解析期拒绝环、悬空端点、重复节点/边、未生产或
+未消费 modality、非法 `same_item` placement、无上限 attempt；它将图按稳定顺序编译，并在内存状态机中
+验证必需上游解锁、有界 retry、失败阻塞与取消不解锁更多工作。`make orchestration-check` 会实际编译
+示例图，不会把普通 processor 列表误读为已可执行 DAG。
+
+[ADR-029](adr/ADR-029-可编排插件执行核心.md) 与[执行设计](design/plugin-orchestration.md)已将实现收敛为：
+不可变 Pipeline revision → DAG 编译 → `PipelineRun` / `PipelineTask` 状态机 → 基于数据本地性与资源上限的
+单主调度 → outbox/JetStream 控制命令 → 真实 Agent/worker 生命周期回报。P0 尚未接真实 worker、数据库与
+事件；因此不能关闭 501、不能创建可恢复的 PipelineRun，更不能宣称 Golden Path。
+
+P1（单节点持久执行）、P2（受控多节点）与 P3（场景产品包、Console/API 和真实端到端闭环）现已被定义为
+V1 的核心能力门禁：P1 前不能称“可执行编排”，P2 前不能称“跨节点编排”，P3 前不能称“第三方可基于底座
+交付场景产品”。它们的逐项需求与验收分别见 ADR-029 §4.1、[执行设计](design/plugin-orchestration.md) §9
+和[技术蓝图](../技术选型ADR与V1实施蓝图.md) §4.1。
 
 下一里程碑：**本地文件 → GStreamer → PTS 正确的 frame/audio descriptor**，先完成
 真实样本回放、lease 生命周期和断流测试，再引入实际模型。真实媒体、lease 生命周期、断流测试
@@ -73,12 +92,16 @@ MLX Whisper（ASR，读音频段）、PP-OCR（OCR，读视频帧）与 BGE（�
 调用（不读字节），四者的验收脚本都是真跑多进程。边界见
 [ADR-012](adr/ADR-012-模型插件与端侧推理边界.md)。这一节当时列的"仍未实现"里，
 **运行时侧加速后端能力上报**（[ADR-022](adr/ADR-022-宿主加速器能力探测与上报.md)）、
-**常驻 index-worker 消费**（[ADR-025](adr/ADR-025-常驻消费循环与sink接线.md)）与
+**常驻 index-worker 消费**（[ADR-025](adr/ADR-025-常驻消费循环与sink接线.md)；2026-09-25 起
+"本事件**应产出**的向量"由**文本契约**决定——观测给不出可编码文本就按原因计数跳过、
+不再让整条素材陪着重投耗尽，状态行随之多两个计数字段，见其 §5/§8 的修订）与
 **网关侧语义检索**（[ADR-023](adr/ADR-023-网关语义检索接线与索引检索面.md)）都已经落地，
 该归因已过期；**仍未实现的是插件签名验证**，且 `metal` 在 ONNX 路径上没有独立执行后端。
-截至 2026-09-24，`golden_path_verified` 恒为 false 的原因是**素材链路尚未整体闭环**：
+截至 2026-09-25，`golden_path_verified` 恒为 false 的原因是**素材链路尚未整体闭环**：
 Runtime → Timeline → 追加已验收（[ADR-028](adr/ADR-028-Runtime到Timeline接线与授权追加.md)），
-但"融合出的素材被事件驱动写成向量、再被语义检索到并经 HTTP 查询回看"这一段还没走通。
+"融合出的素材经**常驻** relay/index 写成向量、再被 api 语义检索命中"也已验收
+（`make timeline-resident-check`，2026-09-25），**剩下的**是"经 HTTP 查询与**回看**"、"同一素材的
+**revision 前进**"与"**向量 GC**"这三段没走通。
 不得把本节读作 Golden Path 已完成；
 接入的 VLM 只保证链路语义正确，**不保证描述可用**（模型输出不稳定）。
 抽帧的覆盖率目前只到帧数口径，语义覆盖仍未用模型输出度量。
@@ -160,8 +183,8 @@ failed 不返回、幂等、维度篡改、库不可达、collection 契约漂�
 检索面答了但不是本契约 → 502），`retryable` 是**独立**标记——`semantic_index_unauthenticated` 与
 `semantic_search_unavailable` 都是 503 却不可重试。本切片**只做纯语义**：`mode=semantic` 只接受
 `query` + `limit`，其余筛选条件显式 422 `semantic_filters_not_supported`（静默忽略筛选会给出
-"像是筛过"的结果）；keyword 不排名，`hits` 为空而不是补一串 0 距离；RRF/混合检索与相关性校准未做，
-`distance` 是 COSINE 距离、不是置信度。`make semantic-check` 用真实 BGE → 真实 Milvus Lite →
+"像是筛过"的结果）；keyword 不排名，`hits` 为空而不是补一串 0 相似度；RRF/混合检索与相关性校准未做，
+`distance` 是 COSINE **相似度**（越大越近、按降序返回；字段名是历史遗留，值不是距离）、不是置信度。`make semantic-check` 用真实 BGE → 真实 Milvus Lite →
 常驻检索面 → 真实 API 走 HTTP **13 个场景**全过（含同源守卫两种形态、启动即拒契约漂移、目录锁、
 令牌不符与不可达的状态码/`retryable` 分野、线上不外泄）。决策见
 [ADR-023](adr/ADR-023-网关语义检索接线与索引检索面.md)，实测见 `docs/verification.md` 的
@@ -248,10 +271,18 @@ Runtime → Timeline 接线（[ADR-028](adr/ADR-028-Runtime到Timeline接线与�
 三类失败（owner 漂移 / 同 revision 换内容 / 报告视图被改）显式拒绝。落地时修掉一个"单测全绿但
 真链路一条都过不了"的缺陷：worker 报告的 protojson 把 int64 写成**字符串**并省略零值字段，
 读取侧此前只接受 JSON 数字，于是每一条从 0 ms 开始的观测都被判为不可解析。
-**边界**：只接文件源与单次运行（一律 `revision=1`）；只有 VLM 一种模态 ⇒ 每条素材 `status=partial`
-（**不是** `fast_ready`）；验收停在"事件已确认发到 JetStream"——"融合出的素材被事件驱动写成向量、
-再被语义检索到并经 HTTP 查询回看"仍未验收。实测见 `docs/verification.md` 的
-"真实媒体端到端：Runtime → Timeline 融合与授权追加（ADR-028）"一节。
+**边界**：只接文件源与单次运行（一律 `revision=1`）；`make timeline-check` 自己只有 VLM 一种模态
+⇒ 每条素材 `status=partial`（**不是** `fast_ready`），因此它停在"事件已确认发到 JetStream"，
+`vector_index_not_exercised` / `semantic_search_not_exercised` 这两条 blocker 对**这条命令**仍然成立。
+"融合出的素材被**常驻** relay/index 写成向量、再被 api 语义检索命中"由同一个切片的第二段
+`make timeline-resident-check`（`tools/verify_timeline_semantic.py`，2026-09-25）验收：那份验收跑
+**两遍**回放（VLM + OCR），实测 5 条素材**全部**同窗带 `ocr_blocks` 与 `vision.scene_description`、
+常驻搬运 `published +5` / `consumed +5` / `embedded +6`、6 行向量 ready、语义检索 28 条命中里包含
+本次全部 5 条素材；换第二个样本（`officehours-panel.480p.vp9.webm`）同样通过，且该样本 6 条
+`ocr_blocks` 观测里**真的**出现 1 条空文本——按原因计数跳过而不是 fail-stop，两个常驻容器
+`RestartCount` 为 0。**仍未验收**：revision 前进、HTTP 查询回看、SRT 实时源、向量 GC。
+实测见 `docs/verification.md` 的"真实媒体端到端：Runtime → Timeline 融合与授权追加（ADR-028）"与
+"真实媒体端到端（续）"两节。
 
 媒体格式准入（M9）已按 [ADR-009](adr/ADR-009-媒体格式支持矩阵与拒绝语义.md) 落地：承诺矩阵写成
 数据（容器 → 编码 → 位深 → 色彩 → 采样格式 → 声道），判定输入是**解码前采集的源格式上下文**加上

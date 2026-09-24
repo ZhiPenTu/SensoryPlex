@@ -2,7 +2,7 @@
 ## 技术选型 ADR 与 V1 实施蓝图
 
 **状态：** Proposed（进入 POC 前评审）  
-**版本：** V1.1<br>
+**版本：** V1.2<br>
 **日期：** 2026-09-24<br>
 **适用范围：** 本地多卡 GPU POC、私有化部署与后续端侧 NPU SDK 路线
 
@@ -51,8 +51,10 @@ MLX/CoreML        CUDA/TensorRT     按该机能力运行
   消费原始媒体时，必须走显式的数据传输或受控存储路径，不能把字节塞入 NATS/gRPC 控制消息。
 
 该拓扑的契约、节点状态、安装/回滚、数据本地性和验收要求由
-[ADR-026](./docs/adr/ADR-026-Web主节点与局域网插件worker拓扑.md) 定义。当前 POC 尚未实现节点 agent、
-节点 Registry 或跨机调度，不能把已有单机插件验收描述成此拓扑已交付。
+[ADR-026](./docs/adr/ADR-026-Web主节点与局域网插件worker拓扑.md) 定义。节点 Registry、agent、
+部署意图与数据本地性预检已经形成控制面闭环；它们不是 Pipeline 执行编排的替代品。PipelineRun、
+Task、依赖解析、真实 worker 调用、恢复与调度决策由 [ADR-029](./docs/adr/ADR-029-可编排插件执行核心.md)
+单独定义，未完成验收前不得把节点健康或安装意图读成“任务已经调度并执行”。
 
 ### 1.2 V1 的唯一 Golden Path
 
@@ -75,8 +77,9 @@ REST Search API（随后补 MCP）
 **V1 验收标准：** 一段正在输入的视频，在进入系统后 2–5 秒内可按语义检索到对应 `MaterialUnit`，检索结果必须能准确跳转回原始视频的时间区间，并携带模型、版本、置信度和原始素材引用。
 
 **V1 交付前置条件：** 上述业务 Golden Path 之外，必须先证明控制面能在声明支持的平台组合部署，
-并完成 ADR-026 的同机与局域网节点注册、安装位置选择、调度、数据本地性和失败恢复验收。单机回放、
-容器健康检查或仅有 Web 页面均不构成这项前置条件的证据。
+并完成 ADR-026 的同机与局域网节点注册、安装位置选择、数据本地性和失败恢复验收，以及 ADR-029 的
+Pipeline 编译、任务调度、真实 worker 调用、取消/重试/恢复验收。单机回放、容器健康检查、仅有 Web
+页面或由验收脚本手工串联的多个进程，均不构成这项前置条件的证据。
 
 ### 1.3 明确不在 V1 范围内的事项
 
@@ -292,18 +295,58 @@ V1 不应将每一个函数拆成独立微服务。建议先按故障域、伸�
 | `index-worker` | 向量生成、Milvus upsert、索引重试 | 按 backlog 扩展 | 成为元数据真相来源 |
 | `storage-adapter` | MinIO/NAS 写入、校验、归档、回收策略 | 按吞吐扩展 | 自行决定素材删除 |
 
-### 4.1 推荐的事件与命令边界
+### 4.1 可编排插件执行核心
+
+Runtime 内的 Orchestrator 是主节点的**唯一** Pipeline 执行权威，不是另一个会复制业务语义的工作流服务。
+它把发布后的 Pipeline 版本编译为有向无环图（DAG），将一次提交展开为可恢复的 `PipelineRun` 与 `Task`，
+再基于插件能力、节点状态、资源预算、数据位置、deadline 与策略做出可审计的分配决策。其实现边界是：
+
+- Pipeline 节点依赖稳定的 `plugin_id + version + artifact_digest + config_hash` 与输入/输出 modality，
+  不依赖任意 Python import、显示名称或验收脚本路径。
+- 每条边必须声明数据种类与时间关联语义；控制面只传 `BufferDescriptor`、Observation 或受控对象引用，
+  不能把原始帧、音频或 tensor 编码进任务消息。
+- 读取 Runtime lease / 共享内存 / CUDA/Metal 句柄的 Task 必须指派至数据面所在节点。没有经批准的跨机
+  传输契约时，节点不可达或资源不足必须排队或以稳定原因失败，不能静默改派。
+- 调度器持久化 `PipelineRun`、Task、attempt、assignment、取消、重试、失败与恢复账目；工作节点只执行
+  已签发的意图并回报事实状态，不能自行改变 DAG、跳过上游或宣布成功。
+- 同一 `(pipeline_version, input_ref, node_id, task_idempotency_key)` 的重复投递必须收敛至同一语义结果；
+  可重试错误受策略上限约束，预算耗尽进入显式 `retry_exhausted`，不伪造空成功结果。
+
+完整的状态机、Proto/数据库边界、分阶段交付与验收在 [ADR-029](./docs/adr/ADR-029-可编排插件执行核心.md)
+和[执行设计](./docs/design/plugin-orchestration.md)中定义。
+
+#### 核心产品门禁：P1–P3 是 V1 的必做能力
+
+P0 的图编译和内存状态机只是编排内核的前置条件。它不能执行插件、不能恢复任务，也不能让第三方在底座上
+交付场景产品。下列 P1–P3 是本项目 V1 的核心需求，不得作为可选增强、演示脚本或仅 Console 功能处理：
+
+| 阶段 | 必须交付的产品能力 | 必须通过的验收 | 未完成时的发布边界 |
+| --- | --- | --- | --- |
+| P1：单节点可执行编排 | 追加迁移持久化 immutable revision、Run、Task、edge 与 assignment；受 RBAC 保护的发布/提交/取消/重试/查询 API；事务状态迁移和幂等键；outbox/JetStream 命令；同机 Runtime 向一个真实受控插件执行 `Start`/`Process`/`Cancel` | 授权媒体 descriptor 真实投递至 OCR 或 VLM；重复投递不重复产出；可重试失败恰好耗尽预算；取消不解锁下游；崩溃恢复有账可查 | 不能宣称可执行 Pipeline、不能为场景团队承诺任务运行 |
+| P2：受控多节点编排 | 真实 Node Agent 生命周期、插件 artifact/config 校验、能力/资源/数据位置选择、assignment lease 与审计；仅 Observation/object reference 可跨机，buffer/共享内存/GPU 句柄始终 host-local | 节点离线、资源不足、错误 artifact 与跨机 descriptor 均得到稳定拒绝或阻塞；只在显式策略允许时 failover；每次改派保留完整账目 | 不能把局域网插件 worker 或节点心跳宣传为跨节点任务执行 |
+| P3：生态与场景产品闭环 | Console/API 支持发布、版本升级/回滚、提交、取消、详情与运行观测；可版本化的场景产品包（插件 artifact + Pipeline revision + 配置 schema + RBAC/外发策略）；真实文件至检索的端到端闭环 | 第三方场景包在隔离租户/项目中安装后，可用真实授权媒体完成插件调用、Timeline/索引、鉴权检索与时间回跳；失败、配额与审计对产品方可见 | 不能将“插件目录 + YAML + 图校验”称为可对外交付的场景产品平台 |
+
+场景团队可以开发 Plugin，并将锁定的插件制品、不可变 Pipeline revision、配置 schema、RBAC/数据外发策略和
+版本升级说明组合为一个**场景产品包**。产品包不拥有 Scheduler、数据库凭据或其他插件的内存；它只能使用
+本节定义的受控 API 与契约。这使工业质检、会议知识库、安防巡检等产品复用同一运行时，而不复制一套
+调度、数据面和故障恢复逻辑。
+
+### 4.2 推荐的事件与命令边界
 
 ```text
-Command: start_stream, stop_stream, retry_job, reload_model
+Command: submit_pipeline_run, cancel_pipeline_run, retry_task,
+         start_stream, stop_stream, reload_model
 Event:   stream.started, frame.ready, audio.segment.ready,
          observation.created, material.upserted, embedding.ready,
+         task.assigned, task.state_changed, pipeline_run.state_changed,
          storage.degraded, runtime.backpressure
 ```
 
-事件只包含稳定 ID、时间范围、版本、状态、优先级和 payload 引用。任何消费者都必须幂等；消息至少一次投递时，以 `(event_id, consumer_name)` 去重。
+事件只包含稳定 ID、时间范围、版本、状态、优先级和 payload 引用。调度命令与状态事件使用独立 subject，
+不能拿 `material.upserted` 充当任务队列。任何消费者都必须幂等；消息至少一次投递时，以
+`(event_id, consumer_name)` 去重。
 
-### 4.2 背压与故障策略
+### 4.3 背压与故障策略
 
 - 每个流和每种 processor 都有有界队列；队列超过阈值时，先降低非关键帧采样率，再暂停慢路径，最后报告可见的 `backpressure` 状态。
 - 原始媒体接入优先级高于 VLM 慢路径；不得为了补全 VLM 让直播流整体断裂。
@@ -499,6 +542,12 @@ TimelineItem ──────────────────────�
 | `embedding_record` | `embedding_id` | material_unit_id, model_release_id, vector_ref, content_hash | 向量索引引用与重建依据 |
 | `model_release` | `model_release_id` | name, version, artifact_hash, backend, config_hash | 模型及推理配置可追溯 |
 | `processing_job` | `job_id` | idempotency_key, state, attempt, error_code | 处理任务与错误审计 |
+| `pipeline_definition` | `pipeline_id` | name, state, owner, created_at | Pipeline 的逻辑身份与发布状态 |
+| `pipeline_revision` | `(pipeline_id, revision)` | graph_digest, definition_jsonb, published_by | 不可变的可执行 DAG 版本 |
+| `pipeline_run` | `run_id` | pipeline_id, revision, input_ref, state, deadline, cancellation | 一次被接受的执行请求与终态 |
+| `pipeline_task` | `task_id` | run_id, node_id, state, attempt, idempotency_key, assignment_id | DAG 节点在一次 Run 中的可恢复实例 |
+| `pipeline_task_edge` | 复合键 | upstream_task_id, downstream_task_id, modality, join_policy | Run 展开后的依赖与数据关联账目 |
+| `scheduler_assignment` | `assignment_id` | task_id, requested_node, actual_node, decision, reason_code, lease | 节点选择、数据本地性与资源决策审计 |
 
 ### 7.3 不可省略的数据规则
 
@@ -535,6 +584,10 @@ modality, model_release_id, content_hash, visibility, created_at
 | `GET /v1/health` | 运行健康检查 | 依赖状态，不泄露敏感配置 |
 
 `materials:search` 必须支持：`query`、`stream_id`、`start_ms/end_ms`、`modalities`、`tags`、`min_confidence`、`limit`。其响应中的媒体 URL 应为短期授权 URL 或受鉴权的对象引用，不直接暴露 NAS 内部路径。
+
+运行控制面另提供受 RBAC 保护的接口：创建或验证 Pipeline 草稿、发布不可变 revision、提交/取消/重试
+PipelineRun，以及按 run/task 查询状态与调度决策。提交接口只确认“请求已持久接受”，不等待模型推理；
+Pipeline 未通过图、插件、placement 与资源预检时必须返回稳定拒绝码，不能创建一个注定无法执行的 Run。
 
 ### 8.2 MCP 的引入时机
 
@@ -631,6 +684,10 @@ Mac mini 部署时 Compose 仅运行 `postgres` 与 `nats`（`gateway` 无加速
 ```text
 ingest_to_material_visible_ms (P50/P95/P99)
 per_model_infer_ms / queue_wait_ms / batch_size
+pipeline_compile_ms / scheduler_decision_ms / task_queue_wait_ms
+pipeline_run_total / pipeline_run_terminal_total（按 state）
+task_retry_total / task_retry_exhausted_total / task_cancel_total
+task_assignment_rejected_total（按 data_locality / capability / resource / policy）
 frame_sampled_total / frame_dropped_total（按 reason）
 stream_reconnect_total / stream_gap_ms
 gpu_utilization / gpu_memory / thermal / OOM
@@ -655,7 +712,7 @@ blob_write_failure_total / vector_index_lag_ms
 |---:|---|---|
 | 1 | 定义边界与仓库骨架 | ADR、Proto 初版、Docker 开发环境、真实测试媒体集与验收脚本 |
 | 2 | 打通媒体接入 | SRT/File → GStreamer → 时间戳正确的帧/音频 descriptor；断流重连测试（macOS 与 Linux 各执行一次） |
-| 3 | 建立 Runtime 最小闭环 | Pipeline 生命周期、NATS 控制事件、有界队列和背压指标 |
+| 3 | 建立可编排 Runtime 最小闭环 | Pipeline DAG 编译、PipelineRun/Task 状态机、单节点真实 worker 调用、NATS 控制事件、有界队列与背压指标 |
 | 4 | 实现自适应抽帧与质量过滤 | 静态 PPT、翻页、运动视频三类回放数据的采样覆盖率报告 |
 | 5 | 接入流式 ASR | 分段、partial/final、时间轴及模型版本可追溯；延迟报告 |
 | 6 | 接入 OCR | OCR blocks、坐标、时间锚点与图像引用；PPT 样本准确性基线 |
@@ -665,6 +722,10 @@ blob_write_failure_total / vector_index_lag_ms
 | 10 | 提供 Gateway 检索 API | 语义/标签/时间检索、原视频定位、鉴权及可审计错误响应 |
 | 11 | 稳定性与性能压测 | 连续推流、断网重连、GPU OOM、存储短暂故障、背压行为测试 |
 | 12 | 试运行与决策复盘 | 可重复部署、E2E 验收报告、容量模型、NPU 适配差距与 V2 ADR |
+
+P1 必须在对任何插件团队承诺“可执行编排”前完成；P2 是局域网异构节点产品化的前置；P3 是向第三方场景
+团队交付“插件 + 编排”产品能力的前置。三者都是 V1 的核心门禁，不能以 P0、单插件验收、健康检查或
+手工串联脚本替代。
 
 ### 每周均需满足的工程门槛
 
@@ -708,5 +769,6 @@ CoreML 后端可作为 Gate C「至少一种模型在 ONNX/运行时抽象上验
 2. 面向连续媒体的 **低复制实时数据面**；
 3. 面向 GPU/NPU 演进的 **Hardware Runtime Abstraction**；
 4. 快慢分层、可度量、可降级的 **实时多模态 Pipeline**。
+5. 可审计、可恢复、受数据本地性约束的 **插件执行编排核心**。
 
 具体 ASR、OCR、VLM 或向量模型都必须可以替换；系统价值在于模型结果如何被正确地对齐、清洗、溯源、组织并稳定交付给上层 Agent。

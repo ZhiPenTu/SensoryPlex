@@ -15,6 +15,24 @@
 
 ## 当前并行工作与明确未完成项（2026-09-24）
 
+- [x] **可编排插件执行核心（ADR-029，P0）**：已新增 `orchestration/v1` Proto、不可变图的 DAG 编译、
+  modality/placement 校验和 `PipelineRun` / `PipelineTask` 确定性内存状态机；`make orchestration-check`
+  成功编译 3 节点/2 边示例，Rust workspace fmt/clippy/test 全通过（含 3 项编排内核测试），证据见
+  `docs/verification.md` 的“ADR-029 P0”节。它**不**调用 worker、不写数据库、不发事件。
+- [ ] **可编排插件执行核心（ADR-029，P1）**：追加数据库迁移，持久化 immutable Pipeline revision、
+  Run/Task/assignment 与状态转换；经 outbox/JetStream 下发同机真实插件的 `Start/Process/Cancel`，验证
+  幂等、取消、崩溃恢复和数据本地性拒绝。完成前，Console 草稿、`tools/ai_worker.py`、节点心跳或部署意图
+  均不能被表述为可执行编排。设计见 [ADR-029](adr/ADR-029-可编排插件执行核心.md) 与
+  [执行设计](design/plugin-orchestration.md)。
+- [ ] **可编排插件执行核心（ADR-029，P2）**：使 Node Agent 执行并回报真实 Plugin 生命周期；以
+  artifact/config、数据本地性、节点能力、资源上限和显式 failover 策略生成持久 assignment lease。跨机仅允许
+  Observation/object reference，descriptor、共享内存和 GPU 句柄必须拒绝跨机。完成前不能宣称局域网 worker
+  已实现跨节点任务编排。
+- [ ] **可编排插件执行核心（ADR-029，P3）**：把认证插件、不可变 Pipeline revision、配置 schema、RBAC/
+  外发策略和升级/回滚说明收敛为可安装的场景产品包；补齐 Console/API 的发布、提交、取消、详情与运行观测，
+  在隔离项目内用真实授权输入完成插件 → Timeline/索引 → 鉴权检索/时间回跳。完成前不能将插件目录、YAML
+  或图校验称为“第三方可基于底座交付的产品”。
+
 - [x] **局域网插件 worker 拓扑（ADR-026，必做）**：已完成。产品仍是 Web Console，不做桌面客户端；实现主节点与受控子节点 agent。完成节点注册/撤销与短期令牌身份、能力与资源报告、心跳和 `ready / draining / offline / revoked` 状态、按 `node_id` 的插件安装/启停/卸载/回滚、Web 安装位置选择、数据本地性校验和任务分配审计；证据见 `make node-check` 与 `docs/verification.md`。
 
 - [ ] **M8 整体仍在研发中**：四个模型（VLM / ASR / OCR / BGE）已接入并通过本机真实样本验收，
@@ -62,7 +80,9 @@
   真实 gRPC 检索面跑 **6 个场景**全过（事件驱动写入→同一进程立刻检索到、换 durable 重放不重复、
   目录锁与优雅停止、坏事件 fail-stop、三类启动期显式失败、状态行不外泄）。
   证据见 `docs/verification.md` 的"常驻消费循环与 sink 接线（ADR-025）"。
-  **仍未做**：dead-letter 与按原因分流、`ack_wait` 到期重投的单独验收、多副本消费、吞吐曲线。
+  **仍未做**：dead-letter、`ack_wait` 到期重投的单独验收、多副本消费、吞吐曲线；按原因分流**部分已做**
+  （2026-09-25：文本类的"不产出向量"按原因计数跳过，见下一条），形状错误 / 事实缺失 / 向量库故障
+  仍然只有 fail-stop 一条路。
   （"消费侧/relay 进 compose"与"ADR-019 的队列上限接到这一层"已由
   [ADR-027](adr/ADR-027-事件链路分级背压与容器化常驻.md) 收掉，见下一条。）
 - [x] **事件链路分级背压与容器化常驻（ADR-027）**：ADR-019 的"分级是准入上限"接到事件链路。
@@ -102,10 +122,32 @@
   **边界**：本目标固定在主机执行（runtime 二进制是主机 Mach-O，容器里 `Exec format error`；
   真实 VLM 端点只在主机）；只接文件源、单次运行、`revision=1`；只有 VLM 一种模态，因此每条素材
   `status=partial` 而不是 `fast_ready`。
-- [ ] **该链路产出的素材尚未走完向量/检索与查询回看**：验收停在"事件被确认发到 JetStream"。
-  `consume-check` / `event-pipeline-check` 覆盖的是事件驱动写入向量并被检索到，但它们跑的不是
-  timeline 融合出来的素材；这些素材经 HTTP 查询与回看也还没有走一遍。因此 `golden_path_verified`
-  在三份产物里都是 `false`。Timeline 融合核心本身已通过 `ffa9b56` 合并主线。
+- [x] **融合出的素材已走完"常驻 relay/index → 向量 → 语义检索"（2026-09-25）**：新增
+  `tools/verify_timeline_semantic.py` 与 `make timeline-resident-check MEDIA=<授权样本>`。它复用
+  `timeline-check` 的"真解码 + 真插件 + 真融合 + 授权追加"，但**落在常驻进程真正在盯的那份库与那条
+  stream 上**（不复用隔离 schema），判定面是运行中 api 的 `POST /v1/materials:search`。真实授权样本
+  实测（`editing-basics-sandboxes.vp8.webm`，VP8/Vorbis，76417 ms）：6 帧 → 12 观测 → 5 窗有观测
+  （共 16 窗）→ 5 条素材 `rejected=0`；追加 `appended=5 / outbox=5`；常驻搬运
+  `published +5` / `consumed +5` / `embedded +6`；6 行向量 `ready`；语义检索 **28 条命中里包含本次
+  5 条素材的全部**，用作查询的那条观测相似度 `1.0000`、素材自己的一块文字也照样命中；同窗多模态共存
+  5/5（`ocr_blocks` + `vision.scene_description`）。第二个样本
+  （`officehours-panel.480p.vp9.webm`，2231 s / 447 窗）同样通过，且它 6 条 `ocr_blocks` 观测里
+  **真的**有 1 条空文本 → 按原因计数跳过（`skipped_empty_text` 累计 +1）、素材照旧拿到其余 5 行向量、
+  两个常驻容器 `RestartCount=0`。证据见 `docs/verification.md` 的"真实媒体端到端（续）"。
+  Timeline 融合核心本身已通过 `ffa9b56` 合并主线。
+- [ ] **查询回看、revision 前进、向量 GC 仍未验收**：这些素材经 HTTP 查询与**回看**还没有走一遍；
+  同一素材的第二次不同内容写入仍以 `immutable_revision_conflict` 显式失败而不是自动升版；
+  检索面报的 `unindexed_hits` 里就摆着 GC 欠账（实测同一页 100 条候选里 24 条"向量在、记账行不在"）。
+  因此 `golden_path_verified` 在三份产物里都仍然是 `false`。
+- [ ] **观测文本上限对密集屏录偏紧（4096 字符）**：一帧密集屏录（Wikipedia 监视列表页）实测
+  109 块 / **4158 字符**，越过 ADR-017 §4 的 `MAX_TOTAL_CHARS`。本轮已把这类"合法取值"从"事件级
+  失败"改成"按原因计数跳过"（`skipped_over_bound`，不再让整条素材陪着重投耗尽、常驻进程 exit 3），
+  但**代价是这条观测真的不产出向量**。后续项是**切窗口**（把一帧的字按语义/版面切成多段分别编码），
+  而不是提高上限——上限本身是防"给不可能的文字量算一个向量"的护栏。
+- [ ] **`Nats-Msg-Id` 去重窗口内的素材身份是固定的**：`material-<摘要前12>-<窗口起点>` + JetStream
+  按 `Nats-Msg-Id` 去重（2h），所以同一份样本重复跑走的是 `already_published` 分支。验收脚本据此
+  把判定拆成"有新增事件时比累计计数增长"与"没有新增事件时比逐事件的持久凭据"两条路，
+  但**"同一素材内容变了该不该重发"仍是设计问题**（与上面的 revision 前进同源）。
 - [ ] **语义冲突识别与消解**：当前融合核心只保留显式冲突标记；不推断自然语言矛盾。
 - [x] **素材查询与回看体验**：筛选、历史版本、观测时间轴、血缘和授权原片定位已通过浏览器验收，
   证据见 [专项记录](verification-material-review.md)。核心实现已通过 `c05ba8d` 合并主线。

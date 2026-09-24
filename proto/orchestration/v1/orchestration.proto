@@ -1,0 +1,94 @@
+syntax = "proto3";
+package edge.material.orchestration.v1;
+
+// The authoritative, immutable identity of a plugin used by a published pipeline revision.
+message PluginReference {
+  string plugin_id = 1;
+  string version = 2;
+  string artifact_digest = 3;
+  string config_hash = 4;
+}
+
+enum PipelineRunState {
+  PIPELINE_RUN_STATE_UNSPECIFIED = 0;
+  PIPELINE_RUN_STATE_ACCEPTED = 1;
+  PIPELINE_RUN_STATE_VALIDATING = 2;
+  PIPELINE_RUN_STATE_QUEUED = 3;
+  PIPELINE_RUN_STATE_RUNNING = 4;
+  PIPELINE_RUN_STATE_SUCCEEDED = 5;
+  PIPELINE_RUN_STATE_FAILED = 6;
+  PIPELINE_RUN_STATE_CANCELLED = 7;
+  PIPELINE_RUN_STATE_EXPIRED = 8;
+}
+
+enum PipelineTaskState {
+  PIPELINE_TASK_STATE_UNSPECIFIED = 0;
+  PIPELINE_TASK_STATE_PENDING = 1;
+  PIPELINE_TASK_STATE_READY = 2;
+  PIPELINE_TASK_STATE_ASSIGNED = 3;
+  PIPELINE_TASK_STATE_RUNNING = 4;
+  PIPELINE_TASK_STATE_RETRY_WAIT = 5;
+  PIPELINE_TASK_STATE_SUCCEEDED = 6;
+  PIPELINE_TASK_STATE_FAILED = 7;
+  PIPELINE_TASK_STATE_CANCELLED = 8;
+  PIPELINE_TASK_STATE_BLOCKED = 9;
+}
+
+message PipelineNode {
+  string node_id = 1;
+  PluginReference plugin = 2;
+  repeated string consumes = 3;
+  repeated string produces = 4;
+  string placement = 5;
+  uint32 deadline_ms = 6;
+  uint32 max_attempts = 7;
+  uint32 priority = 8;
+}
+
+message PipelineEdge {
+  string from_node_id = 1;
+  string to_node_id = 2;
+  string modality = 3;
+  string join_policy = 4;
+  bool required = 5;
+}
+
+message PipelineRevision {
+  string pipeline_id = 1;
+  uint64 revision = 2;
+  string graph_digest = 3;
+  repeated PipelineNode nodes = 4;
+  repeated PipelineEdge edges = 5;
+}
+
+message PipelineRun {
+  string run_id = 1;
+  string pipeline_id = 2;
+  uint64 revision = 3;
+  string input_ref = 4;
+  string idempotency_key = 5;
+  int64 deadline_unix_ms = 6;
+  PipelineRunState state = 7;
+}
+
+message PipelineTask {
+  string task_id = 1;
+  string run_id = 2;
+  string node_id = 3;
+  uint32 attempt = 4;
+  string idempotency_key = 5;
+  PipelineTaskState state = 6;
+  string assignment_id = 7;
+  string reason_code = 8;
+}
+
+message SchedulerAssignment {
+  string assignment_id = 1;
+  string task_id = 2;
+  string requested_node_id = 3;
+  string actual_node_id = 4;
+  string data_plane_node_id = 5;
+  string decision = 6;
+  string reason_code = 7;
+  int64 lease_expires_at_unix_ms = 8;
+}

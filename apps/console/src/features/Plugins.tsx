@@ -3,7 +3,13 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertCircle, Box, Check, CheckCircle2, Download, Settings2, Zap } from 'lucide-react';
 import { PluginFields, readConfig } from './PluginFields';
 import { api, post } from '../api/client';
-import type { NodeList, PluginConfigList, PluginEntry, PluginList, PreflightResponse } from '../api/contracts';
+import type {
+    NodeList,
+    PluginConfigList,
+    PluginEntry,
+    PluginList,
+    PreflightResponse,
+} from '../api/contracts';
 import { Badge, date, Empty, ErrorNotice, Heading, Loading, Modal, Notice } from '../components';
 
 export default function Plugins() {
@@ -33,14 +39,11 @@ export default function Plugins() {
     const preflight = useQuery({
         queryKey: ['preflight', targetNodeId, installingPlugin?.id, selectedConfigId],
         queryFn: () =>
-            post<PreflightResponse>(
-                `/admin/v1/nodes/${targetNodeId}/preflight`,
-                {
-                    node_id: targetNodeId,
-                    plugin_id: installingPlugin!.id,
-                    config_id: selectedConfigId || undefined,
-                },
-            ),
+            post<PreflightResponse>(`/admin/v1/nodes/${targetNodeId}/preflight`, {
+                node_id: targetNodeId,
+                plugin_id: installingPlugin!.id,
+                config_id: selectedConfigId || undefined,
+            }),
         enabled: !!targetNodeId && !!installingPlugin,
         retry: false,
     });
@@ -58,20 +61,22 @@ export default function Plugins() {
         },
     });
 
-    const [batchNotice, setBatchNotice] = useState<string>("");
+    const [batchNotice, setBatchNotice] = useState<string>('');
     const batchDeploy = useMutation({
         mutationFn: () =>
             post<{ node_id: string; deployed: string[]; rejected: any[] }>(
-                "/admin/v1/nodes/local-host/plugins:batch-deploy",
+                '/admin/v1/nodes/local-host/plugins:batch-deploy',
                 {},
             ),
         onSuccess: (data) => {
-            void cache.invalidateQueries({ queryKey: ["nodes"] });
+            void cache.invalidateQueries({ queryKey: ['nodes'] });
             setBatchNotice(
                 `已向 ${data.node_id} 下发 ${data.deployed.length} 个插件安装意图！` +
-                    (data.rejected.length ? ` (另有 ${data.rejected.length} 个受预检限制未部署)` : ""),
+                    (data.rejected.length
+                        ? ` (另有 ${data.rejected.length} 个受预检限制未部署)`
+                        : ''),
             );
-            setTimeout(() => setBatchNotice(""), 6000);
+            setTimeout(() => setBatchNotice(''), 6000);
         },
     });
 
@@ -89,6 +94,13 @@ export default function Plugins() {
         },
     });
 
+    const catalogItems = catalog.data?.items || [];
+    const configCount = configs.data?.total ?? configs.data?.items.length ?? 0;
+    const readyNodes =
+        nodes.data?.items?.filter((node) => node.status === 'NODE_STATUS_READY').length || 0;
+    const deployedInstances =
+        nodes.data?.items?.reduce((total, node) => total + (node.instances?.length || 0), 0) || 0;
+
     return (
         <>
             <Heading
@@ -102,7 +114,7 @@ export default function Plugins() {
                         onClick={() => {
                             if (
                                 confirm(
-                                    "确定向同机数据面节点 (local-host) 一键装配全部基础处理插件（VLM、ASR、OCR、Embedding）吗？",
+                                    '确定向同机数据面节点 (local-host) 一键装配全部基础处理插件（VLM、ASR、OCR、Embedding）吗？',
                                 )
                             ) {
                                 batchDeploy.mutate();
@@ -116,14 +128,33 @@ export default function Plugins() {
                 }
             />
             {batchNotice ? (
-                <div className="notice" style={{ borderColor: "#4ade80", background: "rgba(74, 222, 128, 0.08)" }}>
-                    <CheckCircle2 size={18} color="#4ade80" />
-                    <span style={{ color: "#86efac", fontSize: "0.88rem" }}>{batchNotice}</span>
+                <div className="notice notice-success">
+                    <CheckCircle2 size={18} />
+                    <span>{batchNotice}</span>
                 </div>
             ) : null}
             <Notice>
-                依据 ADR-026 拓扑设计：插件不再全局泛化安装，而是由管理员选择目标计算节点。控制面预检硬件加速、容器/原生运行时、制品摘要与数据本地性；数据面仅限同机共享内存。
+                依据 ADR-026
+                拓扑设计：插件不再全局泛化安装，而是由管理员选择目标计算节点。控制面预检硬件加速、容器/原生运行时、制品摘要与数据本地性；数据面仅限同机共享内存。
             </Notice>
+            <section className="control-strip" aria-label="插件中心概览">
+                <div>
+                    <span>目录插件</span>
+                    <strong>{catalogItems.length}</strong>
+                </div>
+                <div>
+                    <span>配置版本</span>
+                    <strong>{configCount}</strong>
+                </div>
+                <div>
+                    <span>可调度节点</span>
+                    <strong>{readyNodes}</strong>
+                </div>
+                <div>
+                    <span>已部署实例</span>
+                    <strong>{deployedInstances}</strong>
+                </div>
+            </section>
             <div className="tabs">
                 <button
                     className={tab === 'catalog' ? 'active' : ''}
@@ -143,57 +174,66 @@ export default function Plugins() {
                 catalog.isPending ? (
                     <Loading />
                 ) : (
-                    <div className="plugin-grid">
-                        {catalog.data?.items.map((item) => (
+                    <div className="catalog-grid">
+                        {catalogItems.map((item) => (
                             <article
-                                className="card plugin-card"
+                                className="catalog-card"
                                 key={item.id}
                                 data-plugin-id={item.id}
                             >
-                                <div className="plugin-top">
-                                    <span className="plugin-icon">
+                                <div className="catalog-main">
+                                    <span className="catalog-icon">
                                         <Box size={27} />
                                     </span>
-                                    <span className="version">v{item.version}</span>
+                                    <div className="catalog-copy">
+                                        <div className="catalog-title">
+                                            <h2>{item.name}</h2>
+                                            <span className="version">v{item.version}</span>
+                                        </div>
+                                        <p>{item.description}</p>
+                                        <div className="tags compact-tags">
+                                            {item.produces.map((x) => (
+                                                <span key={x}>{x.replace('observation.', '')}</span>
+                                            ))}
+                                        </div>
+                                    </div>
                                 </div>
-                                <h2>{item.name}</h2>
-                                <p>{item.description}</p>
-                                <div className="tags">
-                                    {item.produces.map((x) => (
-                                        <span key={x}>{x.replace('observation.', '')}</span>
-                                    ))}
+                                <div className="catalog-side">
+                                    <div className="catalog-badges">
+                                        <Badge state={item.state} />
+                                        <Badge state={item.trust} />
+                                    </div>
+                                    <small className="mono digest-line">
+                                        {item.digest.slice(0, 34)}…
+                                    </small>
+                                    <div className="catalog-actions">
+                                        <button
+                                            onClick={() => {
+                                                save.reset();
+                                                setSelected(item);
+                                            }}
+                                        >
+                                            <Settings2 size={16} />
+                                            配置
+                                        </button>
+                                        <button
+                                            className="primary"
+                                            onClick={() => {
+                                                deploy.reset();
+                                                setInstallingPlugin(item);
+                                                const defaultNode =
+                                                    nodes.data?.items?.[0]?.node_id || '';
+                                                setTargetNodeId(defaultNode);
+                                            }}
+                                        >
+                                            <Download size={16} />
+                                            安装到节点
+                                        </button>
+                                    </div>
                                 </div>
-                                <div className="plugin-meta">
-                                    <Badge state={item.state} />
-                                    <Badge state={item.trust} />
-                                </div>
-                                <small className="mono">{item.digest.slice(0, 30)}…</small>
-                                <footer>
-                                    <button
-                                        onClick={() => {
-                                            save.reset();
-                                            setSelected(item);
-                                        }}
-                                    >
-                                        <Settings2 size={16} />
-                                        配置
-                                    </button>
-                                    <button
-                                        className="primary"
-                                        onClick={() => {
-                                            deploy.reset();
-                                            setInstallingPlugin(item);
-                                            const defaultNode = nodes.data?.items?.[0]?.node_id || '';
-                                            setTargetNodeId(defaultNode);
-                                        }}
-                                    >
-                                        <Download size={16} />
-                                        安装到节点
-                                    </button>
-                                </footer>
                             </article>
                         ))}
-                        {catalog.data?.items.length === 0 ? (
+                        {catalogItems.length === 0 ? (
                             <Empty title="没有发现插件">受控目录中暂时没有插件 Manifest。</Empty>
                         ) : null}
                     </div>
@@ -274,7 +314,10 @@ export default function Plugins() {
             ) : null}
 
             {installingPlugin ? (
-                <Modal title={`部署插件 · ${installingPlugin.name}`} onClose={() => setInstallingPlugin(null)}>
+                <Modal
+                    title={`部署插件 · ${installingPlugin.name}`}
+                    onClose={() => setInstallingPlugin(null)}
+                >
                     <ErrorNotice error={deploy.error} />
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
                         <div>
@@ -282,7 +325,9 @@ export default function Plugins() {
                             <div className="card" style={{ padding: '10px', marginTop: '4px' }}>
                                 <strong>{installingPlugin.id}</strong> (v{installingPlugin.version})
                                 <br />
-                                <small className="mono" style={{ color: '#a1a1aa' }}>{installingPlugin.digest}</small>
+                                <small className="mono" style={{ color: '#a1a1aa' }}>
+                                    {installingPlugin.digest}
+                                </small>
                             </div>
                         </div>
 
@@ -292,16 +337,22 @@ export default function Plugins() {
                                 value={targetNodeId}
                                 onChange={(e) => setTargetNodeId(e.target.value)}
                             >
-                                <option value="" disabled>-- 请选择部署节点 --</option>
+                                <option value="" disabled>
+                                    -- 请选择部署节点 --
+                                </option>
                                 {nodes.data?.items?.map((n) => (
                                     <option key={n.node_id} value={n.node_id}>
-                                        {n.display_name || n.node_id} ({n.is_co_located ? '同机数据面' : '局域网子节点'}) - {n.capabilities?.platform || "unknown"}/{n.capabilities?.arch || "unknown"} [{n.status}]
+                                        {n.display_name || n.node_id} (
+                                        {n.is_co_located ? '同机数据面' : '局域网子节点'}) -{' '}
+                                        {n.capabilities?.platform || 'unknown'}/
+                                        {n.capabilities?.arch || 'unknown'} [{n.status}]
                                     </option>
                                 ))}
                             </select>
                         </label>
 
-                        {configs.data?.items?.filter((c) => c.plugin_id === installingPlugin.id).length ? (
+                        {configs.data?.items?.filter((c) => c.plugin_id === installingPlugin.id)
+                            .length ? (
                             <label>
                                 绑定配置版本（可选）
                                 <select
@@ -321,23 +372,65 @@ export default function Plugins() {
                         ) : null}
 
                         {targetNodeId ? (
-                            <div className="card" style={{ padding: '12px', background: '#121215' }}>
-                                <small style={{ fontWeight: 600, display: 'block', marginBottom: '6px' }}>控制面预检 (ADR-026 Preflight)</small>
+                            <div
+                                className="card"
+                                style={{ padding: '12px', background: '#121215' }}
+                            >
+                                <small
+                                    style={{
+                                        fontWeight: 600,
+                                        display: 'block',
+                                        marginBottom: '6px',
+                                    }}
+                                >
+                                    控制面预检 (ADR-026 Preflight)
+                                </small>
                                 {preflight.isPending ? (
-                                    <div style={{ fontSize: '0.85rem', color: '#a1a1aa' }}>正在执行硬件能力与数据本地性预检…</div>
+                                    <div style={{ fontSize: '0.85rem', color: '#a1a1aa' }}>
+                                        正在执行硬件能力与数据本地性预检…
+                                    </div>
                                 ) : preflight.data ? (
                                     <div>
                                         {preflight.data.eligible ? (
-                                            <div style={{ color: '#4ade80', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.88rem' }}>
+                                            <div
+                                                style={{
+                                                    color: '#4ade80',
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    gap: '8px',
+                                                    fontSize: '0.88rem',
+                                                }}
+                                            >
                                                 <CheckCircle2 size={18} />
-                                                <span>预检通过：目标节点算力、架构与数据本地性满足要求。</span>
+                                                <span>
+                                                    预检通过：目标节点算力、架构与数据本地性满足要求。
+                                                </span>
                                             </div>
                                         ) : (
-                                            <div style={{ color: '#f87171', display: 'flex', alignItems: 'flex-start', gap: '8px', fontSize: '0.88rem' }}>
-                                                <AlertCircle size={18} style={{ marginTop: '2px', flexShrink: 0 }} />
+                                            <div
+                                                style={{
+                                                    color: '#f87171',
+                                                    display: 'flex',
+                                                    alignItems: 'flex-start',
+                                                    gap: '8px',
+                                                    fontSize: '0.88rem',
+                                                }}
+                                            >
+                                                <AlertCircle
+                                                    size={18}
+                                                    style={{ marginTop: '2px', flexShrink: 0 }}
+                                                />
                                                 <div>
-                                                    <strong>预检拒绝 ({preflight.data.reason_code})</strong>
-                                                    <p style={{ margin: '4px 0 0 0', fontSize: '0.82rem', color: '#fca5a5' }}>
+                                                    <strong>
+                                                        预检拒绝 ({preflight.data.reason_code})
+                                                    </strong>
+                                                    <p
+                                                        style={{
+                                                            margin: '4px 0 0 0',
+                                                            fontSize: '0.82rem',
+                                                            color: '#fca5a5',
+                                                        }}
+                                                    >
                                                         {preflight.data.detail}
                                                     </p>
                                                 </div>
@@ -345,18 +438,29 @@ export default function Plugins() {
                                         )}
                                     </div>
                                 ) : (
-                                    <div style={{ fontSize: '0.85rem', color: '#f87171' }}>无法获取预检状态</div>
+                                    <div style={{ fontSize: '0.85rem', color: '#f87171' }}>
+                                        无法获取预检状态
+                                    </div>
                                 )}
                             </div>
                         ) : (
                             <p className="subtle">请先选择一个节点以触发控制面能力预检。</p>
                         )}
 
-                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '12px' }}>
+                        <div
+                            style={{
+                                display: 'flex',
+                                justifyContent: 'flex-end',
+                                gap: '10px',
+                                marginTop: '12px',
+                            }}
+                        >
                             <button onClick={() => setInstallingPlugin(null)}>取消</button>
                             <button
                                 className="primary"
-                                disabled={!targetNodeId || !preflight.data?.eligible || deploy.isPending}
+                                disabled={
+                                    !targetNodeId || !preflight.data?.eligible || deploy.isPending
+                                }
                                 onClick={() => deploy.mutate()}
                             >
                                 <Download size={16} />

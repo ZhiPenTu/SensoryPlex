@@ -275,6 +275,42 @@ def test_unencodable_payloads_are_rejected_not_truncated(payload):
         consumer.bge_text.collect_text(upstream)
 
 
+# 两个上限各自加一：越界是**取值**决定的，不是形状错误（见下面那条分类断言）。
+CHARS_OVER_BOUND = consumer.bge_text.MAX_TOTAL_CHARS + 1
+BLOCKS_OVER_BOUND = consumer.bge_text.MAX_TEXTS + 1
+
+
+@pytest.mark.parametrize(
+    ("payload", "field"),
+    [
+        # `blocks=[]`：模型这一帧没找到文字（真实媒体里是常态）。
+        ({"blocks": []}, "skipped_empty_text"),
+        # 拼接后越过字符上限：实测一帧密集屏录（Wikipedia 监视列表页）就是 4158 字符。
+        ({"blocks": [{"text": "x" * CHARS_OVER_BOUND}]}, "skipped_over_bound"),
+        # 块数越过上限：整屏文字被切成几百个块时同样会发生。
+        ({"blocks": [{"text": "x"}] * BLOCKS_OVER_BOUND}, "skipped_over_bound"),
+    ],
+)
+def test_real_media_text_values_are_classified_as_counted_skips(payload, field):
+    """这两类"不产出向量"的取值必须落到计数字段上，且分类取自插件**实际抛出的**原因码。
+
+    这条断言钉的是分类不漂移：插件换了上限常量或改了原因码，这里会红，而不是让新的越界码
+    悄悄回到"重投到耗尽再丢事件、常驻进程 exit 3 重启"那条路上（实测发生过一次）。
+    形状错误（缺 `blocks`、块里没 `text`、`text` 不是字符串）**不在**任何跳过类里。
+    """
+    upstream = consumer.upstream_observation(facts(payload=payload))
+    with pytest.raises(PluginError) as failure:
+        consumer.bge_text.collect_text(upstream)
+    reason = str(failure.value.reason_code)
+    classification = (
+        consumer.EMPTY_TEXT_REASON
+        if reason == consumer.EMPTY_TEXT_REASON
+        else consumer.OVER_BOUND_TEXT_REASON
+    )
+    assert reason == consumer.EMPTY_TEXT_REASON or reason in consumer.OVER_BOUND_REASONS
+    assert consumer.TEXT_SKIP_FIELDS[classification] == field
+
+
 # ── 投递与账目形状 ─────────────────────────────────────────────────────────
 
 
@@ -313,9 +349,17 @@ def test_status_document_carries_counts_and_no_payload():
         received=3,
         consumed=2,
         skipped=1,
+        # 跳过按原因类分开上报：空文本与越界各有自己的字段（见 `TEXT_SKIP_FIELDS`）。
+        skipped_text={consumer.EMPTY_TEXT_REASON: 1, consumer.OVER_BOUND_TEXT_REASON: 2},
         failed=0,
         embedded=4,
-        totals={"consumed": 2, "duplicate": 1, "skipped": 1, "failed": 0},
+        totals={
+            "consumed": 2,
+            "duplicate": 1,
+            "skipped": 1,
+            "failed": 0,
+            "skipped_text": {consumer.EMPTY_TEXT_REASON: 1, consumer.OVER_BOUND_TEXT_REASON: 2},
+        },
         error_code="event_consume_failed",
         error_detail="RuntimeError",
     )
@@ -328,11 +372,15 @@ def test_status_document_carries_counts_and_no_payload():
         "received",
         "consumed",
         "skipped",
+        "skipped_empty_text",
+        "skipped_over_bound",
         "failed",
         "embedded_total",
         "consumed_total",
         "duplicate_total",
         "skipped_total",
+        "skipped_empty_text_total",
+        "skipped_over_bound_total",
         "failed_total",
         "error_code",
         "error_detail",

@@ -57,7 +57,7 @@ OUTBOX_NATS   ?= $(if $(filter container,$(EXEC_MODE)),nats://nats:4222,nats://1
 # 集成测试（EXEC_TEST）连的 NATS：与 OUTBOX_NATS 同一套推导。
 TEST_NATS_URL ?= $(if $(filter container,$(EXEC_MODE)),nats://nats:4222,nats://127.0.0.1:24222)
 
-.PHONY: setup configure proto check test integration format infra up down migrate gateway runtime pipeline-check runtime-smoke gateway-smoke media-replay media-check handoff-check backpressure-check
+.PHONY: setup configure proto check test integration format infra up down migrate gateway runtime pipeline-check orchestration-check runtime-smoke gateway-smoke media-replay media-check handoff-check backpressure-check
 .PHONY: stream-up stream-down stream-status stream-logs live-check model-check asr-check ocr-check embed-check index-check semantic-check parallelism-check plugin-artifact capability-check accelerator-check
 .PHONY: outbox-check outbox-run
 .PHONY: node-check
@@ -65,7 +65,7 @@ TEST_NATS_URL ?= $(if $(filter container,$(EXEC_MODE)),nats://nats:4222,nats://1
 .PHONY: event-pipeline-check events-up events-down events-logs
 .PHONY: media-test resident-probe resident-install resident-uninstall resident-status
 .PHONY: lint-ruff test-py test-contracts test-integration proto-generate plugin-artifact-check
-.PHONY: timeline-check
+.PHONY: timeline-check timeline-resident-check
 
 # ── 项目引导 ────────────────────────────────────────────────────────────────
 
@@ -157,6 +157,9 @@ runtime:
 pipeline-check:
 	$(CARGO_HOST) run --locked -p sensoryplex-runtime -- check config/pipelines/file-material.yaml
 
+orchestration-check:
+	$(CARGO_HOST) run --locked -p sensoryplex-runtime -- orchestration-check config/pipelines/orchestrated-file-material.yaml
+
 runtime-smoke:
 	$(CARGO_HOST) build --locked -p sensoryplex-runtime
 	# 被验收的进程是**主机构建的原生二进制**（本机是 Mach-O），Linux 容器 exec 不了它，
@@ -221,6 +224,22 @@ timeline-check:
 	@test -n "$(MEDIA)" || { echo "usage: make timeline-check MEDIA=/absolute/path/to/authorized-sample.mp4"; exit 1; }
 	$(CARGO_HOST) build --locked --release -p sensoryplex-runtime --features "$(MEDIA_FEATURES)"
 	$(PY_HOST) tools/verify_timeline_handoff.py --media "$(MEDIA)"
+
+# ── 真实媒体端到端（续）：Timeline 素材走常驻 relay/index → api 语义检索（ADR-028） ──
+# 上一段 `timeline-check` 停在「事件进了 JetStream」，把「relay → 常驻消费 → 向量 →
+# 语义检索」整段记为未验证；这段验收接的就是它，判定面是运行中的 api 的
+# `POST /v1/materials:search`（`mode=semantic`）能不能命中融合出来的**真实**素材。
+# 与 timeline-check 同样固定在**主机**执行，两条理由都不可绕：
+#   1. runtime 二进制是主机 Mach-O，容器里 `docker compose exec` 直接 `Exec format error`；
+#   2. 真实 OCR 权重（rapidocr ONNX）与本机 VLM 端点（ollama，127.0.0.1:11434）只在主机。
+# 前置：`./deploy/up.sh`（api/postgres/nats）与 `./deploy/up-events.sh`（常驻 relay/index）
+# 都已起来，且 `.env` 里有 `SENSORYPLEX_API_TOKEN`（`make configure` 生成）。
+# 样本必须**带文字**：常驻 index 只把 `ocr_blocks` 编码成向量（见 ADR-028 §6），没有文字
+# 就没有向量，语义检索必然空手而归——`video/1.mp4` 正是这种样本，请换授权文字样本。
+timeline-resident-check:
+	@test -n "$(MEDIA)" || { echo "usage: make timeline-resident-check MEDIA=/absolute/path/to/authorized-sample-with-text.webm"; exit 1; }
+	$(CARGO_HOST) build --locked --release -p sensoryplex-runtime --features "$(MEDIA_FEATURES)"
+	$(PY_HOST) tools/verify_timeline_semantic.py --media "$(MEDIA)"
 
 # ── 插件产物（容器内） ────────────────────────────────────────────────────
 

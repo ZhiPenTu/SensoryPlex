@@ -2411,6 +2411,142 @@ timeline handoff acceptance: real media -> replay -> VLM -> fusion -> authorized
 
 ---
 
+### 真实媒体端到端（续）：Timeline 素材 → 常驻 relay/index → 语义检索（ADR-028 / ADR-025 / ADR-027）（2026-09-25）
+
+切片：收掉上一节的"**relay → 常驻消费 → 向量 → 语义检索这一段没接**"——把**融合出来的真实素材**
+放进 compose 里**常驻**的 `relay` / `index`（`events` profile），再由运行中 api 的
+`POST /v1/materials:search`（`mode=semantic`）命中。新增 `tools/verify_timeline_semantic.py` 与
+`make timeline-resident-check MEDIA=<授权样本>`，复用 `timeline-check` 的"真解码 + 真插件 + 真融合 +
+授权追加"，但**不复用**它的隔离 schema 与独立 stream：本次必须落在常驻进程真正在盯的那一份库与那条
+stream 上，否则"常驻搬走了它"无从谈起。判定与未验证边界见
+[ADR-028](adr/ADR-028-Runtime到Timeline接线与授权追加.md) §9 与
+[ADR-025](adr/ADR-025-常驻消费循环与sink接线.md) §5/§8。
+
+#### 本轮修掉一个"真实媒体的取值被当成契约缺陷"的缺陷（必须记下来）
+
+第三个样本（`screencast-watchlist.480p.vp9.webm`，Wikipedia 监视列表密集屏录）跑不通：常驻 index
+只消费掉 1 条事件，然后 `consume.fatal` / `error_code: event_retry_exhausted` /
+`error_detail: observation_text_rejected` / `exit_code: 3`，容器按 3 退出并重启（`RestartCount=1`）。
+逐层取证后定位到一个真实链路缺陷，不是样本问题：
+
+- 一帧 `ocr_blocks` 有 **109 块 / 4158 字符**，越过 BGE 插件 `MAX_TOTAL_CHARS = 4096`；
+- 插件按 [ADR-017](adr/ADR-017-BGE文本向量与维度版本化.md) §4"越界是失败而不是截断"照旧失败——
+  **插件侧一个字没改**，这是对的；
+- 错的是消费侧把它当成**事件级**失败（`observation_text_rejected`）→ 不 ack → 重投 5 次耗尽 →
+  `max_deliver` 用尽后 JetStream 把事件**终止**（`num_pending=0` / `num_ack_pending=0`，
+  `ack_floor` 停在第一条未 ack 的序号）→ 那 4 条事件**再也没有投递过**，素材永久缺向量。
+  ADR-025 §5 的 fail-stop 是给**契约/事实缺陷**用的，被一条合法的真实帧触发就是最贵的失败形态。
+
+修法（`services/index-worker/src/sensoryplex_index_worker/consumer.py`）：把"本事件**应产出**的向量"
+定义为**由文本契约决定**——一条观测给不出可编码文本就**不产出**向量，按原因计数后继续：
+
+| 消费侧原因类 | 触发（插件原因码） | 状态行字段 |
+| --- | --- | --- |
+| `input_text_empty` | `blocks=[]`（模型这一帧没找到文字） | `skipped_empty_text` / `skipped_empty_text_total` |
+| `input_text_over_bound` | `input_text_exceeds_bound` / `input_block_count_exceeds_bound` | `skipped_over_bound` / `skipped_over_bound_total` |
+
+形状错误（缺 `blocks`、块里没有 `text`、`text` 不是字符串）**仍然**抛 `observation_text_rejected`、
+仍然不 ack、仍然 fail-stop。状态行字段集合由 **20 项**变 **24 项**（ADR-025 §8 的修订）。
+分类不靠字面量：契约测试拿插件**实际抛出的** `reason_code` 再映射到计数字段。
+
+#### 验收脚本自己会撒谎（四处，全部改正）
+
+"链路修好了"与"验收能证明它"是两件事。这一轮在脚本自身上改了四处**错误断言**（每一处都是真跑出来的）：
+
+1. **`unindexed_hits` 被跨 `limit` 比较**：基线用 `limit=len(material_ids)`=6、判定用 `limit=100`。
+   这个量是"这一页候选里回查不到 ready 事实的条数"，**是 `limit` 的函数**（`len(hits) - len(results)`）。
+   同一时刻同一查询实测 `limit=6 → 0`、`limit=100 → 24`，于是判定报"本次写入后出现了新的查不到命中：
+   24 > 基线 0"——读起来像本次制造了 24 条孤儿命中，实际是两页不同宽的候选。现在基线与判定共用
+   `SEARCH_LIMIT=100`（api 的上限）。
+2. **按名次断言"第一名是本次素材"**：共享向量库里另一条素材可以持有**同一段文字**（两次跑的是同一
+   系列的两份录屏），相似度都是 `0.6642`，谁在 `hits[0]` 只是并列关系。改成断言**排列**（`hits` 按
+   相似度降序）与"本次素材取得最好的一档"，并用**整段观测文本**当查询：那段文本就是常驻 index 编码
+   时喂给 BGE 的文本，所以"它自己的相似度必须是 `1.0`"是契约推论，不是"恰好最近"。
+3. **`search_text` 拿全样本块文字比每一条素材**：不同窗口的字不同，实测会把 5 条素材全判成
+   "没有块文字"。改成**按素材**比对它自己的块文字。
+4. **`distance` 的名字骗了人（文档缺陷，已修到源头）**：`proto/index/v1/index.proto` 与本项目多处
+   文档把它写成"COSINE **距离**（越小越近）"，而它是 COSINE **相似度**（越大越近、按**降序**返回）。
+   拿一条观测的整段文本当查询，它自己的值就是 `1.0`（余弦距离此时应为 0），且它排在最前
+   （若真是"越小越近"的降序排列，最像的会排到最后）。**行为没有改**——Milvus 的 `COSINE` 本来就
+   返回相似度并按降序给出结果，`tools/verify_index.py` 的 "self query == 1.0" 断言一直钉着这一点；
+   改的是 proto 字段注释、`docs/contracts/README.md`、
+   [ADR-023](adr/ADR-023-网关语义检索接线与索引检索面.md) §6 与
+   [ADR-020](adr/ADR-020-向量索引落库与检索闭环.md) 的措辞，字段名 `distance` 保留（既有线格式）。
+   顺带修掉结论里一句自相矛盾的输出：它把"向量行数"（6）写成"素材条数"（素材实为 5）——
+   一条素材可以有不止一条 ocr 观测。
+
+#### 实测（授权样本 `video/samples/editing-basics-sandboxes.vp8.webm`，VP8/Vorbis，76417 ms，`sha256:5f28578e00e0…`）
+
+```
+[replay] 观测=12 帧=12 未跑到模型的帧=0 []
+[timeline] 素材=5 带 ocr_blocks=5 同窗含 VLM=5 可编码观测=6 空文本=0 越过上限=0 缺失模态样例=[('ocr_blocks', 'vision.scene_description')]
+[3] 基线：published_total=12 consumed_total=12 embedded_total=12 skipped_empty=0 skipped_over_bound=0 命中=22（本次判定在同一 limit 下比较） unindexed_hits=24
+[4] 授权追加：appended=5 replayed=0 outbox=5
+[resident] 常驻服务搬走了这批事件：published +5 / consumed +5 / embedded +6 / skipped_empty +0 / skipped_over_bound +0
+[5] 事件凭据：outbox=5 已发布=5 已消费=5 本次增长=observed
+[6] 向量落库：6 行 ready（可编码模态只有 ocr_blocks；被跳过的 0 条观测按契约没有向量行）
+[search] 片段查询（最长的一块文字，145 字符）命中=28 条，包含本次全部有向量的素材
+[search] query=…（1392 字符，整段观测文本） hits=28 最好相似度=1.0000 index_version=milvus-flat-cosine-v1
+```
+（末行实测 `distance` 是 `1.0000`，`index_version=milvus-flat-cosine-v1`。）
+
+| 断言 | 实测 |
+| --- | --- |
+| 两遍回放拿到同一份源身份与同一批描述符窗口 | `stream-5f28578e00e0` / `file-5f28578e00e0`；12 观测 / 12 帧、未跑到模型的帧 0 |
+| 融合产物是真素材 | 16 窗里 5 窗有观测 → 5 条素材、`rejected=0`；`source_time_range_ms == time_range_ms` |
+| 同窗多模态共存（ADR-028 §9 的未验证项） | **5/5** 条素材同时带 `ocr_blocks` 与 `vision.scene_description` |
+| 追加是写侧干的 | `appended=5 / replayed=0 / outbox=5`；逐表计数（就是脚本断言的 `evidence_rows`）`material_unit=5` / `observation=12` / `material_observation=12` / `material_source_reference=6` |
+| **常驻进程真的搬走了** | 相对写入前基线 `published +5`、`consumed +5`、`embedded +6`（6 条可编码观测） |
+| 逐事件持久凭据 | `event_outbox.published_at` 5/5 落定；`consumed_event` 5/5（键 `material:<id>:1`） |
+| 向量由常驻 index 算出来 | 6 行 `embedding_record` `state='ready'`，带 `vector_ref`(`milvus://…`)、`indexed_at`、`model_release_id` |
+| **语义检索真的命中** | `mode=semantic`、`unresolved_hits=0`、`unindexed_hits` 与基线**同为 24**（同一 `limit`）；本次 **5 条素材全部在命中里**（28 条命中），用作查询的那条观测相似度 `1.0000` 且取得本页最好的一档；用**素材自己的一块文字**（145 字符）查一遍同样命中全部 5 条 |
+| 不外泄 | timeline 报告 / handoff 报告 / 检索响应 / 两个状态行里没有 DSN、主机路径、令牌、向量库路径 |
+
+#### 第二个授权样本：`skipped_empty_text` 在真实媒体上真的被走到（`officehours-panel.480p.vp9.webm`）
+
+只在一个样本上通过还不能算"这条路径通"：**"空文本按原因计数跳过"必须真的遇到空文本帧**才算走过。
+所以换一个 2231 s 的 VP9 长样本再跑一遍（`sha256:8e470a81dd48…`，`windows=5/447`）：
+
+```
+[replay] 观测=12 帧=12 未跑到模型的帧=0 []
+[timeline] 素材=5 带 ocr_blocks=5 同窗含 VLM=5 可编码观测=5 空文本=1 越过上限=0 缺失模态样例=[('ocr_blocks', 'vision.scene_description')]
+[3] 基线：published_total=17 consumed_total=17 embedded_total=18 skipped_empty=0 skipped_over_bound=0 命中=28（本次判定在同一 limit 下比较） unindexed_hits=24
+[4] 授权追加：appended=5 replayed=0 outbox=5
+[resident] 常驻服务搬走了这批事件：published +5 / consumed +5 / embedded +5 / skipped_empty +1 / skipped_over_bound +0
+[5] 事件凭据：outbox=5 已发布=5 已消费=5 本次增长=observed
+[6] 向量落库：5 行 ready（可编码模态只有 ocr_blocks；被跳过的 1 条观测按契约没有向量行）
+[search] 片段查询（最长的一块文字，60 字符）命中=33 条，包含本次全部有向量的素材
+[search] query=…（462 字符，整段观测文本） hits=33 最好相似度=1.0000 index_version=milvus-flat-cosine-v1
+```
+
+6 条 `ocr_blocks` 观测里有 **1 条空文本**，它按 `skipped_empty_text` 计数跳过：`embedding_record`
+5 行、素材 5 条、`searchable_materials=5`、`unsearchable_materials=[]`，**没有** fail-stop——
+`index` 与 `relay` 容器的 `RestartCount` 全程为 **0**（`docker inspect` 实测）。
+这正是修法要达到的效果："这一帧模型没找到字"是真实媒体的常态，不该让整条素材陪着它重投到耗尽。
+`unindexed_hits` 与基线同为 24、`golden_path_verified` 仍为 `false`。
+
+同批回归：`make lint-ruff`（`ruff check` 全过、`format --check` **176 文件**）、容器内
+`tests/contracts` + `tests/integration` **455 passed**、`make event-pipeline-check`（`failures=[]`）、
+`make consume-check`（`real outbox -> JetStream -> resident consume -> Milvus Lite -> same-process
+retrieval passed in 13.4s`）、`cargo fmt --all -- --check` / `cargo clippy --workspace --all-targets
+--locked -- -D warnings` / `cargo test --workspace --locked` 全过（Rust 三条按项目约束在主机执行）。
+`golden_path_verified` 在产物里仍是 `false`（revision 前进、SRT 实时源、查询回看、向量 GC 未验收）。
+
+#### 仍未验证（不得当成完成）
+
+- **查询回看**：素材事实具备查询所需字段，但"经 HTTP 查询并回看"没有被本切片走一遍；
+- **revision 前进**：一律 `revision=1`；同一素材的第二次不同内容写入仍以 `immutable_revision_conflict`
+  显式失败而不是自动升版；
+- **向量 GC**：检索面报的 `unindexed_hits` 里就摆着 GC 欠账（实测同一页 100 条候选里 24 条
+  "向量在、记账行不在"）——它是历史验收留下的陈旧向量，本轮**如实按基线比较**，不清理、不美化；
+- **观测文本上限对密集屏录偏紧**：本轮把越界从"事件级失败"改成"按原因计数跳过"，代价是那条观测
+  真的不产出向量；"切窗口而不是丢观测"是后续项（见 [TODO](TODO.md)）；
+- **没有 dead-letter**：`max_deliver` 用尽后 JetStream 把事件**终止**（不是留在队列里），
+  消费侧重新起来也换不回来——这正是上面那次真实故障的后果；
+- **单窗口多模态共存的其余组合**：ASR（`asr_segment`）与其它模态的混窗组合仍未验。
+
+---
+
 ## 局域网插件 worker 拓扑与能力预检闭环（ADR-026）
 
 **背景**：
@@ -2446,3 +2582,22 @@ SensoryPlex 是以 Web Console 交付的边缘多模态素材底座。客户需�
 **当前边界与后续演进**：
 - 节点入网当前使用短效凭据换取 Session Token；生产级跨机双向 mTLS 证书自动签发与 CA 轮换留待后续阶段实施；
 - 主节点当前为单实例权威调度；高可用主节点选主与 Raft 复制留待高可用阶段规划。
+
+---
+
+## 可编排插件执行核心 P0（ADR-029，2026-09-24）
+
+本次只实现编排的契约、DAG 编译和确定性内存状态机；没有启动真实插件、没有写 PostgreSQL、没有发布
+JetStream 命令，因此不构成可执行 PipelineRun 或媒体 Golden Path 证据。
+
+| 验证 | 结果 |
+| --- | --- |
+| Proto 再生成 | `make proto` 在 `api` 容器内通过，生成 `orchestration/v1` 的 Python 绑定；Console 契约重新生成通过 |
+| 图编译 | `make orchestration-check` 通过：`orchestrated-file-material.yaml` 编译为 3 节点、2 条边，输出明确声明 `execution is not attached` |
+| 编排内核测试 | `sensoryplex-runtime` 新增 3 项：稳定拓扑排序/环拒绝、必需上游解锁与有界 retry、失败阻塞与取消不解锁更多 Task；全部通过 |
+| Rust 格式与静态检查 | `cargo fmt --all`、`cargo clippy --workspace --all-targets --locked -- -D warnings` 通过 |
+| Rust workspace 测试 | `cargo test --workspace --locked` 通过；其中 runtime library 26 项、runtime binary 23 项、media 94 项、timeline fusion 27 项均通过 |
+
+**明确边界：** P0 没有 Registry artifact 锁定、数据库 revision/Run/Task、assignment lease、outbox、
+JetStream、真实 Node Agent 生命周期或 `Process` 调用。`pipeline_publish`、`task_execution` 与生产级
+调度仍未接线，任何 CLI/健康检查/图编译成功都不得解释为“插件已经被编排执行”。

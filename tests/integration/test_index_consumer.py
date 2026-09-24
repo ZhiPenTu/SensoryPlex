@@ -265,8 +265,12 @@ def test_missing_facts_stop_before_any_write(database):
         assert consumer_consumed(conn) == 0
 
 
-def test_unencodable_observation_is_not_silently_dropped(database):
-    """空文本给不出向量（插件契约如此）：仓库里不许留下一条 ready，也不许记账。"""
+def test_text_free_observation_is_counted_not_failed(database):
+    """真实媒体里"这一帧没有文字"是常态：它不给向量，但**不许**连累同一条素材。
+
+    同一条素材里另一条带文字的观测必须照样落 ready——否则一个 5 s 窗口里出现一帧黑场，
+    整条素材就永远拿不到向量（重投到耗尽后丢弃），这正是真实媒体最常见的路径。
+    """
     with psycopg.connect(database) as conn:
         insert_material(conn)
         insert_observation(
@@ -276,6 +280,84 @@ def test_unencodable_observation_is_not_silently_dropped(database):
             payload={"blocks": [], "empty_reason": "model_found_no_text"},
         )
         link_observation(conn, observation_id="obs_empty")
+        insert_observation(
+            conn,
+            observation_id="obs_text",
+            modality=consumer.EMBEDDABLE_MODALITY,
+            payload={"blocks": [{"text": "财务季度报告 第 3 页"}]},
+        )
+        link_observation(conn, observation_id="obs_text")
+    report, index, encoder = build(database)
+    assert report.consumed is True
+    assert report.observations == 2
+    assert report.embedded == 1
+    assert report.skipped_text == {consumer.EMPTY_TEXT_REASON: 1}
+    assert report.skipped_modality == 0
+    assert encoder.encoded == ["财务季度报告 第 3 页"]
+    with psycopg.connect(database) as conn:
+        # 空的那条**不写任何行**（不给"没有内容"编造语义），有文字的那条落 ready。
+        assert record_state(conn, "obs_empty") is None
+        assert record_state(conn, "obs_text")["state"] == "ready"
+
+
+def test_over_bound_text_is_counted_not_failed(database):
+    """越过插件上限的文本同样是**真实媒体的取值**：一条密集屏录帧实测 4158 字符（> 4096）。
+
+    这不是契约缺陷，所以它**不许**走"重投到耗尽再丢事件 + 常驻进程 exit 3 重启"那条路
+    （ADR-025 §5 的 fail-stop 是给契约/事实缺陷用的）：按原因计数、不写行，素材的其余观测
+    照样落 ready。ADR-017 §4 的"越界是失败而不是截断"仍然成立——失败发生在**观测**这一层，
+    插件侧行为一个字没改。
+    """
+    over_chars = "好" * (consumer.bge_text.MAX_TOTAL_CHARS + 1)
+    over_blocks = [{"text": "x"}] * (consumer.bge_text.MAX_TEXTS + 1)
+    with psycopg.connect(database) as conn:
+        insert_material(conn)
+        insert_observation(
+            conn,
+            observation_id="obs_over_chars",
+            modality=consumer.EMBEDDABLE_MODALITY,
+            payload={"blocks": [{"text": over_chars}]},
+        )
+        link_observation(conn, observation_id="obs_over_chars")
+        insert_observation(
+            conn,
+            observation_id="obs_over_blocks",
+            modality=consumer.EMBEDDABLE_MODALITY,
+            payload={"blocks": over_blocks},
+        )
+        link_observation(conn, observation_id="obs_over_blocks")
+        insert_observation(
+            conn,
+            observation_id="obs_over_text_ok",
+            modality=consumer.EMBEDDABLE_MODALITY,
+            payload={"blocks": [{"text": "发布检查清单：先跑契约测试，再看集成"}]},
+        )
+        link_observation(conn, observation_id="obs_over_text_ok")
+    report, index, encoder = build(database)
+    assert report.consumed is True
+    assert report.observations == 3
+    assert report.embedded == 1
+    assert report.skipped_text == {consumer.OVER_BOUND_TEXT_REASON: 2}
+    assert encoder.encoded == ["发布检查清单：先跑契约测试，再看集成"]
+    with psycopg.connect(database) as conn:
+        # 越界的两条**不写任何行**：不截断、也不给越界文本编一个向量。
+        assert record_state(conn, "obs_over_chars") is None
+        assert record_state(conn, "obs_over_blocks") is None
+        assert record_state(conn, "obs_over_text_ok")["state"] == "ready"
+        assert consumer_consumed(conn) == 1
+
+
+def test_malformed_observation_still_fails_the_event(database):
+    """形状错误与"没有文字"必须分开：缺 `blocks` 是契约违规，事件不许被消费掉。"""
+    with psycopg.connect(database) as conn:
+        insert_material(conn)
+        insert_observation(
+            conn,
+            observation_id="obs_broken",
+            modality=consumer.EMBEDDABLE_MODALITY,
+            payload={"empty_reason": "model_found_no_text"},
+        )
+        link_observation(conn, observation_id="obs_broken")
     with pytest.raises(consumer.ConsumerError) as failure:
         build(database)
     assert failure.value.code == "observation_text_rejected"

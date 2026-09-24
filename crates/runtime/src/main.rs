@@ -1148,6 +1148,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("pipeline schema valid; capability availability must be checked before execution");
         return Ok(());
     }
+    if args.first().map(String::as_str) == Some("orchestration-check") && args.len() == 2 {
+        let pipeline =
+            Pipeline::parse(&std::fs::read_to_string(&args[1])?).map_err(std::io::Error::other)?;
+        let graph = pipeline
+            .compile_orchestration()
+            .map_err(std::io::Error::other)?;
+        println!(
+            "orchestration graph valid; nodes={} edges={} execution is not attached",
+            graph.node_count(),
+            graph.edge_count()
+        );
+        return Ok(());
+    }
     if args.first().map(String::as_str) == Some("replay") {
         return replay(&args[1..]).await;
     }
@@ -1160,7 +1173,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if !args.is_empty() && args != ["serve"] {
         return Err(
-            "usage: sensoryplex-runtime [serve | check <pipeline.yaml> | replay <pipeline.yaml> <media-path> --report <report.pb> | ingest <pipeline.yaml> --report <report.pb> | timeline <pipeline.yaml> <media-path> --report <report.pb> --worker-report <ai-worker.json> --material-dir <dir> --out <timeline.json>]"
+            "usage: sensoryplex-runtime [serve | check <pipeline.yaml> | orchestration-check <pipeline.yaml> | replay <pipeline.yaml> <media-path> --report <report.pb> | ingest <pipeline.yaml> --report <report.pb> | timeline <pipeline.yaml> <media-path> --report <report.pb> --worker-report <ai-worker.json> --material-dir <dir> --out <timeline.json>]"
                 .into(),
         );
     }

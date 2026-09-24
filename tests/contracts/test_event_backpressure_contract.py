@@ -224,9 +224,10 @@ def test_consumer_status_line_carries_the_admission(monkeypatch):
         received=0,
         consumed=0,
         skipped=0,
+        skipped_text={},
         failed=0,
         embedded=0,
-        totals={"consumed": 0, "duplicate": 0, "skipped": 0, "failed": 0},
+        totals={"consumed": 0, "duplicate": 0, "skipped": 0, "failed": 0, "skipped_text": {}},
     )
     assert document["inflight_declared"] == 32
     assert document["inflight_capacity"] == 32

@@ -76,13 +76,43 @@ const labels: Record<string, string> = {
     partial: '部分结果',
     enriched: '已补全',
     failed: '失败',
+    NODE_STATUS_CANDIDATE: '待接纳',
+    NODE_STATUS_ENROLLING: '注册中',
+    NODE_STATUS_READY: '可调度',
+    NODE_STATUS_DRAINING: '排空中',
+    NODE_STATUS_OFFLINE: '离线',
+    NODE_STATUS_REVOKED: '已撤销',
+    PLUGIN_INSTANCE_STATE_PLANNED: '已下发',
+    PLUGIN_INSTANCE_STATE_INSTALLING: '安装中',
+    PLUGIN_INSTANCE_STATE_READY: 'ready',
+    PLUGIN_INSTANCE_STATE_DEGRADED: '降级',
+    PLUGIN_INSTANCE_STATE_DRAINING: '排空中',
+    PLUGIN_INSTANCE_STATE_STOPPED: '已停止',
+    PLUGIN_INSTANCE_STATE_FAILED: '失败',
+    PLUGIN_INSTANCE_STATE_ROLLED_BACK: '已回滚',
+    PLUGIN_INSTANCE_STATE_UNINSTALLED: '已卸载',
 };
 export function Badge({ state }: { state: string }) {
-    return (
-        <span className={`badge ${state === 'archived' ? 'muted' : ''}`}>
-            {labels[state] || state}
-        </span>
-    );
+    const tone =
+        state === 'archived' ||
+        state === 'NODE_STATUS_OFFLINE' ||
+        state === 'NODE_STATUS_REVOKED' ||
+        state === 'PLUGIN_INSTANCE_STATE_STOPPED' ||
+        state === 'PLUGIN_INSTANCE_STATE_UNINSTALLED'
+            ? 'muted'
+            : state === 'source_available' ||
+                state === 'fast_ready' ||
+                state === 'enriched' ||
+                state === 'NODE_STATUS_READY' ||
+                state === 'PLUGIN_INSTANCE_STATE_READY'
+              ? 'good'
+              : state === 'failed' ||
+                  state === 'NODE_STATUS_CANDIDATE' ||
+                  state === 'PLUGIN_INSTANCE_STATE_FAILED' ||
+                  state === 'PLUGIN_INSTANCE_STATE_DEGRADED'
+                ? 'warning'
+                : '';
+    return <span className={`badge ${tone}`}>{labels[state] || state}</span>;
 }
 export function Pager({
     offset,

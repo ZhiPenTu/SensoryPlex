@@ -75,6 +75,34 @@ Python 运行保留两条现有依赖弃用警告（Starlette/httpx、AnyIO Bloc
 入库字节与磁盘 protobuf 逐字节相同；第二遍追加 `appended=0 replayed=5`，relay 第二遍 `published=0`。
 逐项断言与仍未验证范围见 [验证记录](../../docs/verification.md) 的 ADR-028 一节。
 
+## 追加：Timeline 素材 → 常驻 relay/index → 语义检索（2026-09-25）
+
+上一段停在"事件被确认发到 JetStream"。续篇 `make timeline-resident-check MEDIA=<授权样本>`
+（`tools/verify_timeline_semantic.py`）用**融合出来的**素材跑完"常驻 relay 发布 → 常驻 index 消费成
+向量 → 运行中 api 的 `POST /v1/materials:search` 命中"。真实授权样本实测
+（`editing-basics-sandboxes.vp8.webm`，VP8/Vorbis）：两遍回放各 6 帧 → 5 窗有观测（共 16 窗）→
+5 条素材 `rejected=0`，**5/5 条同窗带 `ocr_blocks` 与 `vision.scene_description`**；常驻搬运
+`published +5` / `consumed +5` / `embedded +6`；6 行向量 `ready`；语义检索 28 条命中里包含本次
+**全部 5 条素材**，用作查询的那条观测相似度 `1.0000`。
+
+第二个授权样本（`officehours-panel.480p.vp9.webm`，2231 s / 447 窗）同样通过：它 6 条 `ocr_blocks`
+观测里有 1 条空文本，按 `skipped_empty_text` 计数跳过、素材照旧拿到其余 5 行向量、两个常驻容器
+`RestartCount` 为 0（`docker inspect` 实测）——即"计数跳过"这条路在**真实媒体**上被走到过，
+不是只在契约测试里。
+
+这一轮同时修掉两件与本 crate 相邻的真实缺陷（详情见
+[ADR-025](../../docs/adr/ADR-025-常驻消费循环与sink接线.md) §5/§8/§10 与
+[ADR-017](../../docs/adr/ADR-017-BGE文本向量与维度版本化.md) §4 的补充）：
+
+- **"应产出"的向量当初没有定义**：一帧密集屏录 4158 字符越过 BGE 的 4096 上限，被消费侧当成
+  事件级失败 → 重投耗尽 → 常驻 index 按 3 退出重启、事件被终止、素材永久缺向量。现在越界与空文本
+  都按原因计数跳过；
+- **`distance` 不是"距离"**：它是 COSINE **相似度**（越大越近、降序返回），proto 注释与多处文档
+  原先写反了。行为一直是对的，错的是措辞——代价是下游验收按名次断言"第一名"，在同分并列时误报。
+
+**仍未验证**：HTTP 查询回看、`revision` 前进、SRT 实时源与向量 GC；`golden_path_verified` 仍是
+`false`。
+
 联调中修掉一个本 crate 之外的真实缺陷（记在这里以免重复踩）：worker 报告的观测是 protojson，
 int64 以**字符串**传输且零值字段被省略，`crates/runtime/src/timeline.rs` 的读取侧当时只接受
 JSON 数字，导致**每一条从 0 ms 开始的观测都被判为不可解析**。fixture 用的是数字形态，
