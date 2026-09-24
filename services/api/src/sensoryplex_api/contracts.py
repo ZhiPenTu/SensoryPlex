@@ -7,9 +7,19 @@ from fastapi import HTTPException
 from google.protobuf.json_format import MessageToDict, ParseDict, ParseError
 from psycopg.rows import dict_row
 
+RETRYABLE_HEADER = "X-Retryable"
 
-def fail(status, reason):
-    raise HTTPException(status, reason)
+
+def fail(status, reason, *, retryable=None):
+    """显式失败。`retryable` 为 None 时沿用"429/503 可重试"这条默认口径。
+
+    传 True/False 时以调用方的判定为准：HTTP 状态码表达不了"不可重试的 503"
+    （`semantic_search_unavailable` 就是这种），而调用方要按 `retryable` 决定重试还是改配置。
+    该标记只在本进程内传递——它挂在 `HTTPException.headers` 上被本项目的错误处理器消费，
+    不会出现在响应头里。
+    """
+    headers = {} if retryable is None else {RETRYABLE_HEADER: "true" if retryable else "false"}
+    raise HTTPException(status, reason, headers=headers)
 
 
 def parse(body, cls):
