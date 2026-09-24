@@ -6,6 +6,7 @@ COPY pyproject.toml uv.lock ./
 COPY plugins/python plugins/python
 COPY services/api services/api
 COPY services/gateway services/gateway
+COPY services/outbox-relay services/outbox-relay
 RUN --mount=type=cache,id=sensoryplex-uv,target=/root/.cache/uv uv sync --frozen --group dev --no-editable --package sensoryplex-gateway
 COPY tools/migrate.py tools/migrate.py
 COPY db/migrations db/migrations

@@ -14,6 +14,7 @@ COPY plugins/python plugins/python
 COPY services/api services/api
 COPY services/gateway services/gateway
 COPY services/index-worker services/index-worker
+COPY services/outbox-relay services/outbox-relay
 RUN --mount=type=cache,id=sensoryplex-uv,target=/root/.cache/uv uv sync --frozen --group dev --no-editable --package sensoryplex-api
 COPY tools/migrate.py tools/migrate.py
 COPY db/migrations db/migrations
@@ -37,6 +38,9 @@ RUN /usr/local/bin/uv pip install --python /app/.venv/bin/python --no-cache-dir 
 # index-worker（ADR-020）的契约与集成测试在容器里也要能 collect：它的 pymilvus/milvus-lite
 # 不是"可选加速"，而是被测代码自身要 import 的依赖，所以同样真装、同样不加 `|| true`。
 RUN /usr/local/bin/uv pip install --python /app/.venv/bin/python --no-cache-dir ./services/index-worker
+# outbox → NATS JetStream 的 relay（ADR-024）：nats-py 是被测代码自己要 import 的依赖，
+# 所以真装、不加 `|| true`——装不上就让镜像构建失败，而不是让容器里的测试事后红成一片。
+RUN /usr/local/bin/uv pip install --python /app/.venv/bin/python --no-cache-dir ./services/outbox-relay
 RUN groupadd --gid 10001 sensoryplex && useradd --uid 10001 --gid 10001 --no-create-home sensoryplex && mkdir -p /app/.data/console-media && chown -R 10001:10001 /app/.data
 USER 10001:10001
 EXPOSE 8091
