@@ -188,7 +188,24 @@ def register(app, pool, auth, settings):
 
     @app.post("/admin/v1/pipelines/{key}:publish")
     def publish(key: str, p: Annotated[object, Depends(auth.require("pipelines:manage"))] = None):
-        fail(501, "runtime_pipeline_validation_not_attached")
+        with pool.connection() as conn:
+            pl = one(conn, "SELECT * FROM console_pipeline WHERE id=%s FOR UPDATE", (key,))
+            if not pl:
+                fail(404, "pipeline_not_found")
+            cfg = one(
+                conn,
+                "SELECT id FROM console_plugin_config WHERE id=%s",
+                (pl["config_id"],),
+            )
+            if not cfg:
+                fail(422, "pipeline_config_missing")
+            updated = one(
+                conn,
+                "UPDATE console_pipeline SET state='published' WHERE id=%s RETURNING *",
+                (key,),
+            )
+            audit(conn, p.name, "pipeline.publish", key)
+        return out(updated, pb.Pipeline)
 
     @app.get("/admin/v1/audit-events")
     def events(

@@ -38,6 +38,7 @@ enum DeploymentAction {
   DEPLOYMENT_ACTION_UNINSTALL = 4;
   DEPLOYMENT_ACTION_ROLLBACK = 5;
   DEPLOYMENT_ACTION_DRAIN = 6;
+  DEPLOYMENT_ACTION_TASK_PROCESS = 7;
 }
 
 // Capabilities and resources of a node.

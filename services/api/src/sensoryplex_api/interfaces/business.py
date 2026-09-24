@@ -20,6 +20,7 @@ from edge_material_sdk.generated.gateway.v1.gateway_pb2 import (
     SearchResponse,
 )
 from fastapi import Body, Depends, Query
+from psycopg.types.json import Jsonb
 
 from ..contracts import audit, fail, identifier, one, out, parse, rows, text_field
 from ..infrastructure import materials, semantic
@@ -134,9 +135,143 @@ def register(app, pool, auth, settings):
     ):
         fail(501, "media_worker_not_attached")
 
+    def _dispatch_job_internal(conn, draft_id: str, owner: str, target_node_id: str | None = None):
+        draft = one(
+            conn,
+            "SELECT * FROM console_job_draft WHERE id=%s AND owner=%s FOR UPDATE",
+            (draft_id, owner),
+        )
+        if not draft:
+            fail(404, "draft_not_found")
+        if draft["state"] not in {"draft", "failed"}:
+            fail(409, "job_not_in_dispatchable_state")
+
+        upload = one(
+            conn,
+            "SELECT * FROM console_upload WHERE id=%s AND owner=%s",
+            (draft["asset_id"], owner),
+        )
+        if not upload:
+            fail(404, "asset_not_found")
+        if upload["state"] != "awaiting_admission":
+            fail(409, "upload_incomplete")
+
+        blob_path = settings.blob_root.resolve() / upload["sha256"][7:]
+        if not blob_path.is_file():
+            fail(503, "blob_unavailable")
+
+        # 选定执行节点
+        if not target_node_id:
+            target_node = one(
+                conn,
+                (
+                    "SELECT * FROM console_node WHERE is_co_located=true AND status='ready' "
+                    "ORDER BY enrolled_at ASC LIMIT 1"
+                ),
+            )
+            if not target_node:
+                target_node = one(
+                    conn,
+                    (
+                        "SELECT * FROM console_node WHERE status='ready' "
+                        "ORDER BY is_co_located DESC, enrolled_at ASC LIMIT 1"
+                    ),
+                )
+            if not target_node:
+                fail(503, "no_ready_worker_node_available")
+            target_node_id = target_node["node_id"]
+        else:
+            target_node = one(
+                conn,
+                "SELECT * FROM console_node WHERE node_id=%s AND status='ready'",
+                (target_node_id,),
+            )
+            if not target_node:
+                fail(409, "target_node_not_ready")
+
+        if not target_node["is_co_located"]:
+            fail(422, "data_locality_violation")
+
+        task_intent_id = identifier("task")
+        task_config = {
+            "task_type": "process_video",
+            "job_id": draft["id"],
+            "asset_id": upload["id"],
+            "sha256": upload["sha256"],
+            "filename": upload["filename"],
+            "owner": owner,
+            "blob_path": str(blob_path),
+            "pipeline_id": draft["pipeline_id"],
+        }
+
+        conn.execute(
+            """
+            INSERT INTO console_deployment_intent(
+                id, node_id, instance_id, action, artifact_digest, rollback_digest,
+                config, state, created_by, job_id
+            ) VALUES (%s, %s, NULL, 'task_process', %s, NULL, %s, 'pending', %s, %s)
+            """,
+            (
+                task_intent_id,
+                target_node_id,
+                upload["sha256"],
+                Jsonb(task_config),
+                owner,
+                draft["id"],
+            ),
+        )
+
+        updated_draft = one(
+            conn,
+            """
+            UPDATE console_job_draft
+            SET state='processing', target_node_id=%s, error_code=NULL, error_detail=NULL,
+                dispatched_at=now()
+            WHERE id=%s
+            RETURNING *
+            """,
+            (target_node_id, draft["id"]),
+        )
+        audit(conn, owner, "job.dispatch", draft["id"])
+        return updated_draft
+
+    @app.post("/v1/job-drafts/{key}:dispatch")
+    def dispatch_draft(
+        key: str,
+        body: Annotated[dict | None, Body()] = None,
+        p: Annotated[object, Depends(auth.require("jobs:write"))] = None,
+    ):
+        node_id = body.get("node_id") if isinstance(body, dict) else None
+        with pool.connection() as conn:
+            result = _dispatch_job_internal(conn, key, p.name, target_node_id=node_id)
+        return out({**result, "reason": ""}, pb.JobDraft)
+
     @app.post("/v1/jobs")
-    def dispatch(p: Annotated[object, Depends(auth.require("jobs:write"))] = None):
-        fail(501, "runtime_task_service_not_attached")
+    def dispatch_new(
+        body: Annotated[dict, Body()] = ...,
+        p: Annotated[object, Depends(auth.require("jobs:write"))] = None,
+    ):
+        draft_id = body.get("draft_id")
+        node_id = body.get("node_id")
+        if draft_id:
+            with pool.connection() as conn:
+                result = _dispatch_job_internal(conn, draft_id, p.name, target_node_id=node_id)
+            return out({**result, "reason": ""}, pb.JobDraft)
+
+        req = parse(body, pb.SaveJobDraft)
+        text_field(req.name)
+        with pool.connection() as conn:
+            draft_key = identifier("draft")
+            conn.execute(
+                (
+                    "INSERT INTO "
+                    "console_job_draft(id,owner,asset_id,pipeline_id,name) VALUES "
+                    "(%s,%s,%s,%s,%s)"
+                ),
+                (draft_key, p.name, req.asset_id, req.pipeline_id, req.name),
+            )
+            result = _dispatch_job_internal(conn, draft_key, p.name, target_node_id=node_id)
+        return out({**result, "reason": ""}, pb.JobDraft)
 
     @app.get("/v1/job-drafts")
     def drafts(
@@ -157,7 +292,9 @@ def register(app, pool, auth, settings):
                 "SELECT count(*) FROM console_job_draft WHERE owner=%s", (p.name,)
             ).fetchone()[0]
         for item in items:
-            item["reason"] = "runtime_task_service_not_attached"
+            item["reason"] = item.get("error_code") or (
+                "" if item.get("state") in {"processing", "completed"} else ""
+            )
         return out({"items": items, "total": total}, pb.JobDraftList)
 
     @app.post("/v1/job-drafts", status_code=201)
@@ -190,7 +327,10 @@ def register(app, pool, auth, settings):
                 fail(404, "asset_not_found")
             if not one(
                 conn,
-                "SELECT id FROM console_pipeline WHERE id=%s AND state='draft' FOR SHARE",
+                (
+                    "SELECT id FROM console_pipeline "
+                    "WHERE id=%s AND state IN ('draft', 'published') FOR SHARE"
+                ),
                 (req.pipeline_id,),
             ):
                 fail(422, "pipeline_not_available")

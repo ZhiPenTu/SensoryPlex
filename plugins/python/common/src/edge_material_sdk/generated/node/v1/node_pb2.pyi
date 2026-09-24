@@ -40,6 +40,7 @@ class DeploymentAction(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     DEPLOYMENT_ACTION_UNINSTALL: _ClassVar[DeploymentAction]
     DEPLOYMENT_ACTION_ROLLBACK: _ClassVar[DeploymentAction]
     DEPLOYMENT_ACTION_DRAIN: _ClassVar[DeploymentAction]
+    DEPLOYMENT_ACTION_TASK_PROCESS: _ClassVar[DeploymentAction]
 NODE_STATUS_UNSPECIFIED: NodeStatus
 NODE_STATUS_CANDIDATE: NodeStatus
 NODE_STATUS_ENROLLING: NodeStatus
@@ -64,6 +65,7 @@ DEPLOYMENT_ACTION_STOP: DeploymentAction
 DEPLOYMENT_ACTION_UNINSTALL: DeploymentAction
 DEPLOYMENT_ACTION_ROLLBACK: DeploymentAction
 DEPLOYMENT_ACTION_DRAIN: DeploymentAction
+DEPLOYMENT_ACTION_TASK_PROCESS: DeploymentAction
 
 class NodeCapabilityProfile(_message.Message):
     __slots__ = ("platform", "arch", "cpu_cores", "memory_bytes", "unified_memory_bytes", "accelerators", "supported_artifacts", "labels")

@@ -2601,3 +2601,43 @@ JetStream 命令，因此不构成可执行 PipelineRun 或媒体 Golden Path �
 **明确边界：** P0 没有 Registry artifact 锁定、数据库 revision/Run/Task、assignment lease、outbox、
 JetStream、真实 Node Agent 生命周期或 `Process` 调用。`pipeline_publish`、`task_execution` 与生产级
 调度仍未接线，任何 CLI/健康检查/图编译成功都不得解释为“插件已经被编排执行”。
+
+---
+
+## 真实媒体自动入库与可回看 Golden Path 闭环验收（GP-01 / ADR-028）
+
+**背景**：
+在 ADR-026（节点拓扑与预检）与 ADR-028（Runtime 到 Timeline 接线）奠定基础后，GP-01 的核心目标是将孤立的单项能力（视频上传、任务分发、模型推理、时间轴融合、事件消费、向量索引、语义检索与原片回看）贯通成一条**不依赖任何手工合成数据或静态假数据的完整业务 Golden Path**。
+
+**关键落地链路**：
+1. **任务分发与状态流转**：
+   - 追加数据库迁移 `0005_job_dispatch.sql`、`0006_task_dispatch.sql` 与 `0007_pipeline_publish.sql`；
+   - `services/api/src/sensoryplex_api/interfaces/business.py` 实现 `POST /v1/jobs` 与 `POST /v1/job-drafts/{id}:dispatch`，支持自动选择在线的同机数据面节点（`local-host`）并下发 `task_process` 意图；
+   - 方案发布接口 `POST /admin/v1/pipelines/{id}:publish` 正式接通。
+2. **节点 Agent 串联多模态流水线**：
+   - `tools/task_runner.py` 与 `tools/node_agent.py` 接通任务执行通道：Agent 认领任务后，定位物理存储区视频文件，调度 Runtime 完成 GStreamer 解码、OCR 观测提取，经过 Timeline 核心融合出结构化 `MaterialUnit`。
+3. **授权事实与原片映射入库**：
+   - `tools/timeline_handoff.py` 扩展 `--upload-id` 参数，写入 `media_asset.object_uri = 'upload://{asset_id}'`，使生成的素材事实与用户上传的原片形成可信血缘关系；
+   - 支持同一素材事实在重放时的幂等识别与版本前进（`revision advancement`）。
+4. **Web 控制台接通一键处理**：
+   - `apps/console/src/features/Jobs.tsx` 激活【开始处理】操作，支持查看 `processing`（正在分析中）与 `completed`（查看素材）状态。
+
+**端到端全链路实测（make golden-path-check）**：
+
+| 验证步骤 | 动作与验证项 | 实测结果 |
+| --- | --- | --- |
+| 1. 会话鉴权 | 以管理员身份登录，获取 CSRF 令牌 | `PASS (200 OK)` |
+| 2. 节点就绪 | 验证 `local-host` 处于 `NODE_STATUS_READY` | `PASS (1 active node)` |
+| 3. 真实视频上传 | 上传授权样本 `editing-basics-sandboxes.vp8.webm` (3.0 MB)，校验 SHA-256 | `PASS (awaiting_admission, sha256:5f28578e…)` |
+| 4. 方案发布 | 保存插件配置，创建处理方案并发布为 `published` | `PASS (state=published)` |
+| 5. 任务分发 | 创建任务草稿并调用 `:dispatch` 派发至同机节点 | `PASS (state=processing)` |
+| 6. 流水线执行 | Agent 自动执行解码、抽帧、OCR 观测、Timeline 选窗融合与事务追加 | `PASS (materials=11, state=completed)` |
+| 7. 向量落库 | 常驻 relay 发布 outbox 事件，常驻 index 消费并完成 BGE 编码入库 | `PASS (materials=20 visible in store)` |
+| 8. 语义检索 | 调用 `POST /v1/materials:search`（`mode=semantic`），检索 "Wikipedia" | `PASS (hits=51, distance 达标)` |
+| 9. 原片回看 | 解析素材来源回跳至 `upload://{asset_id}`，通过 `/v1/assets/{id}/content` 获取流式视频切片 | `PASS (HTTP 200, 3111011 bytes 流式可读)` |
+
+**回归验证**：
+- `make golden-path-check`：全 9 步全绿（`exit 0`，多次重复执行幂等自洽）；
+- `make node-check`：多节点拓扑 6 大场景全绿（`exit 0`）；
+- `make test-py`：455 个单元、契约与集成测试全绿（`384 passed in contracts, 71 passed in integration`）；
+- `make lint-ruff`：全量 Python 源码格式化与静态检查通过（178 个文件）。

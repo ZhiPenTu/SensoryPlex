@@ -24,6 +24,7 @@ Runtime 进程没有数据库依赖。追加必须由一个**持有授权**的�
 
 import argparse
 import datetime
+import hashlib
 import json
 import pathlib
 import sys
@@ -133,7 +134,7 @@ def _require_identical(existing, expected, reason, detail, failures) -> None:
         failures.append(f"{reason}: {detail} existing={existing} expected={expected}")
 
 
-def register_references(conn, report, description, owner, units) -> dict:
+def register_references(conn, report, description, owner, units, upload_id: str = "") -> dict:
     """登记素材引用的**全部**外部身份，并在冲突时显式失败。"""
     source = report["source"]
     source_type = SOURCE_TYPES.get(description.source.kind)
@@ -194,12 +195,15 @@ def register_references(conn, report, description, owner, units) -> dict:
         failures,
     )
     conn.execute(
-        "INSERT INTO media_asset(asset_id,stream_id,object_uri,sha256,codec,duration_ms) "
-        "VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT (asset_id) DO NOTHING",
+        (
+            "INSERT INTO media_asset(asset_id,stream_id,object_uri,sha256,codec,duration_ms) "
+            "VALUES (%s,%s,%s,%s,%s,%s) "
+            "ON CONFLICT (asset_id) DO UPDATE SET object_uri=EXCLUDED.object_uri"
+        ),
         (
             source["asset_id"],
             source["stream_id"],
-            REDACTED_URI,
+            f"upload://{upload_id}" if upload_id else REDACTED_URI,
             source["content_hash"],
             codec,
             source["duration_ms"],
@@ -265,7 +269,9 @@ def register_references(conn, report, description, owner, units) -> dict:
     }
 
 
-def handoff(*, report_path, material_dir, owner, trace_id, database_url) -> dict:
+def handoff(
+    *, report_path, material_dir, owner, trace_id, database_url, upload_id: str = ""
+) -> dict:
     """登记引用事实 + 追加素材；返回可直接序列化的产物。"""
     if not owner:
         raise HandoffError("missing_owner")
@@ -288,8 +294,25 @@ def handoff(*, report_path, material_dir, owner, trace_id, database_url) -> dict
         "outbox_events": 0,
     }
     with psycopg.connect(database_url) as conn:
-        references = register_references(conn, report, description, owner, units)
+        references = register_references(
+            conn, report, description, owner, units, upload_id=upload_id
+        )
         for unit in units:
+            prev = conn.execute(
+                (
+                    "SELECT revision, content_hash FROM material_unit "
+                    "WHERE material_unit_id=%s ORDER BY revision DESC LIMIT 1"
+                ),
+                (unit.material_unit_id,),
+            ).fetchone()
+            if prev is not None:
+                unit_data = unit.SerializeToString(deterministic=True)
+                unit_digest = "sha256:" + hashlib.sha256(unit_data).hexdigest()
+                if unit_digest == prev[1]:
+                    unit.revision = prev[0]
+                else:
+                    unit.revision = prev[0] + 1
+
             # 写侧是唯一判官：True=新增，False=完全一致的 replay。这里不做任何"补一次"。
             appended = api_materials.append_material(conn, unit, trace_id=trace_id)
             counters["appended"] += int(appended)
@@ -335,6 +358,7 @@ def main() -> int:
     parser.add_argument("--material-dir", type=pathlib.Path, required=True)
     parser.add_argument("--owner", required=True, help="授权主体：素材读取权限由它决定")
     parser.add_argument("--trace-id", default="", help="写入 lineage 的追踪号")
+    parser.add_argument("--upload-id", default="", help="console_upload 的 id，格式 asset_xxx")
     parser.add_argument("--database-url", default="")
     parser.add_argument("--out", type=pathlib.Path, default=None)
     arguments = parser.parse_args()
@@ -348,6 +372,7 @@ def main() -> int:
             owner=arguments.owner,
             trace_id=arguments.trace_id or f"timeline-handoff:{arguments.owner}",
             database_url=database_url,
+            upload_id=arguments.upload_id,
         )
     except (HandoffError, api_materials.RevisionConflict) as error:
         # 带着稳定原因串失败：调用方据此分支，而不是解析数据库异常文本。

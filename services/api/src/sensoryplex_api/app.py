@@ -23,8 +23,16 @@ from .settings import Settings
 # 多一条（镜像旧了）少一条（没跑迁移）都直接 503。因此每加一条迁移都必须同步这里——
 # 本切片新增 `0003_embedding_index` 时漏掉这一跳，就是被真实集成测试抓出来的。
 # `SCHEMA` 仍是最新版本，供 `schema_version` 字段上报。
-SCHEMA = "0004_node_topology"
-SCHEMA_VERSIONS = {"0001_initial", "0002_console", "0003_embedding_index", SCHEMA}
+SCHEMA = "0007_pipeline_publish"
+SCHEMA_VERSIONS = {
+    "0001_initial",
+    "0002_console",
+    "0003_embedding_index",
+    "0004_node_topology",
+    "0005_job_dispatch",
+    "0006_task_dispatch",
+    SCHEMA,
+}
 # 语义检索不可用时的原因码：检索面未配置就是这个码，不是 501、也不是"没有命中"。
 SEMANTIC_UNAVAILABLE_REASON = "semantic_search_unavailable"
 LOGGER = get_logger("sensoryplex.api")
@@ -35,9 +43,9 @@ CAPABILITIES = [
     ("keyword_search", True, ""),
     ("file_storage", True, ""),
     ("media_admission", False, "media_admission_not_attached"),
-    ("task_execution", False, "runtime_task_service_not_attached"),
+    ("task_execution", True, ""),
     ("plugin_installation", False, "runtime_plugin_installer_not_attached"),
-    ("pipeline_publish", False, "runtime_pipeline_validation_not_attached"),
+    ("pipeline_publish", True, ""),
     ("semantic_search", False, SEMANTIC_UNAVAILABLE_REASON),
 ]
 

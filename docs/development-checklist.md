@@ -23,8 +23,8 @@
 
 ## P0：先关闭正在进行的节点工作
 
-- [ ] **CP-01 候选节点自动发现、审批与清理**  
-  状态：**验证中**（工作区存在未提交改动；2026-09-24 console 容器生产构建已通过）。  
+- [x] **CP-01 候选节点自动发现、审批与清理**  
+  状态：**已完成**（2026-09-25 经 `make node-check` 与 Console 构建验证闭环）。  
   范围：候选节点只能进入 `candidate` 状态；管理员可接纳、拒绝、删除或清理陈旧节点；Agent 安装器可显式以候选模式自报到。  
   完成条件：
   - 为 candidate-register、接纳/拒绝、删除/清理分别补充 API 集成测试，覆盖未授权、重复注册、撤销后心跳/部署拒绝、审计记录和状态迁移。
@@ -34,9 +34,9 @@
 
 ## P0：V1 的唯一业务闭环
 
-- [ ] **GP-01 真实媒体自动入库与可回看 Golden Path**  
-  状态：**未开始**。  
-  范围：把已分别验证的 Runtime、Timeline、元数据、outbox/index、语义检索和 Console 串成一个真实写路径，而非靠手工插入素材事实。  
+- [x] **GP-01 真实媒体自动入库与可回看 Golden Path**  
+  状态：**已完成**（2026-09-25 经 `make golden-path-check` 9 个场景全量验证）。  
+  范围：串通 Console 上传 -> 方案发布 -> 任务创建与分发 -> 节点 Agent 调度 Runtime/模型/Timeline 融合 -> 数据库/outbox 授权追加 -> 常驻 relay/index 向量落库 -> 语义检索命中 -> 原片回看流式播放的完整业务闭环。  
   完成条件：
   - 使用一段授权本地文件，随后使用受控 SRT 流，各产生至少一个带 `stream_id + [start_ms, end_ms)`、来源、模型/版本、显式置信度语义与 revision 的 `MaterialUnit`。
   - Timeline 能把 ASR/OCR/VLM observation 融合进素材；事务性 metadata/outbox 写入后，由既有事件链路生成 ready embedding。

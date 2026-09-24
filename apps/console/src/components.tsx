@@ -69,6 +69,8 @@ const labels: Record<string, string> = {
     pending: '等待上传',
     awaiting_admission: '待媒体准入',
     draft: '草稿',
+    processing: '处理中',
+    completed: '已完成',
     archived: '已归档',
     source_available: '源码可用',
     unverified: '未验证来源',

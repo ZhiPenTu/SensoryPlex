@@ -6,7 +6,7 @@ The append entry point is for an authorized timeline worker, never public HTTP.
 import hashlib
 
 from edge_material_sdk.generated.common.v1.common_pb2 import EventEnvelope
-from edge_material_sdk.generated.material.v1.material_pb2 import MaterialUnit
+from edge_material_sdk.generated.material.v1.material_pb2 import MaterialUnit, Observation
 from edge_material_sdk.validation import validate_material
 from google.protobuf.json_format import MessageToDict
 from psycopg.types.json import Jsonb
@@ -87,25 +87,41 @@ def append_material(conn, material: MaterialUnit, *, trace_id: str) -> bool:
             ):
                 raise ValueError("timeline_item_mismatch")
             obs_data = obs.SerializeToString(deterministic=True)
-            conn.execute(
-                "INSERT INTO observation VALUES (%s,%s,%s,%s,%s,%s,%s) "
-                "ON CONFLICT (observation_id) DO NOTHING",
-                (
-                    obs.observation_id,
-                    obs.source_item_id,
-                    obs.modality,
-                    Jsonb(MessageToDict(obs.payload)),
-                    obs.confidence if obs.HasField("confidence") else None,
-                    p.model_release_id,
-                    obs_data,
-                ),
-            )
             saved = conn.execute(
                 "SELECT contract_bytes FROM observation WHERE observation_id=%s",
                 (obs.observation_id,),
-            ).fetchone()[0]
-            if saved != obs_data:
-                raise RevisionConflict("immutable_observation_conflict")
+            ).fetchone()
+            if saved is not None:
+                saved_obs = Observation()
+                saved_obs.ParseFromString(saved[0])
+                saved_dict = MessageToDict(saved_obs.payload)
+                curr_dict = MessageToDict(obs.payload)
+                saved_content = saved_dict.get("blocks") or saved_dict.get("text")
+                curr_content = curr_dict.get("blocks") or curr_dict.get("text")
+                if (
+                    saved_content == curr_content
+                    and saved_obs.content_hash == obs.content_hash
+                    and saved_obs.source_item_id == obs.source_item_id
+                    and saved_obs.modality == obs.modality
+                ):
+                    obs.CopyFrom(saved_obs)
+                    obs_data = saved[0]
+                else:
+                    raise RevisionConflict("immutable_observation_conflict")
+            else:
+                conn.execute(
+                    "INSERT INTO observation VALUES (%s,%s,%s,%s,%s,%s,%s) "
+                    "ON CONFLICT (observation_id) DO NOTHING",
+                    (
+                        obs.observation_id,
+                        obs.source_item_id,
+                        obs.modality,
+                        Jsonb(MessageToDict(obs.payload)),
+                        obs.confidence if obs.HasField("confidence") else None,
+                        p.model_release_id,
+                        obs_data,
+                    ),
+                )
         text = "\n".join(
             part
             for obs in material.observations
@@ -155,7 +171,10 @@ def append_material(conn, material: MaterialUnit, *, trace_id: str) -> bool:
             schema_version=1,
         )
         conn.execute(
-            "INSERT INTO event_outbox(event_id,event_type,contract_bytes) VALUES (%s,%s,%s)",
+            (
+                "INSERT INTO event_outbox(event_id,event_type,contract_bytes) VALUES (%s,%s,%s) "
+                "ON CONFLICT (event_id) DO UPDATE SET contract_bytes=EXCLUDED.contract_bytes"
+            ),
             (event_id, event.event_type, event.SerializeToString(deterministic=True)),
         )
     return True
