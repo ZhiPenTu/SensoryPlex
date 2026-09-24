@@ -8,7 +8,9 @@ from grpc_tools import protoc
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "plugins/python/common/src/edge_material_sdk/generated"
-PACKAGES = "common|material|media|runtime|gateway"
+# 命名空间化的顶层包名：新增 proto 包时必须同步这里，否则生成代码里的
+# `from <pkg>.<ver> import ...` 不会被改写成 SDK 的命名空间，导入直接失败。
+PACKAGES = "common|material|media|runtime|gateway|index"
 
 
 def main():

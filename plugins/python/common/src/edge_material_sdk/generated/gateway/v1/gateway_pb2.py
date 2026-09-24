@@ -25,7 +25,7 @@ _sym_db = _symbol_database.Default()
 from edge_material_sdk.generated.material.v1 import material_pb2 as material_dot_v1_dot_material__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x18gateway/v1/gateway.proto\x12\x18\x65\x64ge.material.gateway.v1\x1a\x1amaterial/v1/material.proto\"\xe4\x01\n\rSearchRequest\x12\r\n\x05query\x18\x01 \x01(\t\x12\x11\n\tstream_id\x18\x02 \x01(\t\x12\x15\n\x08start_ms\x18\x03 \x01(\x03H\x00\x88\x01\x01\x12\x13\n\x06\x65nd_ms\x18\x04 \x01(\x03H\x01\x88\x01\x01\x12\x12\n\nmodalities\x18\x05 \x03(\t\x12\x0c\n\x04tags\x18\x06 \x03(\t\x12\x1b\n\x0emin_confidence\x18\x07 \x01(\x01H\x02\x88\x01\x01\x12\r\n\x05limit\x18\x08 \x01(\r\x12\x0c\n\x04mode\x18\t \x01(\tB\x0b\n\t_start_msB\t\n\x07_end_msB\x11\n\x0f_min_confidence\"q\n\x0eSearchResponse\x12:\n\tmaterials\x18\x01 \x03(\x0b\x32\'.edge.material.material.v1.MaterialUnit\x12\x0c\n\x04mode\x18\x02 \x01(\t\x12\x15\n\rindex_version\x18\x03 \x01(\t\"R\n\x12GetMaterialRequest\x12\x18\n\x10material_unit_id\x18\x01 \x01(\t\x12\x15\n\x08revision\x18\x02 \x01(\rH\x00\x88\x01\x01\x42\x0b\n\t_revision2\xd9\x01\n\x14MaterialQueryService\x12[\n\x06Search\x12\'.edge.material.gateway.v1.SearchRequest\x1a(.edge.material.gateway.v1.SearchResponse\x12\x64\n\x0bGetMaterial\x12,.edge.material.gateway.v1.GetMaterialRequest\x1a\'.edge.material.material.v1.MaterialUnitb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x18gateway/v1/gateway.proto\x12\x18\x65\x64ge.material.gateway.v1\x1a\x1amaterial/v1/material.proto\"\xe4\x01\n\rSearchRequest\x12\r\n\x05query\x18\x01 \x01(\t\x12\x11\n\tstream_id\x18\x02 \x01(\t\x12\x15\n\x08start_ms\x18\x03 \x01(\x03H\x00\x88\x01\x01\x12\x13\n\x06\x65nd_ms\x18\x04 \x01(\x03H\x01\x88\x01\x01\x12\x12\n\nmodalities\x18\x05 \x03(\t\x12\x0c\n\x04tags\x18\x06 \x03(\t\x12\x1b\n\x0emin_confidence\x18\x07 \x01(\x01H\x02\x88\x01\x01\x12\r\n\x05limit\x18\x08 \x01(\r\x12\x0c\n\x04mode\x18\t \x01(\tB\x0b\n\t_start_msB\t\n\x07_end_msB\x11\n\x0f_min_confidence\"\x8b\x01\n\tSearchHit\x12\x18\n\x10material_unit_id\x18\x01 \x01(\t\x12\x10\n\x08revision\x18\x02 \x01(\r\x12\x10\n\x08\x64istance\x18\x03 \x01(\x01\x12\x14\n\x0c\x65mbedding_id\x18\x04 \x01(\t\x12\x12\n\nvector_ref\x18\x05 \x01(\t\x12\x16\n\x0eobservation_id\x18\x06 \x01(\t\"\xef\x01\n\x0eSearchResponse\x12:\n\tmaterials\x18\x01 \x03(\x0b\x32\'.edge.material.material.v1.MaterialUnit\x12\x0c\n\x04mode\x18\x02 \x01(\t\x12\x15\n\rindex_version\x18\x03 \x01(\t\x12\x31\n\x04hits\x18\x04 \x03(\x0b\x32#.edge.material.gateway.v1.SearchHit\x12\x16\n\x0eunindexed_hits\x18\x05 \x01(\r\x12\x18\n\x10vector_index_key\x18\x06 \x01(\t\x12\x17\n\x0funresolved_hits\x18\x07 \x01(\r\"R\n\x12GetMaterialRequest\x12\x18\n\x10material_unit_id\x18\x01 \x01(\t\x12\x15\n\x08revision\x18\x02 \x01(\rH\x00\x88\x01\x01\x42\x0b\n\t_revision2\xd9\x01\n\x14MaterialQueryService\x12[\n\x06Search\x12\'.edge.material.gateway.v1.SearchRequest\x1a(.edge.material.gateway.v1.SearchResponse\x12\x64\n\x0bGetMaterial\x12,.edge.material.gateway.v1.GetMaterialRequest\x1a\'.edge.material.material.v1.MaterialUnitb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -34,10 +34,12 @@ if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
   _globals['_SEARCHREQUEST']._serialized_start=83
   _globals['_SEARCHREQUEST']._serialized_end=311
-  _globals['_SEARCHRESPONSE']._serialized_start=313
-  _globals['_SEARCHRESPONSE']._serialized_end=426
-  _globals['_GETMATERIALREQUEST']._serialized_start=428
-  _globals['_GETMATERIALREQUEST']._serialized_end=510
-  _globals['_MATERIALQUERYSERVICE']._serialized_start=513
-  _globals['_MATERIALQUERYSERVICE']._serialized_end=730
+  _globals['_SEARCHHIT']._serialized_start=314
+  _globals['_SEARCHHIT']._serialized_end=453
+  _globals['_SEARCHRESPONSE']._serialized_start=456
+  _globals['_SEARCHRESPONSE']._serialized_end=695
+  _globals['_GETMATERIALREQUEST']._serialized_start=697
+  _globals['_GETMATERIALREQUEST']._serialized_end=779
+  _globals['_MATERIALQUERYSERVICE']._serialized_start=782
+  _globals['_MATERIALQUERYSERVICE']._serialized_end=999
 # @@protoc_insertion_point(module_scope)

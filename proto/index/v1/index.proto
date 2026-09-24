@@ -1,0 +1,59 @@
+syntax = "proto3";
+package edge.material.index.v1;
+
+// 语义检索的检索面（ADR-023）。索引持有者（index-worker）是唯一打开向量库的进程：
+// 调用者只提交**查询文本**，查询向量的编码、向量库近邻、PostgreSQL 事实回查都在这一侧完成。
+// 素材事实沿 material/v1 的同一份契约；这里只出引用与距离，不出事实本体。
+
+message SemanticSearchRequest {
+  // 查询文本。空串或超长按 invalid_query 拒绝，不编造默认查询。
+  string query = 1;
+  // 授权主体：命中必须回查该 principal 拥有的事实（ADR-020 §2）。
+  string principal = 2;
+  // collection 名（= vector_index_key）。换模型或换维度就是另一个 collection。
+  string vector_index_key = 3;
+  // 返回条数上限。0 表示 20，最大 100。
+  uint32 limit = 4;
+}
+
+// 一条命中：向量距离 + 事实引用。素材本体由调用方按 (material_unit_id, material_revision)
+// 重新水合，因此这里不是事实源，也不是鉴权依据（ADR-020 §2）。
+message SemanticHit {
+  string embedding_id = 1;
+  string material_unit_id = 2;
+  uint32 material_revision = 3;
+  // COSINE 距离（FLAT 精确检索）：越小越近。**未做相关性校准**，不要当置信度用。
+  double distance = 4;
+  string vector_ref = 5;
+  string observation_id = 6;
+  // 产出这条向量的模型身份；与本次查询编码器逐一对账后才允许返回。
+  string model_release_id = 7;
+  uint32 dimension = 8;
+}
+
+// 稳定原因码；调用方按 reason_code 分支，不解析 detail 文本。
+message IndexFailure {
+  string reason_code = 1;
+  string detail = 2;
+  // true 表示这是瞬时的容量约束（比如向量库数据目录被别人 flock 持有）：
+  // "稍后重试可能成功"与"配置/契约错了"必须能被区分。
+  bool retryable = 3;
+}
+
+message SemanticSearchResponse {
+  repeated SemanticHit hits = 1;
+  string vector_index_key = 2;
+  string collection = 3;
+  // 检索语义版本：写清楚这批命中怎么来的（编码 → FLAT/COSINE → 回查 ready）。
+  string index_version = 4;
+  // 被丢弃的命中数（回查不满足 ready / owner / material 状态）：单独计数，不静默吞掉。
+  uint32 unindexed_hits = 5;
+  // 本次查询的编码器身份。dimension 与 collection 契约不符时整个请求被拒绝。
+  string query_model_release_id = 6;
+  uint32 query_dimension = 7;
+  IndexFailure error = 8;
+}
+
+service IndexSearchService {
+  rpc SearchSemantic(SemanticSearchRequest) returns (SemanticSearchResponse);
+}

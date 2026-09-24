@@ -311,10 +311,22 @@ export interface SearchRequest {
   limit: number;
   mode: string;
 }
+export interface SearchHit {
+  material_unit_id: string;
+  revision: number;
+  distance: number;
+  embedding_id: string;
+  vector_ref: string;
+  observation_id: string;
+}
 export interface SearchResponse {
   materials: MaterialUnit[];
   mode: string;
   index_version: string;
+  hits: SearchHit[];
+  unindexed_hits: number;
+  vector_index_key: string;
+  unresolved_hits: number;
 }
 export interface GetMaterialRequest {
   material_unit_id: string;
