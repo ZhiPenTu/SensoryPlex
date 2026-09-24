@@ -1589,6 +1589,58 @@ emb_1953e314…|failed|milvus://material_text_bge_small_zh_v1_5_d512_v1/emb_1953
 "跑过了但没生效"，直到 `docker compose ... build gateway` 之后同一条命令才输出
 `Applied 0003_embedding_index`。已写进 `docs/runbooks/development.md`。
 
+#### 远端 CI：从"账号计费拦截"到第一次真跑（2026-09-24）
+
+本切片开 PR 后远端三个 job 全红，但**红的原因不是代码**：三个 job 的 `steps` 都是空数组、
+`runner_id = 0`，check-run 的注解原文是
+
+```
+The job was not started because recent account payments have failed or your spending limit
+needs to be increased. Please check the 'Billing & plans' section in your settings
+```
+
+分界线很清楚：最后一次全绿是 `#55`（2026-09-23 20:31Z，真 runner，三个 job 分别 14 / 20 / 14 个
+step），`#56`（20:36Z）起**连续 20 次**全红——其中包括 master 自己的 push（`#73` = `36fc487`，
+即已合并的 PR #13）。所以这段全红**既不能读成"PR #14 的代码验证失败"，也不能读成"流水线坏了"**：
+它是账号侧计费被拦，与提交内容无关，重跑没有意义。
+
+把仓库改成 public（标准 runner 对公开仓库免费）后重跑 `#75` 的 attempt 2，job 才第一次真正落到
+runner 上（`runner_id != 0`、`steps` 有内容）：`check-console` success，`check` 与
+`check-apple-silicon` 都停在 `test-contracts`——这才是本切片真正的第 5 条缺陷。
+
+| run | 触发 | 结论 | 说明 |
+| --- | --- | --- | --- |
+| `#55` | push `master` | success | 最后一次真跑成功的流水线 |
+| `#56`–`#74`（19 次） | push / pull_request | failure（无效） | `steps = []`、`runner = 0`：账号计费拦截 |
+| `#75` attempt 1 | pull_request `codex/index-pipeline` | failure（无效） | 同上 |
+| `#75` attempt 2 | pull_request `codex/index-pipeline` | failure（真实） | 公开仓库后真跑，暴露第 5 条缺陷（ADR-027 §10.5） |
+
+该缺陷的复现与修复（容器内摘掉 `SENSORYPLEX_DATABASE_URL` 以对齐 CI 条件——CI 既没有仓库
+`.env` 也没有这个变量，而本机容器两者都有）：
+
+```
+$ docker compose --env-file .env -f deploy/compose/docker-compose.poc.yml exec -T -w /workspace \
+    api sh -lc 'env -u SENSORYPLEX_DATABASE_URL /app/.venv/bin/python -m pytest tests/contracts -q'
+
+# 修前
+E   pydantic_core._pydantic_core.ValidationError: 1 validation error for Settings
+E   database_url
+E     Field required [type=missing, ...]
+FAILED tests/contracts/test_semantic_search_contract.py::test_blank_search_configuration_counts_as_unconfigured
+1 failed, 14 passed in 1.38s
+
+# 修后
+363 passed in 5.04s
+```
+
+修复后的本机回归（容器内，与 CI 同一组命令）：
+
+| 验证 | 结果 |
+| --- | --- |
+| `make lint-ruff` | `ruff check` 全过、`format --check` **161** 文件已格式化 |
+| `make test-py` | 契约 **363 passed**（4.68s）+ 集成 **65 passed**（21.72s） |
+| `make check` | 全过（ruff + 契约 + 集成 + cargo fmt/clippy/test） |
+
 #### 仍未验证（不得当成完成）
 
 - **常驻消费未接线**：没有 NATS/outbox 轮询把上游观测喂给 index-worker，本轮只有显式 CLI 调用，
