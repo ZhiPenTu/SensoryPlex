@@ -1869,6 +1869,13 @@ collection `material_text_bge_small_zh_v1_5_d512_v1`、`dimension=512`、
 本轮真的踩到：`make gateway-smoke` 在旧 gateway 镜像上仍然打印 `PASS`——旧断言写着 `== 501`，
 跑的又是旧实现；重建 gateway（并同步改断言）后才是 ADR-023 的 503/422 口径。
 
+#### 远端 CI（2026-09-24，PR #11）
+
+`engineering-checks` 的三个 job（`check` / `check-console` / `check-apple-silicon`）在**任何 step 之前**
+就秒失败：`steps: []`，从启动到结束约 3s。这与本分支的改动无关——它是仓库级环境问题，
+PR #9 / #10 已记录同一现象。按既有口径处理：**不反复重跑**，也**不**据此声称远端验收通过；
+本切片的证据全部来自上面的容器内检查与主机验收。
+
 #### 仍未验证（不得当成完成）
 
 - **常驻 index-worker 消费（NATS/outbox → sink）仍未接线**：检索面是常驻的，但"向量怎么进来"仍只有
