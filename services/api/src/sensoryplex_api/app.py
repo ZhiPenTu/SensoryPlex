@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from psycopg_pool import AsyncConnectionPool, ConnectionPool, PoolTimeout, TooManyRequests
 
 from .auth import Authorization
-from .contracts import fail, out
+from .contracts import RETRYABLE_HEADER, fail, out
 from .interfaces import admin, assets, business, identity
 from .settings import Settings
 
@@ -23,6 +23,8 @@ from .settings import Settings
 # `SCHEMA` 仍是最新版本，供 `schema_version` 字段上报。
 SCHEMA = "0003_embedding_index"
 SCHEMA_VERSIONS = {"0001_initial", "0002_console", SCHEMA}
+# 语义检索不可用时的原因码：检索面未配置就是这个码，不是 501、也不是"没有命中"。
+SEMANTIC_UNAVAILABLE_REASON = "semantic_search_unavailable"
 CAPABILITIES = [
     ("console_metadata", True, ""),
     ("keyword_search", True, ""),
@@ -31,7 +33,7 @@ CAPABILITIES = [
     ("task_execution", False, "runtime_task_service_not_attached"),
     ("plugin_installation", False, "runtime_plugin_installer_not_attached"),
     ("pipeline_publish", False, "runtime_pipeline_validation_not_attached"),
-    ("semantic_search", False, "semantic_index_not_configured"),
+    ("semantic_search", False, SEMANTIC_UNAVAILABLE_REASON),
 ]
 
 
@@ -84,13 +86,19 @@ def create_app(settings: Settings | None = None):
     app.state.pool, app.state.settings = pool, settings
     auth = Authorization(pool, settings)
 
-    def error(request, status, reason):
+    def semantic_capability() -> tuple[bool, str]:
+        """能力表只报**配置事实**：配了检索面就报可用，链路是否真的通由检索本身回答。"""
+        if settings.index_search_endpoint:
+            return True, ""
+        return False, SEMANTIC_UNAVAILABLE_REASON
+
+    def error(request, status, reason, retryable=None):
         body = out(
             pb.ApiError(
                 detail=reason,
                 reason_code=reason,
                 trace_id=getattr(request.state, "trace_id", ""),
-                retryable=status in {429, 503},
+                retryable=status in {429, 503} if retryable is None else retryable,
             )
         )
         return JSONResponse(status_code=status, content=body)
@@ -120,7 +128,8 @@ def create_app(settings: Settings | None = None):
 
     @app.exception_handler(HTTPException)
     async def http_error(request, exc):
-        return error(request, exc.status_code, str(exc.detail))
+        override = {"true": True, "false": False}.get((exc.headers or {}).get(RETRYABLE_HEADER, ""))
+        return error(request, exc.status_code, str(exc.detail), retryable=override)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request, exc):
@@ -163,7 +172,7 @@ def create_app(settings: Settings | None = None):
                 "keyword_search": True,
                 "media_ingestion": False,
                 "model_inference": False,
-                "semantic_search": False,
+                "semantic_search": semantic_capability()[0],
             },
         }
 
@@ -173,13 +182,17 @@ def create_app(settings: Settings | None = None):
             pb.ConsoleStatus(
                 schema_version=schema_version(),
                 capabilities=[
-                    pb.Capability(name=n, available=a, reason=r) for n, a, r in CAPABILITIES
+                    pb.Capability(name=name, available=available, reason=reason)
+                    for name, available, reason in (
+                        (n, *semantic_capability()) if n == "semantic_search" else (n, a, r)
+                        for n, a, r in CAPABILITIES
+                    )
                 ],
             )
         )
 
     identity.register(app, pool, auth, settings)
-    business.register(app, pool, auth)
+    business.register(app, pool, auth, settings)
     assets.register(app, pool, auth, settings, upload_pool)
     admin.register(app, pool, auth, settings)
     dist = settings.console_dist.resolve()

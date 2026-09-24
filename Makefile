@@ -52,7 +52,7 @@ CARGO_HOST    ?= $(CARGO)
 PY_HOST       ?= uv run --frozen python
 
 .PHONY: setup configure proto check test integration format infra up down migrate gateway runtime pipeline-check runtime-smoke gateway-smoke media-replay media-check handoff-check backpressure-check
-.PHONY: stream-up stream-down stream-status stream-logs live-check model-check asr-check ocr-check embed-check index-check parallelism-check plugin-artifact capability-check accelerator-check
+.PHONY: stream-up stream-down stream-status stream-logs live-check model-check asr-check ocr-check embed-check index-check semantic-check parallelism-check plugin-artifact capability-check accelerator-check
 .PHONY: media-test resident-probe resident-install resident-uninstall resident-status
 .PHONY: lint-ruff test-py test-contracts test-integration proto-generate plugin-artifact-check
 
@@ -354,6 +354,16 @@ embed-check:
 index-check:
 	@test -n "$(EMBEDDINGS)" || { echo "usage: make index-check EMBEDDINGS=/absolute/path/to/ai-worker.json（先跑 uv run --frozen python tools/verify_embed.py --media <sample> --keep-workspace 得到它）"; exit 1; }
 	$(PY_HOST) tools/verify_index.py --embeddings "$(EMBEDDINGS)"
+
+# ── 网关语义检索接线验收（② / ADR-023） ─────────────────────────────────────
+# 不需要先备好 ai-worker.json：本目标自己把三段真实文本送进真实 BGE 插件进程，得到真实观测，
+# 再用真实 Milvus Lite 落库、起**常驻检索面**（`... cli serve`，持有向量库的唯一进程），
+# 最后由真实 API 走 HTTP 做语义检索并水合事实。验的是：同源守卫（错 release / 混装）、
+# 非 owner 丢弃计数、状态码分野（503 网关侧 / 502 上游拒绝）、令牌与不可达、目录锁、
+# 契约漂移必须在启动时拒绝、以及线上不外泄。Milvus Lite 是进程独占的本地文件，
+# 与 HF 权重一样只存在于主机，所以固定在主机执行（理由同 cargo 与 index-check）。
+semantic-check:
+	$(PY_HOST) tools/verify_semantic_search.py $(if $(DATABASE_URL),--database-url "$(DATABASE_URL)",) $(if $(MODEL_DIR),--model-dir "$(MODEL_DIR)",) $(if $(PROVIDER),--provider "$(PROVIDER)",)
 
 # ── 模型 worker 分级并发上限验收（M8 剩余，ADR-021） ────────────────────────
 # 上游必须是**真实** `ocr_blocks` 观测：每个 MEDIA 跑一次未改动的 tools/verify_ocr.py 真实链路

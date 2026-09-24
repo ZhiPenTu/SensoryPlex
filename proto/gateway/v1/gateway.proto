@@ -12,12 +12,29 @@ message SearchRequest {
   repeated string tags = 6;
   optional double min_confidence = 7;
   uint32 limit = 8; // 0 means 20; maximum 100.
-  string mode = 9; // keyword (implemented), semantic (requires index worker).
+  string mode = 9; // keyword | semantic; both implemented. semantic rejects fact filters (ADR-023).
+}
+// 语义检索的命中摘要。keyword 模式不做相关性排名，因此 hits 为空——"没有排名"与"排名为 0"不同。
+message SearchHit {
+  string material_unit_id = 1;
+  uint32 revision = 2;
+  double distance = 3; // COSINE distance (smaller is closer); keyword mode never fills this.
+  string embedding_id = 4;
+  string vector_ref = 5;
+  string observation_id = 6;
 }
 message SearchResponse {
   repeated edge.material.material.v1.MaterialUnit materials = 1;
   string mode = 2;
   string index_version = 3;
+  // 与 materials 同序同长（semantic 模式）；keyword 模式为空。
+  repeated SearchHit hits = 4;
+  // 命中里被丢弃的数量（未 ready / 非 owner / 素材已失败），worker 侧与事实水合侧合计。
+  uint32 unindexed_hits = 5;
+  // semantic 模式下的 collection 名（= vector_index_key）；keyword 模式为空。
+  string vector_index_key = 6;
+  // 事实水合阶段丢弃的命中数：worker 回查通过、返回前素材已不可读。与上面分开计数。
+  uint32 unresolved_hits = 7;
 }
 message GetMaterialRequest { string material_unit_id = 1; optional uint32 revision = 2; }
 service MaterialQueryService {

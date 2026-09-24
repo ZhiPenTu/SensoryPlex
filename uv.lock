@@ -1427,6 +1427,7 @@ source = { editable = "services/api" }
 dependencies = [
     { name = "edge-material-sdk" },
     { name = "fastapi" },
+    { name = "grpcio" },
     { name = "jsonschema" },
     { name = "psycopg", extra = ["binary", "pool"] },
     { name = "pydantic-settings" },
@@ -1438,6 +1439,7 @@ dependencies = [
 requires-dist = [
     { name = "edge-material-sdk", editable = "plugins/python/common" },
     { name = "fastapi", specifier = ">=0.115,<1" },
+    { name = "grpcio", specifier = ">=1.71,<1.72" },
     { name = "jsonschema", specifier = ">=4.23,<5" },
     { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.2,<4" },
     { name = "pydantic-settings", specifier = ">=2.8,<3" },
@@ -1461,7 +1463,9 @@ name = "sensoryplex-index-worker"
 version = "0.1.0"
 source = { editable = "services/index-worker" }
 dependencies = [
+    { name = "edge-material-plugin-embed-bge-onnx" },
     { name = "edge-material-sdk" },
+    { name = "grpcio" },
     { name = "milvus-lite" },
     { name = "psycopg", extra = ["binary", "pool"] },
     { name = "pymilvus" },
@@ -1469,7 +1473,9 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "edge-material-plugin-embed-bge-onnx", editable = "plugins/python/processors/embed-bge-onnx" },
     { name = "edge-material-sdk", editable = "plugins/python/common" },
+    { name = "grpcio", specifier = ">=1.71,<1.72" },
     { name = "milvus-lite", specifier = ">=2.4" },
     { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.2,<4" },
     { name = "pymilvus", specifier = ">=2.6,<3" },

@@ -210,7 +210,8 @@ def test_search_filters_literal_matching_and_unknown_confidence(
         assert detail["observations"][0]["provenance"] == MessageToDict(
             observation.provenance, preserving_proto_field_name=True
         )
-        assert client.post("/v1/materials:search", json={"mode": "semantic"}).status_code == 501
+        # 空查询在语义检索里是调用方输入错误（422），与"检索面有没有部署"无关（ADR-023）。
+        assert client.post("/v1/materials:search", json={"mode": "semantic"}).status_code == 422
         assert (
             client.post("/v1/materials:search", json={"start_ms": "10", "end_ms": "10"}).status_code
             == 422

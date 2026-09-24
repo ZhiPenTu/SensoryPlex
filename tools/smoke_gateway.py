@@ -29,5 +29,17 @@ assert status == 200 and health["metadata_store"] == "ready"
 status, result = request("/v1/materials:search", {})
 assert status == 200 and result["mode"] == "keyword" and isinstance(result["materials"], list)
 assert request("/v1/materials:search", {}, authenticated=False)[0] == 401
-assert request("/v1/materials:search", {"mode": "semantic"})[0] == 501
-print("Deployed Gateway: metadata readiness, authenticated search, 401 and explicit 501: PASS")
+# semantic 不再是 501（ADR-023）：Gateway 复用 sensoryplex_api 的同一份实现，因此
+# 未配置检索面时是"显式不可用"（503 + 稳定原因码 + retryable=false），空查询是输入错误（422）。
+semantic_status, semantic_error = request(
+    "/v1/materials:search", {"mode": "semantic", "query": "销售"}
+)
+assert semantic_status == 503, (semantic_status, semantic_error)
+assert semantic_error["reason_code"] == "semantic_search_unavailable", semantic_error
+# 配置问题不可重试：503 不等于"稍后重试就好"。
+assert semantic_error["retryable"] is False, semantic_error
+assert request("/v1/materials:search", {"mode": "semantic"})[0] == 422
+print(
+    "Deployed Gateway: metadata readiness, authenticated search, 401, "
+    "semantic 503 (semantic_search_unavailable, retryable=false) and 422 on empty query: PASS"
+)

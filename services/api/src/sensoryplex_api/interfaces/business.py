@@ -1,17 +1,73 @@
-"""业务准备与真实素材查询；执行链路缺失时保持显式拒绝。"""
+"""业务准备与真实素材查询；执行链路缺失时保持显式拒绝。
+
+检索有两种模式，各自的语义写清楚，不互相冒充（ADR-023）：
+
+- `keyword`：PostgreSQL 字面子串匹配，**不做相关性排名**，`index_version` 为
+  `postgres-literal-v1`，`hits` 为空（"没有排名"与"排名为 0"不同）；
+- `semantic`：转发给持有向量索引的检索面，由它编码查询、近邻、回查事实；`hits` 与
+  `materials` 同序同长，`index_version` 由检索面给出。**本切片只支持 `query` + `limit`**，
+  其余筛选字段显式拒绝（`semantic_filters_not_supported`）——静默忽略筛选条件会给出
+  "像是筛过"的结果，那比拒绝更糟。
+"""
 
 import math
 from typing import Annotated
 
 from edge_material_sdk.generated.gateway.v1 import console_pb2 as pb
-from edge_material_sdk.generated.gateway.v1.gateway_pb2 import SearchRequest, SearchResponse
+from edge_material_sdk.generated.gateway.v1.gateway_pb2 import (
+    SearchHit,
+    SearchRequest,
+    SearchResponse,
+)
 from fastapi import Body, Depends, Query
 
 from ..contracts import audit, fail, identifier, one, out, parse, rows, text_field
-from ..infrastructure import materials
+from ..infrastructure import materials, semantic
+
+KEYWORD_INDEX_VERSION = "postgres-literal-v1"
+DEFAULT_LIMIT = 20
 
 
-def register(app, pool, auth):
+def _has_semantic_filters(req) -> bool:
+    return bool(
+        req.stream_id
+        or req.modalities
+        or req.tags
+        or req.HasField("start_ms")
+        or req.HasField("end_ms")
+        or req.HasField("min_confidence")
+    )
+
+
+def _semantic(conn, settings, req, principal: str):
+    """语义检索：只转发查询与条数，其余条件显式拒绝。"""
+    if _has_semantic_filters(req):
+        fail(422, "semantic_filters_not_supported")
+    if not req.query:
+        # 空查询在这里就被拒绝：它是调用方的输入错误，不该变成一次"上游失败"。
+        fail(422, "invalid_query")
+    try:
+        outcome = semantic.search(
+            conn, settings, principal=principal, query=req.query, limit=req.limit or DEFAULT_LIMIT
+        )
+    except semantic.SemanticSearchError as error:
+        # 状态码与 `retryable` 都由 adapter 按"失败发生在哪一环"给出，这里不重新推断；
+        # 原因码原样上抛，不再改写（ADR-020 §8 记录过最后一跳改写原因码的缺陷）。
+        fail(error.status, error.code, retryable=error.retryable)
+    return out(
+        SearchResponse(
+            materials=outcome.materials,
+            mode="semantic",
+            index_version=outcome.index_version,
+            hits=[SearchHit(**hit) for hit in outcome.hits],
+            unindexed_hits=outcome.unindexed_hits,
+            vector_index_key=outcome.vector_index_key,
+            unresolved_hits=outcome.unresolved_hits,
+        )
+    )
+
+
+def register(app, pool, auth, settings):
     @app.post("/v1/materials:search")
     def search(
         body: Annotated[dict, Body()] = ...,
@@ -20,8 +76,6 @@ def register(app, pool, auth):
         req = parse(body, SearchRequest)
         if req.mode not in ("", "keyword", "semantic"):
             fail(422, "invalid_search_mode")
-        if req.mode == "semantic":
-            fail(501, "semantic_index_not_configured")
         if (
             req.limit > 100
             or len(req.query) > 2000
@@ -38,9 +92,11 @@ def register(app, pool, auth):
         ):
             fail(422, "invalid_confidence")
         with pool.connection() as conn:
+            if req.mode == "semantic":
+                return _semantic(conn, settings, req, p.name)
             result = materials.search_materials(conn, p.name, req)
         return out(
-            SearchResponse(materials=result, mode="keyword", index_version="postgres-literal-v1")
+            SearchResponse(materials=result, mode="keyword", index_version=KEYWORD_INDEX_VERSION)
         )
 
     @app.get("/v1/materials/{key}")

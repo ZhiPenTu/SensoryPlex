@@ -15,8 +15,9 @@
 ## 当前并行工作与明确未完成项（2026-09-24）
 
 - [ ] **M8 整体仍在研发中**：四个模型（VLM / ASR / OCR / BGE）已接入并通过本机真实样本验收，
-  向量落库与检索闭环也已落地（Lite 形态，见 §M8），剩余的是运行时加速后端能力上报、
-  网关侧语义检索接线（`mode=semantic` 仍 501）、以及按机型选模型（明细见 §M8）。
+  向量落库与检索闭环也已落地（Lite 形态，见 §M8），宿主加速器能力也已真实探测并单独上报（ADR-022），
+  网关侧语义检索接线也已落地（`mode=semantic` 不再是 501，见 §M8），
+  剩余的是常驻 index-worker 消费（NATS/outbox）与按机型选模型（明细见 §M8）。
   分项测试通过不等于整个 M8 或 Golden Path 完成，具体进展按其验收证据更新。
 - [x] **分级模型并发上限已接线（ADR-021）**：`tools/ai_worker.py` 按 `SENSORYPLEX_MODEL_PARALLELISM` /
   运行时转述的分级上限做准入与在飞调用限流，坏值、flag/env 冲突与越界在连插件之前 exit 2；
@@ -32,6 +33,16 @@
   `PATH=/nonexistent` 下两条都落 `unknown` 且**不**被写成"不存在"。证据见 `docs/verification.md` 的
   "M8 剩余：宿主加速器能力探测与上报（ADR-022）"。**仍未验证**：`cuda` 分支无真机（见 §M6）、
   Mac mini 未跑、`tensorrt` 无探测路径。
+- [x] **网关语义检索接线已落地（ADR-023）**：`mode=semantic` 从 501 变成真实检索。常驻检索面
+  `sensoryplex-index serve` 是持有 Milvus Lite 的唯一进程（数据目录 flock 进程独占），调用方只提交
+  **查询文本**；API 只做转发 + 按 `(material_unit_id, revision)` 水合事实，命中不是事实源、也不是
+  鉴权依据。查询向量用 BGE 插件自己的 `Start` 编码，并按 `model_release_id` 做 collection 级
+  **同源守卫**（异源或混装整请求拒绝）。HTTP 状态码只表示失败落在哪一环（没走到检索面 503 /
+  检索面答了但不是本契约 502），`retryable` 是独立标记（503 也可能不可重试）。本切片只做纯语义：
+  筛选项显式 422，keyword 不排名、`hits` 为空。`make semantic-check` 真实 BGE → Milvus Lite →
+  常驻检索面 → API 走 HTTP **13 个场景**通过。证据见 `docs/verification.md` 的
+  "网关语义检索接线（ADR-023）"。**仍未验证**：常驻消费（NATS/outbox）、RRF/混合检索与相关性校准、
+  向量质量（recall/MRR）、服务端 Milvus 拓扑与跨机/跨容器部署。
 - [ ] **真实媒体端到端**：Runtime → Timeline → metadata writer/outbox → 查询与回看尚未联调验收。
   Timeline 融合核心已在独立分支 `codex/timeline-fusion` 提交 `bdb00ef`，尚未合并主线。
 - [ ] **语义冲突识别与消解**：当前融合核心只保留显式冲突标记；不推断自然语言矛盾。
@@ -196,16 +207,17 @@
 
 - 状态：**进行中**——四个真实端侧模型（**VLM**、**ASR**、**OCR**、**BGE 文本向量**）已接入并通过验收，
   BGE 向量也已能落库并检索回来（Milvus **Lite** 形态），宿主加速器事实也已真实探测并单独上报
-  （[ADR-022](adr/ADR-022-宿主加速器能力探测与上报.md)）；仍未做的是常驻 index-worker 消费、
-  以及网关侧把这批向量接进 `mode=semantic`。
+  （[ADR-022](adr/ADR-022-宿主加速器能力探测与上报.md)），网关侧也已把这批向量接进真实语义检索
+  （[ADR-023](adr/ADR-023-网关语义检索接线与索引检索面.md)）；仍未做的是常驻 index-worker 消费。
   证据见 `docs/verification.md` 的 "M8 模型插件：真实 VLM 端侧接入与观察语义"、
   "M10 模型插件：真实 ASR 端侧接入与音频样本布局契约"、"M8 OCR"、"M8 BGE" 与
-  "M8 剩余：向量索引落库与检索闭环（ADR-020）"；设计决策见
+  "M8 剩余：向量索引落库与检索闭环（ADR-020）"、"网关语义检索接线（ADR-023）"；设计决策见
   [ADR-012](adr/ADR-012-模型插件与端侧推理边界.md)、
   [ADR-014](adr/ADR-014-ASR插件与音频样本布局契约.md)、
   [ADR-016](adr/ADR-016-OCR与ONNX执行后端.md) 与
   [ADR-017](adr/ADR-017-BGE文本向量与维度版本化.md)、
-  [ADR-020](adr/ADR-020-向量索引落库与检索闭环.md)。
+  [ADR-020](adr/ADR-020-向量索引落库与检索闭环.md) 与
+  [ADR-023](adr/ADR-023-网关语义检索接线与索引检索面.md)。
 - 已完成（VLM）：`plugins/python/processors/vlm-moondream` 消费 Runtime 数据面里的真实视频帧
   （经 `LeaseBufferReader` 读字节，非文件名），调用**本机** ollama 的 `moondream:v2` 产出
   `observation.vision.scene_description`：锚点等于源帧半开区间（`timing_source=media_pts`）、
@@ -262,7 +274,8 @@
   被占用即 `vector_store_locked`），因此 edge 是单写进程。详见
   [ADR-020](adr/ADR-020-向量索引落库与检索闭环.md)。
 - 剩余子项：常驻 index-worker 消费（NATS/outbox 未接线）、
-  网关侧语义检索与排序（`mode=semantic` 仍 501；RRF/混合检索未做）、
+  语义检索的排序面（`mode=semantic` 已接真实检索，但只有单路 COSINE 距离：
+  RRF/混合检索与相关性校准未做，见 [ADR-023](adr/ADR-023-网关语义检索接线与索引检索面.md)）、
   向量质量验收（无带参考文本的检索样本 → 无 recall/MRR）、
   按机型档位选择模型（依赖 M5），
   以及宿主加速器探测的真机覆盖面（`cuda` 分支与 Mac mini 未验收；

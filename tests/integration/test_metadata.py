@@ -131,11 +131,17 @@ def test_api_filters_auth_time_boundaries_and_unavailable_capabilities(database,
             assert (
                 client.post("/v1/materials:search", headers=headers, json=query).status_code == 422
             )
+        # semantic 不再是 501（ADR-023）：未配置检索面时是"显式不可用"，空查询是输入错误。
+        unconfigured = client.post(
+            "/v1/materials:search", headers=headers, json={"mode": "semantic", "query": "销售"}
+        )
+        assert unconfigured.status_code == 503
+        assert unconfigured.json()["reason_code"] == "semantic_search_unavailable"
         assert (
             client.post(
                 "/v1/materials:search", headers=headers, json={"mode": "semantic"}
             ).status_code
-            == 501
+            == 422
         )
         assert client.post("/v1/streams", headers=headers).status_code == 501
         assert client.get("/v1/materials/material_contract", headers=headers).status_code == 200
