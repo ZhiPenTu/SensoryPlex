@@ -2263,3 +2263,60 @@ sensoryplex-relay-1   sensoryplex-api:0.1.0   "/app/.venv/bin/pyth…"   relay  
 - 吞吐与延迟曲线未测（本切片接的是**准入**，不是吞吐达标）；
 - 向量 GC 未做（见上）；
 - `golden_path_verified` 仍恒为 false：真实媒体端到端（真实视频 → Runtime/Timeline → 事件）仍未联调。
+
+### 网关检索面冒烟：从"断言固定 503"改成"断言声明与行为一致"（2026-09-24）
+
+**背景**：`make gateway-smoke` 在 master 上是**红的**。`tools/smoke_gateway.py` 断言
+"semantic 未配置 ⇒ 503 `semantic_search_unavailable`"，而 gateway 返回的是 200 真实检索：
+
+```
+AssertionError: (200, {'mode': 'semantic', 'index_version': 'milvus-flat-cosine-v1',
+                       'unindexed_hits': 20, 'vector_index_key': 'material_text_bge_small_zh_v1_5_d512_v1', ...})
+```
+
+原因是 ADR-027 §10.3 / §10.4 那类陷阱的第三次现身：`Settings` 的 `env_file=".env"` 按 **cwd** 找，
+而 gateway 容器的 `working_dir` 就是 `/workspace`（bind mount），于是它**顺手**读到了宿主仓库的
+`.env`——`.env` 里一旦有了 `SENSORYPLEX_INDEX_SEARCH_*`（ADR-027 那次加的），capability 就变成
+true。也就是说：**capability 是"这个部署有没有挂载仓库"的函数**，而不是任何一条声明的函数。
+它没更早暴露，是因为 `make gateway-smoke` 既不在 `make check` 也不在 CI 里。
+
+**三个动作**：
+
+1. `deploy/compose/docker-compose.poc.yml` 给 `gateway` 补齐
+   `SENSORYPLEX_INDEX_SEARCH_ENDPOINT` / `..._TOKEN` / `..._VECTOR_INDEX_KEY` 的**声明**，与 api 对称。
+   不声明的话，没有 bind mount 的部署会静默退化成"api 有检索、gateway 没有"，而两边跑的是**同一份代码**。
+   注意这**不等于**修好了来源问题：声明只是让它显式，容器仍然会去读 bind mount 的 `.env`（见下"仍未验证"）。
+2. 冒烟改为断言**声明与行为一致**，而不是某一种形态下的固定状态码——因为两种形态都合法：
+
+   | 形态 | 合法结果 |
+   | --- | --- |
+   | 默认栈（不含 `events` profile，检索面没起来） | 503 + `semantic_index_unreachable` + `retryable=true` |
+   | `make events-up` 之后（检索面在跑） | 200 + `mode=semantic` + `vector_index_key` + `index_version` + `hits` |
+   | 未声明检索面（`capabilities.semantic_search=false`） | 503 + `semantic_search_unavailable` + `retryable=false` |
+
+   判定基准取 `/v1/health` 的 `capabilities.semantic_search`（服务自己的声明），**不取** `os.environ`
+   也不取 `Settings`——按后者断言等于把"我在哪跑"当成契约。三种情形下都断言**绝不是 501**：
+   "没实现"与"没部署"是两件事。
+3. `request()` 的客户端超时 5s → 20s：检索面没起来时，API 自己要等满 gRPC 的
+   `index_search_timeout_s`（默认 5s）才回 `semantic_index_unreachable`；客户端超时更短的话，
+   冒烟看到的是"脚本太急"（`TimeoutError`）而不是"服务怎么答"。
+
+**实测（容器内，两种形态都真跑）**：
+
+| 形态 | `make gateway-smoke` |
+| --- | --- |
+| `events` profile 在跑 | `semantic 200 真实检索 (never 501) and 422 on empty query: PASS` |
+| `make events-down` 之后 | `semantic 503 检索面不可达（retryable=true） (never 501) and 422 on empty query: PASS` |
+
+同批回归：`make lint-ruff`（`ruff check` 全过 / `format --check` 161 文件）、`make check`（exit 0）、
+`make event-pipeline-check`（7 步全过，`failures: []`、`query_hits: 1`）。
+
+**仍未验证（不得当成完成）**：
+
+- **容器内的配置来源仍然是"绑进来的仓库 `.env`"**，声明只是让取值显式；把
+  `SENSORYPLEX_INDEX_SEARCH_ENDPOINT` 从 compose 里清掉再跑，gateway **照样**返回 200
+  （实测：`env` 为空、行为已配置，断言当场红）——这说明"声明即来源"目前**不成立**。
+  真正收口要给 `Settings` 一个显式的 env-file 开关（容器里指向空文件），属于下一批，需单独决策；
+- `make gateway-smoke` **仍不在 `make check` / CI 里**（两处都没有 compose 栈），所以这类"能力与行为
+  漂移"下次仍可能只在本机被发现；
+- 向量 GC 未做：本次验收又把 `unindexed_hits` 从 5 推到 20，检索窗口会被陈旧向量占用。
