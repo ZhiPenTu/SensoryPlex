@@ -104,6 +104,16 @@ make resident-uninstall
 make parallelism-check MEDIA="/abs/a.webm /abs/b.webm" INPUTS=4
 ```
 
+宿主**加速器**是另一件事，也不再被混进执行后端那张表（[ADR-022](docs/adr/ADR-022-宿主加速器能力探测与上报.md)）：
+`DescribeCapabilities` 的 `host_accelerators` 真去探测宿主（macOS 走 `system_profiler` 与 CoreML
+framework，Linux 走 `nvidia-smi`），三态 `available / unavailable / unknown` 不得互相塌陷——
+探测工具缺失、超时或读不懂一律落 `unknown` 而**不是**"不存在"。它只回答"这台宿主有没有这块加速器"：
+Rust 侧至今没有任何 in-process `ExecutionBackend`，`model_inference` 仍在 `unavailable_capabilities` 里。
+
+```sh
+make accelerator-check   # 四路对账：宿主直读 / LANG=zh_CN / PATH=/nonexistent / 与执行后端分离
+```
+
 `make media-replay` 需要 GStreamer 开发文件；没有的主机可加 `MEDIA_FEATURES=` 退回纯锚点报告
 （解码数据平面保持全零，并在 `blockers` 中声明未实现）。`make handoff-check` 在同一份素材上再跑一次
 跨进程数据面验收：Runtime 保留字节，独立 Python 进程按 lease 读取、校验摘要并释放，
@@ -149,6 +159,7 @@ tools/                  配置、代码生成、迁移、测试与真实媒体�
 - [开放式插件开发文档](开放式插件开发文档.md)
 - [素材工作台 MVP 工程设计稿（应用准备流程已实现）](docs/design/console-mvp.md)
 - [ADR-021：模型 worker 按分级并发上限限流（准入、重试与账目）](docs/adr/ADR-021-模型worker按分级并发上限限流.md)
+- [ADR-022：宿主加速器能力探测与上报（三态、只写真值、与进程能力分离）](docs/adr/ADR-022-宿主加速器能力探测与上报.md)
 - [ADR-019：运行时消费分级队列上限（准入，而不是改写）](docs/adr/ADR-019-运行时消费分级队列上限.md)
 - [ADR-015：macOS 常驻形态（launchd）与统一内存分级](docs/adr/ADR-015-macOS常驻形态与统一内存分级.md)
 - [ADR-014：ASR 插件与音频样本布局契约](docs/adr/ADR-014-ASR插件与音频样本布局契约.md)

@@ -1122,6 +1122,7 @@ dependencies = [
  "sensoryplex-media",
  "sensoryplex-sdk",
  "serde",
+ "serde_json",
  "serde_yaml",
  "thiserror",
  "tokio",

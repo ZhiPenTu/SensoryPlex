@@ -27,6 +27,12 @@ reserved，破坏语义的修改进入新的协议 major。当前为开发预览
   使用空值或 0，禁止用猜测值或默认容量填充。
 - `admitted_memory_kinds` 是该平台允许的 memory kind 集合，媒体准入不得超过它；
   Apple Silicon 额外允许零拷贝 `unified_memory`，其余平台只有 `cpu_shared_memory`。
+- `host_accelerators` 是**宿主**加速器事实（ADR-022），与 `backends` 分开：`backends` 回答
+  "本进程能不能执行推理"，`host_accelerators` 回答"这台宿主有没有这块加速器"。
+  三态 `ACCELERATOR_STATE_AVAILABLE / _UNAVAILABLE / _UNKNOWN` 不得互相塌陷：探测工具缺失、
+  超时或输出读不懂一律落 `_UNKNOWN` 并带上 `probe_*:<source>` 原因，**不许**写成"不存在"；
+  `state != AVAILABLE` 的每一条必须带 `unavailable_reason`，`AVAILABLE` 的那条不允许带。
+  `runtime_version` / `evidence` 只能放真读到的值（读不到就留空），`evidence` 里不出现文件系统路径。
 - `Health.unavailable_capabilities` 与 `DescribeCapabilities.unavailable_capabilities` 同源，
   两处不一致视为契约缺陷。
 

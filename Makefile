@@ -52,7 +52,7 @@ CARGO_HOST    ?= $(CARGO)
 PY_HOST       ?= uv run --frozen python
 
 .PHONY: setup configure proto check test integration format infra up down migrate gateway runtime pipeline-check runtime-smoke gateway-smoke media-replay media-check handoff-check backpressure-check
-.PHONY: stream-up stream-down stream-status stream-logs live-check model-check asr-check ocr-check embed-check index-check parallelism-check plugin-artifact capability-check
+.PHONY: stream-up stream-down stream-status stream-logs live-check model-check asr-check ocr-check embed-check index-check parallelism-check plugin-artifact capability-check accelerator-check
 .PHONY: media-test resident-probe resident-install resident-uninstall resident-status
 .PHONY: lint-ruff test-py test-contracts test-integration proto-generate plugin-artifact-check
 
@@ -146,7 +146,9 @@ pipeline-check:
 
 runtime-smoke:
 	$(CARGO_HOST) build --locked -p sensoryplex-runtime
-	$(EXEC_API) $(PY_API) tools/smoke_runtime.py
+	# 被验收的进程是**主机构建的原生二进制**（本机是 Mach-O），Linux 容器 exec 不了它，
+	# 因此这一步与 embed-check / parallelism-check 同类，固定在主机侧执行。
+	$(PY_HOST) tools/smoke_runtime.py
 
 gateway-smoke:
 	$(EXEC_GATEWAY) $(PY_GATEWAY) tools/smoke_gateway.py
@@ -181,6 +183,13 @@ backpressure-check:
 capability-check:
 	$(CARGO_HOST) build --locked --release -p sensoryplex-runtime --features "$(MEDIA_FEATURES)"
 	$(EXEC_API) $(PY_API) tools/verify_capability.py
+
+# ── 宿主加速器上报验收（ADR-022） ──────────────────────────────────────────
+# 要真读宿主（system_profiler / CoreML framework / nvidia-smi），这些只存在于主机，
+# 与 embed-check / parallelism-check 同类固定走主机侧执行。
+accelerator-check:
+	$(CARGO_HOST) build --locked --release -p sensoryplex-runtime
+	$(PY_HOST) tools/verify_accelerator_report.py
 
 handoff-check:
 	@test -n "$(MEDIA)" || { echo "usage: make handoff-check MEDIA=/absolute/path/to/authorized-sample.mp4"; exit 1; }

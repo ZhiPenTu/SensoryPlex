@@ -188,6 +188,8 @@ Whisper 会给 `avg_logprob` / `no_speech_prob` / `compression_ratio` / `tempera
 
 - 只在本机 `macos-aarch64` 上验收；`linux-x86_64`、Mac mini / 跨机未验证；
   `mlx` 的 Apple Silicon 定位意味着 ASR 的 Linux 路径需要另一套后端与另一轮验收。
-- OCR / BGE 未接入；CoreML / Metal 仍 `execution_backend_not_implemented`。
+- OCR / BGE 未接入；CoreML / Metal 仍 `execution_backend_not_implemented`（该条与
+  [ADR-022](ADR-022-宿主加速器能力探测与上报.md) 的 `host_accelerators` 是两张表：前者说
+  "本进程不执行推理"，后者说"这台宿主有没有"）。
 - 没有取消（中途打断推理）、超时、崩溃后 lease 回收的端到端样本。
 - `golden_path_verified` 恒为 false。

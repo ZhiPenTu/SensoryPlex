@@ -154,7 +154,9 @@ BGE 是本项目第四个端侧模型插件，也是第一个**消费上游观�
     Milvus 建索引、写入与检索都没有验证。
   - 维度版本化的**迁移**：换模型或换维度后旧向量是重建还是并存，尚未决策。
   - CoreML 的实际收益：见 §6，实测更慢；动态 shape 与量化算子的分区回退未解决。
-  - 运行时加速后端的能力上报仍把加速后端记为不可用（§6）；`metal` 在 ONNX 路径上不存在。
+  - 运行时侧的执行后端仍记为不可用（§6）——本版本没有任何 in-process `ExecutionBackend`；
+    宿主"有没有这块加速器"这部分已由 [ADR-022](ADR-022-宿主加速器能力探测与上报.md) 单独上报，
+    且 `metal` 在 ONNX 路径上不存在（Apple 侧的 ONNX 执行后端就是 CoreML EP）。
   - `linux-x86_64`、Mac mini / 跨机均未验证；插件仍未签名（只在 manifest 写明白原因），
     SBOM 只有结构预检；"绝不联网"只有 manifest 声明（`network: none`、`writablePaths: []`），
     没有 DNS/egress 层的强制执行。
