@@ -6,6 +6,7 @@
 import hashlib
 import secrets
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Annotated
 
 from edge_material_sdk.generated.node.v1 import node_pb2 as pb
@@ -16,6 +17,8 @@ from psycopg.types.json import Jsonb
 from ..contracts import audit, fail, identifier, one, out, parse, rows, text_field
 from ..infrastructure.catalog import plugin
 from ..infrastructure.preflight import check_preflight
+
+ROOT = Path(__file__).resolve().parents[5]
 
 
 def hash_token(token: str) -> str:
@@ -785,3 +788,120 @@ def register(app, pool, auth, settings):
             )
 
         return {"status": "recorded"}
+
+    register_install_endpoints(app, pool, settings)
+
+
+# ── 一键式安装脚本与自纳管分发 ─────────────────────────────────────────────
+
+
+def register_install_endpoints(app, pool, settings):
+    from fastapi import Request
+    from fastapi.responses import PlainTextResponse
+
+    @app.get("/v1/agent/install.sh", response_class=PlainTextResponse)
+    def download_install_script():
+        script_path = ROOT / "tools/install_agent.sh"
+        if not script_path.is_file():
+            fail(404, "install_script_not_found")
+        return PlainTextResponse(script_path.read_text(), media_type="text/x-shellscript")
+
+    @app.get("/v1/agent/node_agent.py", response_class=PlainTextResponse)
+    def download_agent_script():
+        agent_path = ROOT / "tools/node_agent.py"
+        if not agent_path.is_file():
+            fail(404, "agent_script_not_found")
+        return PlainTextResponse(agent_path.read_text(), media_type="text/x-python")
+
+    @app.post("/v1/agent/bootstrap-local")
+    def bootstrap_local_node(
+        request: Request,
+        body: Annotated[dict, Body()] = ...,
+    ):
+        """为同机数据面节点提供零摩擦自注册（仅限同机回环网络或携带本地凭据）。"""
+        client_host = request.client.host if request.client else ""
+        auth_header = request.headers.get("authorization", "")
+        token = auth_header.split(" ", 1)[1] if auth_header.startswith("Bearer ") else ""
+        is_local = client_host in {"127.0.0.1", "::1", "localhost", "testclient"}
+        has_token = settings.api_token and secrets.compare_digest(
+            token, settings.api_token.get_secret_value()
+        )
+
+        if not (is_local or has_token):
+            fail(403, "local_bootstrap_forbidden_from_remote")
+
+        req = parse(body, pb.EnrollNodeRequest)
+        session_token = "sp_node_" + secrets.token_hex(32)
+        shash = hash_token(session_token)
+
+        caps = req.capabilities
+        accels = (
+            [MessageToDict(a, preserving_proto_field_name=True) for a in caps.accelerators]
+            if caps and caps.accelerators
+            else []
+        )
+        labels = dict(caps.labels) if caps and caps.labels else {}
+        labels["auto_bootstrap"] = "true"
+        supported_arts = (
+            list(caps.supported_artifacts)
+            if caps and caps.supported_artifacts
+            else ["local_native", "container"]
+        )
+
+        with pool.connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO console_node(
+                    node_id, display_name, status, status_reason, platform, arch,
+                    cpu_cores, memory_bytes, unified_memory_bytes, accelerators,
+                    supported_artifacts, labels, is_co_located, session_token_hash,
+                    last_heartbeat_at, enrolled_at, updated_at
+                ) VALUES (
+                    %s, %s, 'ready', '', %s, %s,
+                    %s, %s, %s, %s,
+                    %s, %s, true, %s,
+                    now(), now(), now()
+                )
+                ON CONFLICT (node_id) DO UPDATE SET
+                    display_name=EXCLUDED.display_name,
+                    status='ready',
+                    status_reason='',
+                    platform=EXCLUDED.platform,
+                    arch=EXCLUDED.arch,
+                    cpu_cores=EXCLUDED.cpu_cores,
+                    memory_bytes=EXCLUDED.memory_bytes,
+                    unified_memory_bytes=EXCLUDED.unified_memory_bytes,
+                    accelerators=EXCLUDED.accelerators,
+                    supported_artifacts=EXCLUDED.supported_artifacts,
+                    labels=EXCLUDED.labels,
+                    is_co_located=true,
+                    session_token_hash=EXCLUDED.session_token_hash,
+                    last_heartbeat_at=now(),
+                    updated_at=now()
+                """,
+                (
+                    req.node_id,
+                    req.display_name or "Local Host (Co-located)",
+                    caps.platform if caps else "unknown",
+                    caps.arch if caps else "unknown",
+                    int(caps.cpu_cores) if caps else 1,
+                    int(caps.memory_bytes) if caps else 0,
+                    int(caps.unified_memory_bytes) if caps else 0,
+                    Jsonb(accels),
+                    supported_arts,
+                    Jsonb(labels),
+                    shash,
+                ),
+            )
+            audit(conn, req.node_id, "node.bootstrap_local.success", req.node_id)
+
+        return out(
+            {
+                "success": True,
+                "node_id": req.node_id,
+                "status": "NODE_STATUS_READY",
+                "session_token": session_token,
+                "message": "Local node auto-bootstrapped successfully",
+            },
+            pb.EnrollNodeResponse,
+        )

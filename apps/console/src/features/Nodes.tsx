@@ -207,12 +207,34 @@ export default function Nodes() {
                                     </button>
                                 </div>
                             </div>
-                            <div className="card" style={{ background: '#18181b', padding: '12px', margin: '12px 0' }}>
-                                <small style={{ display: 'block', marginBottom: '6px', color: '#a1a1aa' }}>Agent 启动命令参考：</small>
-                                <code className="mono" style={{ fontSize: '0.8rem', display: 'block', wordBreak: 'break-all' }}>
-                                    python tools/node_agent.py enroll --node-id {createdToken.node_id} --token {createdToken.token}
-                                </code>
-                            </div>
+                            {(() => {
+                                const host = window.location.hostname || "127.0.0.1";
+                                const oneLine = `curl -fsSL http://${host}:8091/v1/agent/install.sh | bash -s -- --token ${createdToken.token} --main-url http://${host}:8091 --node-id ${createdToken.node_id} --daemon`;
+                                return (
+                                    <div className="card" style={{ background: '#18181b', padding: '12px', margin: '12px 0', border: '1px solid #27272a' }}>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                                            <strong style={{ fontSize: '0.85rem', color: '#4ade80' }}>⚡ 推荐：单行命令一键安装（自动后台守护）</strong>
+                                            <button
+                                                className="ghost"
+                                                onClick={() => copyToken(oneLine)}
+                                                title="复制单行命令"
+                                            >
+                                                <Copy size={15} />
+                                                {copied ? '已复制' : '复制单行命令'}
+                                            </button>
+                                        </div>
+                                        <code className="mono" style={{ fontSize: '0.78rem', display: 'block', wordBreak: 'break-all', background: '#09090b', padding: '8px', borderRadius: '4px' }}>
+                                            {oneLine}
+                                        </code>
+                                        <small style={{ display: 'block', marginTop: '6px', color: '#a1a1aa', fontSize: '0.75rem' }}>
+                                            在目标机器终端执行：自动探测硬件画像、入网认证并作为后台守护服务常驻运行。
+                                        </small>
+                                    </div>
+                                );
+                            })()}
+                            <p className="subtle" style={{ fontSize: '0.78rem', margin: '6px 0' }}>
+                                💡 提示：与主节点同机的主机在执行 <code>./deploy/up.sh</code> 时已自动完成自纳管并常驻后台，无需手动注册。
+                            </p>
                             <small className="subtle">令牌有效期至: {date(createdToken.expires_at)}</small>
                             <div style={{ marginTop: '16px', display: 'flex', justifyContent: 'flex-end' }}>
                                 <button className="primary" onClick={() => setTokenModalOpen(false)}>

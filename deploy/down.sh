@@ -14,5 +14,10 @@ if [[ ! -f "${ENV_FILE}" ]]; then
 fi
 
 cd "${ROOT}"
+if [[ -f "${ROOT}/.data/agent/local-host.pid" ]]; then
+    echo "[down] 正在停止同机节点 Agent..."
+    "${ROOT}/tools/install_agent.sh" --stop --node-id local-host || true
+fi
+
 docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" down "$@"
 echo "[down] 已停止；如需清理数据，请使用 ./deploy/down.sh --volumes"

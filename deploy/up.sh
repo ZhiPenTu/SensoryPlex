@@ -38,3 +38,7 @@ echo "[up] 健康检查示例："
 echo "  curl -fsS http://127.0.0.1:${API_PORT}/livez"
 echo "  curl -fsS http://127.0.0.1:${API_PORT}/v1/health"
 echo "  curl -fsS http://127.0.0.1:${GATEWAY_PORT}/v1/health"
+
+echo
+echo "[up] 自动纳管并拉起本机同机计算节点 (ADR-026)..."
+"${ROOT}/tools/install_agent.sh" --local --daemon || true

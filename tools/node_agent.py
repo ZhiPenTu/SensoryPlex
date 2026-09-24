@@ -141,6 +141,24 @@ class NodeAgentClient:
             except json.JSONDecodeError:
                 raise RuntimeError(f"HTTP {e.code}: {err_body}") from e
 
+    def bootstrap_local(
+        self,
+        display_name: str,
+        capabilities: dict[str, Any],
+        api_token: str = "",
+    ) -> dict[str, Any]:
+        payload = {
+            "enrollment_token": "local-bootstrap",
+            "node_id": self.node_id,
+            "display_name": display_name or self.node_id,
+            "is_co_located": True,
+            "capabilities": capabilities,
+        }
+        tok = api_token or os.environ.get("SENSORYPLEX_API_TOKEN", "")
+        res = self._post("/v1/agent/bootstrap-local", payload, token=tok)
+        self.session_token = res.get("session_token", "")
+        return res
+
     def enroll(
         self,
         enrollment_token: str,
@@ -286,7 +304,8 @@ def main():
     enroll_parser = subparsers.add_parser("enroll", help="Enroll node into cluster")
     enroll_parser.add_argument("--main-url", default="http://127.0.0.1:8091")
     enroll_parser.add_argument("--node-id", required=True)
-    enroll_parser.add_argument("--token", required=True)
+    enroll_parser.add_argument("--token", default="")
+    enroll_parser.add_argument("--local", action="store_true", help="Auto-bootstrap local node")
     enroll_parser.add_argument("--display-name", default="")
     enroll_parser.add_argument("--co-located", action="store_true")
     enroll_parser.add_argument("--state-file", default="")
@@ -309,7 +328,13 @@ def main():
             else probe_host_capabilities()
         )
         client = NodeAgentClient(args.main_url, args.node_id)
-        res = client.enroll(args.token, args.display_name, args.co_located, caps)
+        if args.local:
+            res = client.bootstrap_local(args.display_name, caps)
+        else:
+            if not args.token:
+                print("[agent] Error: --token required for remote enrollment", file=sys.stderr)
+                sys.exit(1)
+            res = client.enroll(args.token, args.display_name, args.co_located, caps)
         print(f"[agent] Enrolled successfully: node_id={args.node_id} status={res.get('status')}")
         if args.state_file:
             sf = Path(args.state_file)
@@ -340,10 +365,15 @@ def main():
 
         client = NodeAgentClient(main_url, args.node_id, token)
 
+        heartbeat_count = 0
         while True:
             try:
                 hb_res = client.heartbeat()
                 status = hb_res.get("status", "")
+                heartbeat_count += 1
+                if heartbeat_count % 12 == 1:
+                    print(f"[agent] Heartbeat active: node={args.node_id} status={status}")
+
                 if status == "NODE_STATUS_REVOKED":
                     print(f"[agent] Node {args.node_id} revoked by main node", file=sys.stderr)
                     sys.exit(2)
