@@ -540,6 +540,7 @@ export interface PreflightRequest {
   config_id: string;
   requires_data_locality: boolean;
   data_plane_node_id: string;
+  config?: JsonObject;
 }
 export interface PreflightResponse {
   eligible: boolean;

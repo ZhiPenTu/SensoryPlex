@@ -168,6 +168,7 @@ message PreflightRequest {
   string config_id = 3;
   bool requires_data_locality = 4;
   string data_plane_node_id = 5;
+  google.protobuf.Struct config = 6;
 }
 
 message PreflightResponse {

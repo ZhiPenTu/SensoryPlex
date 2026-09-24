@@ -11,11 +11,10 @@ import platform
 import subprocess
 import sys
 import time
-from pathlib import Path
-from typing import Any
-
 import urllib.error
 import urllib.request
+from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -23,20 +22,23 @@ ROOT = Path(__file__).resolve().parents[1]
 def probe_host_capabilities() -> dict[str, Any]:
     """探测当前主机的真实硬件能力与运行时环境。"""
     system_name = platform.system().lower()
-    plat = "macos" if system_name == "darwin" else ("linux" if system_name == "linux" else system_name)
+    if system_name == "darwin":
+        plat = "macos"
+    elif system_name == "linux":
+        plat = "linux"
+    else:
+        plat = system_name
     machine = platform.machine().lower()
     arch = "aarch64" if machine in {"arm64", "aarch64"} else machine
 
     cpu_cores = os.cpu_count() or 1
 
-    # 获取物理内存
     memory_bytes = 0
     unified_memory = 0
     if plat == "macos":
         try:
             out = subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True)
             memory_bytes = int(out.strip())
-            # Apple Silicon 上统一内存与主存共享
             if arch == "aarch64":
                 unified_memory = memory_bytes
         except Exception:
@@ -51,41 +53,45 @@ def probe_host_capabilities() -> dict[str, Any]:
         except Exception:
             memory_bytes = 8 * 1024 * 1024 * 1024
 
-    # 探测加速器
     accelerators = []
     if plat == "macos" and arch == "aarch64":
-        accelerators.append({
-            "accelerator": "metal",
-            "platform": "macos",
-            "state": 1,  # AVAILABLE
-            "detection_source": "system_profiler",
-            "runtime_version": "metal4",
-            "evidence": ["spdisplays_mtlgpufamilysupport=metal4"],
-            "unavailable_reason": "",
-        })
-        accelerators.append({
-            "accelerator": "coreml",
-            "platform": "macos",
-            "state": 1,  # AVAILABLE
-            "detection_source": "framework_info",
-            "runtime_version": "3520.5.1",
-            "evidence": ["cf_bundle_version=3520.5.1"],
-            "unavailable_reason": "",
-        })
+        accelerators.append(
+            {
+                "accelerator": "metal",
+                "platform": "macos",
+                "state": 1,
+                "detection_source": "system_profiler",
+                "runtime_version": "metal4",
+                "evidence": ["spdisplays_mtlgpufamilysupport=metal4"],
+                "unavailable_reason": "",
+            }
+        )
+        accelerators.append(
+            {
+                "accelerator": "coreml",
+                "platform": "macos",
+                "state": 1,
+                "detection_source": "framework_info",
+                "runtime_version": "3520.5.1",
+                "evidence": ["cf_bundle_version=3520.5.1"],
+                "unavailable_reason": "",
+            }
+        )
     elif plat == "linux":
-        # 探测 nvidia-smi
         try:
             smi = subprocess.check_output(["which", "nvidia-smi"], stderr=subprocess.DEVNULL)
             if smi:
-                accelerators.append({
-                    "accelerator": "cuda",
-                    "platform": "linux",
-                    "state": 1,
-                    "detection_source": "nvidia_smi",
-                    "runtime_version": "cuda-driver",
-                    "evidence": ["nvidia-smi=present"],
-                    "unavailable_reason": "",
-                })
+                accelerators.append(
+                    {
+                        "accelerator": "cuda",
+                        "platform": "linux",
+                        "state": 1,
+                        "detection_source": "nvidia_smi",
+                        "runtime_version": "cuda-driver",
+                        "evidence": ["nvidia-smi=present"],
+                        "unavailable_reason": "",
+                    }
+                )
         except Exception:
             pass
 
@@ -115,16 +121,13 @@ class NodeAgentClient:
     def _post(self, path: str, payload: dict[str, Any], token: str | None = None) -> dict[str, Any]:
         url = f"{self.main_url}{path}"
         data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            url,
-            data=data,
-            headers={
-                "Content-Type": "application/json",
-                "User-Agent": f"SensoryPlex-NodeAgent/{self.node_id}",
-                **({"Authorization": f"Bearer {token}"} if token else {}),
-            },
-            method="POST",
-        )
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": f"SensoryPlex-NodeAgent/{self.node_id}",
+        }
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
         try:
             with urllib.request.urlopen(req, timeout=10) as resp:
                 body = resp.read().decode("utf-8")
@@ -133,7 +136,8 @@ class NodeAgentClient:
             err_body = e.read().decode("utf-8")
             try:
                 err_json = json.loads(err_body)
-                raise RuntimeError(f"HTTP {e.code}: {err_json.get('reason_code') or err_json.get('detail')}") from e
+                code = err_json.get("reason_code") or err_json.get("detail")
+                raise RuntimeError(f"HTTP {e.code}: {code}") from e
             except json.JSONDecodeError:
                 raise RuntimeError(f"HTTP {e.code}: {err_body}") from e
 
@@ -202,9 +206,8 @@ def execute_intent(intent: dict[str, Any], client: NodeAgentClient) -> bool:
     plugin_id = intent.get("plugin_id", "")
     digest = intent.get("artifact_digest", "")
 
-    print(f"[agent] Processing intent {intent_id}: action={action} plugin={plugin_id} digest={digest[:20]}...")
+    print(f"[agent] Processing intent {intent_id}: action={action} plugin={plugin_id}...")
 
-    # 校验不可变 artifact digest
     if not (digest.startswith("sha256:") and len(digest) == 71):
         client.report_deployment(
             intent_id=intent_id,
@@ -218,8 +221,11 @@ def execute_intent(intent: dict[str, Any], client: NodeAgentClient) -> bool:
         return False
 
     if action in {"install", "rollback"}:
-        # 模拟/真实准备 artifact 环境
-        target_state = "PLUGIN_INSTANCE_STATE_READY" if action == "install" else "PLUGIN_INSTANCE_STATE_ROLLED_BACK"
+        target_state = (
+            "PLUGIN_INSTANCE_STATE_READY"
+            if action == "install"
+            else "PLUGIN_INSTANCE_STATE_ROLLED_BACK"
+        )
         client.report_deployment(
             intent_id=intent_id,
             instance_id=instance_id,
@@ -277,41 +283,48 @@ def main():
     parser = argparse.ArgumentParser(description="SensoryPlex Node Agent")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    # enroll 命令
     enroll_parser = subparsers.add_parser("enroll", help="Enroll node into cluster")
-    enroll_parser.add_argument("--main-url", default="http://127.0.0.1:8091", help="Main node URL")
-    enroll_parser.add_argument("--node-id", required=True, help="Unique node identifier")
-    enroll_parser.add_argument("--token", required=True, help="Enrollment token")
-    enroll_parser.add_argument("--display-name", default="", help="Display name")
-    enroll_parser.add_argument("--co-located", action="store_true", help="Node is co-located with main node")
-    enroll_parser.add_argument("--state-file", default="", help="Path to persist agent session")
-    enroll_parser.add_argument("--override-capabilities", default="", help="JSON string to override capabilities (for testing)")
+    enroll_parser.add_argument("--main-url", default="http://127.0.0.1:8091")
+    enroll_parser.add_argument("--node-id", required=True)
+    enroll_parser.add_argument("--token", required=True)
+    enroll_parser.add_argument("--display-name", default="")
+    enroll_parser.add_argument("--co-located", action="store_true")
+    enroll_parser.add_argument("--state-file", default="")
+    enroll_parser.add_argument("--override-capabilities", default="")
 
-    # run 命令
     run_parser = subparsers.add_parser("run", help="Run heartbeat loop")
-    run_parser.add_argument("--main-url", default="http://127.0.0.1:8091", help="Main node URL")
-    run_parser.add_argument("--node-id", required=True, help="Unique node identifier")
-    run_parser.add_argument("--session-token", default="", help="Session token (if not in state file)")
-    run_parser.add_argument("--state-file", default="", help="Path to agent session state")
-    run_parser.add_argument("--interval-s", type=float, default=5.0, help="Heartbeat interval in seconds")
-    run_parser.add_argument("--once", action="store_true", help="Send one heartbeat and process pending intents once")
+    run_parser.add_argument("--main-url", default="http://127.0.0.1:8091")
+    run_parser.add_argument("--node-id", required=True)
+    run_parser.add_argument("--session-token", default="")
+    run_parser.add_argument("--state-file", default="")
+    run_parser.add_argument("--interval-s", type=float, default=5.0)
+    run_parser.add_argument("--once", action="store_true")
 
     args = parser.parse_args()
 
     if args.command == "enroll":
-        caps = json.loads(args.override_capabilities) if args.override_capabilities else probe_host_capabilities()
+        caps = (
+            json.loads(args.override_capabilities)
+            if args.override_capabilities
+            else probe_host_capabilities()
+        )
         client = NodeAgentClient(args.main_url, args.node_id)
         res = client.enroll(args.token, args.display_name, args.co_located, caps)
         print(f"[agent] Enrolled successfully: node_id={args.node_id} status={res.get('status')}")
         if args.state_file:
             sf = Path(args.state_file)
             sf.parent.mkdir(parents=True, exist_ok=True)
-            sf.write_text(json.dumps({
-                "main_url": args.main_url,
-                "node_id": args.node_id,
-                "session_token": client.session_token,
-                "is_co_located": args.co_located,
-            }, indent=2))
+            sf.write_text(
+                json.dumps(
+                    {
+                        "main_url": args.main_url,
+                        "node_id": args.node_id,
+                        "session_token": client.session_token,
+                        "is_co_located": args.co_located,
+                    },
+                    indent=2,
+                )
+            )
             print(f"[agent] State saved to {args.state_file}")
 
     elif args.command == "run":
@@ -322,7 +335,7 @@ def main():
             token = token or data.get("session_token", "")
             main_url = main_url or data.get("main_url", "")
         if not token:
-            print("[agent] Error: session_token required (provide via flag or state file)", file=sys.stderr)
+            print("[agent] Error: session_token required", file=sys.stderr)
             sys.exit(1)
 
         client = NodeAgentClient(main_url, args.node_id, token)
@@ -332,7 +345,7 @@ def main():
                 hb_res = client.heartbeat()
                 status = hb_res.get("status", "")
                 if status == "NODE_STATUS_REVOKED":
-                    print(f"[agent] Node {args.node_id} has been revoked by main node. Terminating agent.", file=sys.stderr)
+                    print(f"[agent] Node {args.node_id} revoked by main node", file=sys.stderr)
                     sys.exit(2)
 
                 intents = hb_res.get("pending_intents", [])
@@ -340,7 +353,7 @@ def main():
                     execute_intent(intent, client)
 
                 if args.once:
-                    print(f"[agent] Heartbeat completed once: status={status}, processed={len(intents)}")
+                    print(f"[agent] Heartbeat once: status={status}, processed={len(intents)}")
                     break
 
                 interval = hb_res.get("heartbeat_interval_ms", 5000) / 1000.0

@@ -6,9 +6,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "plugins/python/common/src"))
 
-from edge_material_sdk.generated.gateway.v1 import console_pb2, gateway_pb2
-from edge_material_sdk.generated.node.v1 import node_pb2
-from google.protobuf.descriptor import FieldDescriptor as F
+from edge_material_sdk.generated.gateway.v1 import console_pb2, gateway_pb2  # noqa: E402
+from edge_material_sdk.generated.node.v1 import node_pb2  # noqa: E402
+from google.protobuf.descriptor import FieldDescriptor as F  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "apps/console/src/api/contracts.ts"

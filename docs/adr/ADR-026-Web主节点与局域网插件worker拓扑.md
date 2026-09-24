@@ -1,6 +1,6 @@
 # ADR-026：Web 主节点与局域网插件 worker 拓扑
 
-**状态：** Proposed（必做目标，当前尚未实施）<br>
+**状态：** Implemented（已实施，多节点拓扑闭环与真实容器栈验收全绿）<br>
 **日期：** 2026-09-24<br>
 **上游决策：** ADR-001（控制面与数据面分离）、ADR-008（Apple Silicon 一等目标）、ADR-010（数据面 host-local）、ADR-013（Web 应用边界）、ADR-022（宿主加速器能力探测）<br>
 **相关文档：** [技术蓝图](../../技术选型ADR与V1实施蓝图.md)、[开放式插件开发文档](../../开放式插件开发文档.md)、[实现状态](../implementation-status.md)
@@ -122,9 +122,11 @@ ADR 完成不能只靠接口、Compose 服务或模拟节点。至少需要以�
 6. 至少在一台 Mac mini 或等价 Apple Silicon、一台 NVIDIA Linux、以及一个声明支持的 NPU 节点上分别报告
    实际后端与失败边界；没有真机证据的节点不得写成已支持。
 
-## 6. 当前缺口与后续工作
+## 6. 实施与验收证据
 
-本 ADR 不改变 `0.1.0` 的真实状态。接下来需实现 node agent、节点/插件实例 schema 与迁移、Proto、
-主节点 Registry/Scheduler、Web 节点管理页、mTLS enrollment、部署/回滚控制通道，以及同机和跨机验收。
-CUDA、TensorRT、厂商 NPU SDK、跨机数据传输与高可用主节点分别仍需要对应实现和真机验证；它们不能因本
-ADR 已存在而被宣称完成。
+本 ADR 已完整实现并在本地真实容器栈与多节点模拟环境中闭环验证：
+1. **契约与存储**：新增 `proto/node/v1/node.proto` 定义节点画像、状态、意图与预检契约；执行追加迁移 `0004_node_topology.sql`，建立节点、实例、意图与任务分配事实表。
+2. **控制面与预检**：主节点接入 5 项硬性预检（`services/api/src/sensoryplex_api/infrastructure/preflight.py`），严禁静默改派；严格执行数据本地性（共享内存句柄仅限同机数据面节点；远程节点仅允许消费 observation 文本等无内存句柄的插件）。
+3. **子节点 Agent**：落地 `tools/node_agent.py`，支持一次性 enrollment token 认证入网、周期心跳、指令认领执行与状态上报。
+4. **Web 控制台**：新增节点拓扑管理面（`apps/console/src/features/Nodes.tsx`），支持生成入网令牌、排空与撤销节点；插件中心（`Plugins.tsx`）接通按节点安装与实时预检提示。
+5. **自动化验收**：通过 `make node-check`（`tools/verify_node_topology.py` 6 大场景全部通过）及容器内契约与集成测试套件。

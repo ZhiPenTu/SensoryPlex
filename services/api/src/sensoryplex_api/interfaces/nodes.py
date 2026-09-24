@@ -5,8 +5,8 @@
 
 import hashlib
 import secrets
-from datetime import datetime, timedelta, timezone
-from typing import Annotated, Any
+from datetime import UTC, datetime, timedelta
+from typing import Annotated
 
 from edge_material_sdk.generated.node.v1 import node_pb2 as pb
 from fastapi import Body, Depends, Header, Query
@@ -14,12 +14,24 @@ from google.protobuf.json_format import MessageToDict
 from psycopg.types.json import Jsonb
 
 from ..contracts import audit, fail, identifier, one, out, parse, rows, text_field
-from ..infrastructure.catalog import catalog, plugin
+from ..infrastructure.catalog import plugin
 from ..infrastructure.preflight import check_preflight
 
 
 def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+def to_proto_node_status(status_str: str) -> str:
+    mapping = {
+        "candidate": "NODE_STATUS_CANDIDATE",
+        "enrolling": "NODE_STATUS_ENROLLING",
+        "ready": "NODE_STATUS_READY",
+        "draining": "NODE_STATUS_DRAINING",
+        "offline": "NODE_STATUS_OFFLINE",
+        "revoked": "NODE_STATUS_REVOKED",
+    }
+    return mapping.get(status_str, "NODE_STATUS_UNSPECIFIED")
 
 
 def register(app, pool, auth, settings):
@@ -32,7 +44,6 @@ def register(app, pool, auth, settings):
         p: Annotated[object, Depends(auth.require("plugins:manage"))] = None,
     ):
         with pool.connection() as conn:
-            # 自动维护超期心跳为 offline
             conn.execute(
                 """
                 UPDATE console_node
@@ -42,20 +53,27 @@ def register(app, pool, auth, settings):
             )
             node_rows = rows(
                 conn,
-                "SELECT * FROM console_node ORDER BY is_co_located DESC, enrolled_at DESC LIMIT %s OFFSET %s",
+                (
+                    "SELECT * FROM console_node "
+                    "ORDER BY is_co_located DESC, enrolled_at DESC "
+                    "LIMIT %s OFFSET %s"
+                ),
                 (limit, offset),
             )
             total = conn.execute("SELECT count(*) FROM console_node").fetchone()[0]
 
-            # 水合每个节点的插件实例
             items = []
             for nr in node_rows:
                 inst_rows = rows(
                     conn,
-                    "SELECT * FROM console_plugin_instance WHERE node_id=%s ORDER BY created_at DESC",
+                    (
+                        "SELECT * FROM console_plugin_instance "
+                        "WHERE node_id=%s ORDER BY created_at DESC"
+                    ),
                     (nr["node_id"],),
                 )
                 item = dict(nr)
+                item["status"] = to_proto_node_status(nr["status"])
                 item["capabilities"] = {
                     "platform": nr["platform"],
                     "arch": nr["arch"],
@@ -80,13 +98,14 @@ def register(app, pool, auth, settings):
         expires_minutes = max(1, min(int(body.get("expires_in_minutes", 60)), 1440))
         token = "sp_enroll_" + secrets.token_hex(24)
         thash = hash_token(token)
-        expires_at = datetime.now(timezone.utc) + timedelta(minutes=expires_minutes)
+        expires_at = datetime.now(UTC) + timedelta(minutes=expires_minutes)
 
         with pool.connection() as conn:
             conn.execute(
                 """
-                INSERT INTO console_node_enrollment_token(token_hash, node_id, created_by, expires_at)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO console_node_enrollment_token(
+                    token_hash, node_id, created_by, expires_at
+                ) VALUES (%s, %s, %s, %s)
                 """,
                 (thash, node_id, p.name, expires_at),
             )
@@ -97,7 +116,7 @@ def register(app, pool, auth, settings):
                 "token": token,
                 "node_id": node_id,
                 "expires_at": expires_at.isoformat(),
-                "created_at": datetime.now(timezone.utc).isoformat(),
+                "created_at": datetime.now(UTC).isoformat(),
             },
             pb.EnrollmentToken,
         )
@@ -113,10 +132,11 @@ def register(app, pool, auth, settings):
                 fail(404, "node_not_found")
             inst_rows = rows(
                 conn,
-                "SELECT * FROM console_plugin_instance WHERE node_id=%s ORDER BY created_at DESC",
+                ("SELECT * FROM console_plugin_instance WHERE node_id=%s ORDER BY created_at DESC"),
                 (node_id,),
             )
             item = dict(nr)
+            item["status"] = to_proto_node_status(nr["status"])
             item["capabilities"] = {
                 "platform": nr["platform"],
                 "arch": nr["arch"],
@@ -136,17 +156,25 @@ def register(app, pool, auth, settings):
         p: Annotated[object, Depends(auth.require("plugins:manage"))] = None,
     ):
         with pool.connection() as conn:
-            nr = one(conn, "SELECT status FROM console_node WHERE node_id=%s FOR UPDATE", (node_id,))
+            nr = one(
+                conn,
+                "SELECT status FROM console_node WHERE node_id=%s FOR UPDATE",
+                (node_id,),
+            )
             if not nr:
                 fail(404, "node_not_found")
             if nr["status"] == "revoked":
                 fail(409, "node_already_revoked")
             conn.execute(
-                "UPDATE console_node SET status='draining', status_reason='Admin drain requested', updated_at=now() WHERE node_id=%s",
+                (
+                    "UPDATE console_node SET status='draining', "
+                    "status_reason='Admin drain requested', updated_at=now() "
+                    "WHERE node_id=%s"
+                ),
                 (node_id,),
             )
             audit(conn, p.name, "node.drain", node_id)
-        return out(get_node(node_id, p), pb.NodeInfo)
+        return get_node(node_id, p)
 
     @app.post("/admin/v1/nodes/{node_id}:revoke")
     def revoke_node(
@@ -154,15 +182,23 @@ def register(app, pool, auth, settings):
         p: Annotated[object, Depends(auth.require("plugins:manage"))] = None,
     ):
         with pool.connection() as conn:
-            nr = one(conn, "SELECT status FROM console_node WHERE node_id=%s FOR UPDATE", (node_id,))
+            nr = one(
+                conn,
+                "SELECT status FROM console_node WHERE node_id=%s FOR UPDATE",
+                (node_id,),
+            )
             if not nr:
                 fail(404, "node_not_found")
             conn.execute(
-                "UPDATE console_node SET status='revoked', status_reason='Revoked by administrator', session_token_hash=NULL, updated_at=now() WHERE node_id=%s",
+                (
+                    "UPDATE console_node SET status='revoked', "
+                    "status_reason='Revoked by administrator', session_token_hash=NULL, "
+                    "updated_at=now() WHERE node_id=%s"
+                ),
                 (node_id,),
             )
             audit(conn, p.name, "node.revoke", node_id)
-        return out(get_node(node_id, p), pb.NodeInfo)
+        return get_node(node_id, p)
 
     @app.post("/admin/v1/nodes/{node_id}/preflight")
     def preflight(
@@ -174,18 +210,20 @@ def register(app, pool, auth, settings):
         p_entry = plugin(settings, req.plugin_id)
         with pool.connection() as conn:
             nr = one(conn, "SELECT * FROM console_node WHERE node_id=%s", (node_id,))
-            cfg = None
-            if req.config_id:
-                cfg_row = one(conn, "SELECT config FROM console_plugin_config WHERE id=%s", (req.config_id,))
+            cfg = MessageToDict(req.config) if req.config else None
+            if req.config_id and not cfg:
+                cfg_row = one(
+                    conn,
+                    "SELECT config FROM console_plugin_config WHERE id=%s",
+                    (req.config_id,),
+                )
                 if cfg_row:
                     cfg = cfg_row["config"]
 
-            result = check_preflight(
-                nr,
-                p_entry,
-                config=cfg,
-                data_plane_node_id=req.data_plane_node_id or (nr["node_id"] if nr and nr["is_co_located"] else None),
+            target_dp = req.data_plane_node_id or (
+                nr["node_id"] if nr and nr["is_co_located"] else None
             )
+            result = check_preflight(nr, p_entry, config=cfg, data_plane_node_id=target_dp)
             action = "node.preflight.pass" if result["eligible"] else "node.preflight.reject"
             audit(conn, p.name, action, f"{node_id}:{req.plugin_id}:{result['reason_code']}")
 
@@ -198,7 +236,6 @@ def register(app, pool, auth, settings):
         body: Annotated[dict, Body()] = ...,
         p: Annotated[object, Depends(auth.require("plugins:manage"))] = None,
     ):
-        """在选定节点部署插件：前置硬性 5 项预检；失败拒绝并落审计；生成不可变部署意图。"""
         p_entry = plugin(settings, plugin_id)
         config_id = body.get("config_id")
         config = body.get("config", {})
@@ -209,13 +246,22 @@ def register(app, pool, auth, settings):
                 fail(404, "node_not_found")
 
             if config_id and not config:
-                cfg_row = one(conn, "SELECT config FROM console_plugin_config WHERE id=%s", (config_id,))
+                cfg_row = one(
+                    conn,
+                    "SELECT config FROM console_plugin_config WHERE id=%s",
+                    (config_id,),
+                )
                 if cfg_row:
                     config = cfg_row["config"]
 
             pre_res = check_preflight(nr, p_entry, config=config)
             if not pre_res["eligible"]:
-                audit(conn, p.name, "node.preflight.reject", f"{node_id}:{plugin_id}:{pre_res['reason_code']}")
+                audit(
+                    conn,
+                    p.name,
+                    "node.preflight.reject",
+                    f"{node_id}:{plugin_id}:{pre_res['reason_code']}",
+                )
                 fail(422, pre_res["reason_code"])
 
             audit(conn, p.name, "node.preflight.pass", f"{node_id}:{plugin_id}")
@@ -281,7 +327,12 @@ def register(app, pool, auth, settings):
                     p.name,
                 ),
             )
-            audit(conn, p.name, "plugin.instance.deploy", f"{node_id}:{plugin_id}:{p_entry['digest']}")
+            audit(
+                conn,
+                p.name,
+                "plugin.instance.deploy",
+                f"{node_id}:{plugin_id}:{p_entry['digest']}",
+            )
 
         return out(inst, pb.PluginInstance)
 
@@ -294,7 +345,10 @@ def register(app, pool, auth, settings):
         with pool.connection() as conn:
             inst = one(
                 conn,
-                "SELECT * FROM console_plugin_instance WHERE node_id=%s AND plugin_id=%s FOR UPDATE",
+                (
+                    "SELECT * FROM console_plugin_instance "
+                    "WHERE node_id=%s AND plugin_id=%s FOR UPDATE"
+                ),
                 (node_id, plugin_id),
             )
             if not inst:
@@ -324,13 +378,19 @@ def register(app, pool, auth, settings):
                 conn,
                 """
                 UPDATE console_plugin_instance
-                SET desired_state='ready', actual_state='rolled_back', artifact_digest=%s, previous_digest=NULL, updated_at=now()
+                SET desired_state='ready', actual_state='rolled_back',
+                    artifact_digest=%s, previous_digest=NULL, updated_at=now()
                 WHERE instance_id=%s
                 RETURNING *
                 """,
                 (target_digest, inst["instance_id"]),
             )
-            audit(conn, p.name, "plugin.instance.rollback", f"{node_id}:{plugin_id}:{target_digest}")
+            audit(
+                conn,
+                p.name,
+                "plugin.instance.rollback",
+                f"{node_id}:{plugin_id}:{target_digest}",
+            )
         return out(updated, pb.PluginInstance)
 
     @app.post("/admin/v1/nodes/{node_id}/plugins/{plugin_id}:start")
@@ -342,7 +402,10 @@ def register(app, pool, auth, settings):
         with pool.connection() as conn:
             inst = one(
                 conn,
-                "SELECT * FROM console_plugin_instance WHERE node_id=%s AND plugin_id=%s FOR UPDATE",
+                (
+                    "SELECT * FROM console_plugin_instance "
+                    "WHERE node_id=%s AND plugin_id=%s FOR UPDATE"
+                ),
                 (node_id, plugin_id),
             )
             if not inst:
@@ -354,11 +417,22 @@ def register(app, pool, auth, settings):
                     id, node_id, instance_id, action, artifact_digest, config, state, created_by
                 ) VALUES (%s, %s, %s, 'start', %s, %s, 'pending', %s)
                 """,
-                (intent_id, node_id, inst["instance_id"], inst["artifact_digest"], Jsonb(inst["config"]), p.name),
+                (
+                    intent_id,
+                    node_id,
+                    inst["instance_id"],
+                    inst["artifact_digest"],
+                    Jsonb(inst["config"]),
+                    p.name,
+                ),
             )
             updated = one(
                 conn,
-                "UPDATE console_plugin_instance SET desired_state='ready', updated_at=now() WHERE instance_id=%s RETURNING *",
+                (
+                    "UPDATE console_plugin_instance "
+                    "SET desired_state='ready', updated_at=now() "
+                    "WHERE instance_id=%s RETURNING *"
+                ),
                 (inst["instance_id"],),
             )
             audit(conn, p.name, "plugin.instance.start", f"{node_id}:{plugin_id}")
@@ -373,7 +447,10 @@ def register(app, pool, auth, settings):
         with pool.connection() as conn:
             inst = one(
                 conn,
-                "SELECT * FROM console_plugin_instance WHERE node_id=%s AND plugin_id=%s FOR UPDATE",
+                (
+                    "SELECT * FROM console_plugin_instance "
+                    "WHERE node_id=%s AND plugin_id=%s FOR UPDATE"
+                ),
                 (node_id, plugin_id),
             )
             if not inst:
@@ -385,11 +462,22 @@ def register(app, pool, auth, settings):
                     id, node_id, instance_id, action, artifact_digest, config, state, created_by
                 ) VALUES (%s, %s, %s, 'stop', %s, %s, 'pending', %s)
                 """,
-                (intent_id, node_id, inst["instance_id"], inst["artifact_digest"], Jsonb(inst["config"]), p.name),
+                (
+                    intent_id,
+                    node_id,
+                    inst["instance_id"],
+                    inst["artifact_digest"],
+                    Jsonb(inst["config"]),
+                    p.name,
+                ),
             )
             updated = one(
                 conn,
-                "UPDATE console_plugin_instance SET desired_state='stopped', actual_state='stopped', updated_at=now() WHERE instance_id=%s RETURNING *",
+                (
+                    "UPDATE console_plugin_instance "
+                    "SET desired_state='stopped', actual_state='stopped', updated_at=now() "
+                    "WHERE instance_id=%s RETURNING *"
+                ),
                 (inst["instance_id"],),
             )
             audit(conn, p.name, "plugin.instance.stop", f"{node_id}:{plugin_id}")
@@ -404,7 +492,10 @@ def register(app, pool, auth, settings):
         with pool.connection() as conn:
             inst = one(
                 conn,
-                "SELECT * FROM console_plugin_instance WHERE node_id=%s AND plugin_id=%s FOR UPDATE",
+                (
+                    "SELECT * FROM console_plugin_instance "
+                    "WHERE node_id=%s AND plugin_id=%s FOR UPDATE"
+                ),
                 (node_id, plugin_id),
             )
             if not inst:
@@ -416,11 +507,22 @@ def register(app, pool, auth, settings):
                     id, node_id, instance_id, action, artifact_digest, config, state, created_by
                 ) VALUES (%s, %s, %s, 'uninstall', %s, %s, 'pending', %s)
                 """,
-                (intent_id, node_id, inst["instance_id"], inst["artifact_digest"], Jsonb(inst["config"]), p.name),
+                (
+                    intent_id,
+                    node_id,
+                    inst["instance_id"],
+                    inst["artifact_digest"],
+                    Jsonb(inst["config"]),
+                    p.name,
+                ),
             )
             updated = one(
                 conn,
-                "UPDATE console_plugin_instance SET desired_state='uninstalled', actual_state='uninstalled', updated_at=now() WHERE instance_id=%s RETURNING *",
+                (
+                    "UPDATE console_plugin_instance "
+                    "SET desired_state='uninstalled', actual_state='uninstalled', "
+                    "updated_at=now() WHERE instance_id=%s RETURNING *"
+                ),
                 (inst["instance_id"],),
             )
             audit(conn, p.name, "plugin.instance.uninstall", f"{node_id}:{plugin_id}")
@@ -430,7 +532,6 @@ def register(app, pool, auth, settings):
 
     @app.post("/v1/agent/enroll")
     def agent_enroll(body: Annotated[dict, Body()] = ...):
-        """子节点 Agent 首次注册或重新受领凭据。"""
         req = parse(body, pb.EnrollNodeRequest)
         thash = hash_token(req.enrollment_token)
 
@@ -444,25 +545,31 @@ def register(app, pool, auth, settings):
                 fail(401, "enrollment_token_invalid")
             if tok["used"]:
                 fail(401, "enrollment_token_already_used")
-            if tok["expires_at"] < datetime.now(timezone.utc):
+            if tok["expires_at"] < datetime.now(UTC):
                 fail(401, "enrollment_token_expired")
             if tok["node_id"] != req.node_id:
                 fail(401, "enrollment_token_node_mismatch")
 
-            # 标记 token 已使用
             conn.execute(
                 "UPDATE console_node_enrollment_token SET used=true WHERE token_hash=%s",
                 (thash,),
             )
 
-            # 生成 session_token
             session_token = "sp_node_" + secrets.token_hex(32)
             shash = hash_token(session_token)
 
-            caps = MessageToDict(req.capabilities) if req.capabilities else {}
-            accels = caps.get("accelerators", [])
-            labels = caps.get("labels", {})
-            supported_arts = caps.get("supported_artifacts", ["local_native"])
+            caps = req.capabilities
+            accels = (
+                [MessageToDict(a, preserving_proto_field_name=True) for a in caps.accelerators]
+                if caps and caps.accelerators
+                else []
+            )
+            labels = dict(caps.labels) if caps and caps.labels else {}
+            supported_arts = (
+                list(caps.supported_artifacts)
+                if caps and caps.supported_artifacts
+                else ["local_native"]
+            )
 
             conn.execute(
                 """
@@ -497,11 +604,11 @@ def register(app, pool, auth, settings):
                 (
                     req.node_id,
                     req.display_name or req.node_id,
-                    caps.get("platform", "unknown"),
-                    caps.get("arch", "unknown"),
-                    int(caps.get("cpu_cores", 1)),
-                    int(caps.get("memory_bytes", 0)),
-                    int(caps.get("unified_memory_bytes", 0)),
+                    caps.platform if caps else "unknown",
+                    caps.arch if caps else "unknown",
+                    int(caps.cpu_cores) if caps else 1,
+                    int(caps.memory_bytes) if caps else 0,
+                    int(caps.unified_memory_bytes) if caps else 0,
                     Jsonb(accels),
                     supported_arts,
                     Jsonb(labels),
@@ -527,7 +634,6 @@ def register(app, pool, auth, settings):
         body: Annotated[dict, Body()] = ...,
         authorization: Annotated[str | None, Header()] = None,
     ):
-        """节点 Agent 周期心跳与意图认领通道。"""
         req = parse(body, pb.NodeHeartbeatRequest)
         token = req.session_token
         if not token and authorization and authorization.startswith("Bearer "):
@@ -556,17 +662,18 @@ def register(app, pool, auth, settings):
                     pb.NodeHeartbeatResponse,
                 )
 
-            # 更新心跳时间与状态（若原先因超时变成 offline，此处恢复）
             new_status = nr["status"]
             if new_status == "offline":
                 new_status = "ready"
 
             conn.execute(
-                "UPDATE console_node SET last_heartbeat_at=now(), status=%s, status_reason='', updated_at=now() WHERE node_id=%s",
+                (
+                    "UPDATE console_node SET last_heartbeat_at=now(), status=%s, "
+                    "status_reason='', updated_at=now() WHERE node_id=%s"
+                ),
                 (new_status, req.node_id),
             )
 
-            # 认领待处理意图
             pending_rows = rows(
                 conn,
                 """
@@ -581,12 +688,18 @@ def register(app, pool, auth, settings):
             if pending_rows:
                 for pr in pending_rows:
                     conn.execute(
-                        "UPDATE console_deployment_intent SET state='dispatched', dispatched_at=now() WHERE id=%s",
+                        (
+                            "UPDATE console_deployment_intent "
+                            "SET state='dispatched', dispatched_at=now() WHERE id=%s"
+                        ),
                         (pr["id"],),
                     )
                     inst = one(
                         conn,
-                        "SELECT plugin_id, plugin_version FROM console_plugin_instance WHERE instance_id=%s",
+                        (
+                            "SELECT plugin_id, plugin_version FROM console_plugin_instance "
+                            "WHERE instance_id=%s"
+                        ),
                         (pr["instance_id"],),
                     )
                     action_enum = {
@@ -613,14 +726,7 @@ def register(app, pool, auth, settings):
                         }
                     )
 
-            proto_status = {
-                "candidate": "NODE_STATUS_CANDIDATE",
-                "enrolling": "NODE_STATUS_ENROLLING",
-                "ready": "NODE_STATUS_READY",
-                "draining": "NODE_STATUS_DRAINING",
-                "offline": "NODE_STATUS_OFFLINE",
-                "revoked": "NODE_STATUS_REVOKED",
-            }.get(new_status, "NODE_STATUS_UNSPECIFIED")
+            proto_status = to_proto_node_status(new_status)
 
         return out(
             {
@@ -636,7 +742,6 @@ def register(app, pool, auth, settings):
         body: Annotated[dict, Body()] = ...,
         authorization: Annotated[str | None, Header()] = None,
     ):
-        """节点 Agent 上报部署或操作执行结果。"""
         req = parse(body, pb.ReportDeploymentRequest)
 
         with pool.connection() as conn:
@@ -658,7 +763,6 @@ def register(app, pool, auth, settings):
                 (intent_state, req.error_code or None, req.error_detail or None, req.intent_id),
             )
 
-            # 更新插件实例状态
             actual = req.actual_state.lower().replace("plugin_instance_state_", "")
             if not actual:
                 actual = "ready" if req.success else "failed"

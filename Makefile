@@ -27,7 +27,7 @@ EXEC_MIGRATE  = $(COMPOSE) run --rm -T migrate
 # `SENSORYPLEX_TEST_NATS_URL` 给了容器内可达的默认值（`TEST_NATS_URL`），让真 JetStream 的
 # 集成用例默认**真跑**而不是被 skip（跳过不算证据）；主机模式由调用者自己提供这两个变量
 # （见下方 test-integration 注释）。
-EXEC_TEST     = $(COMPOSE) exec -T -e SENSORYPLEX_TEST_DATABASE_URL -e SENSORYPLEX_TEST_NATS_URL=$(TEST_NATS_URL) api
+EXEC_TEST     = $(COMPOSE) exec -T -e PYTHONPATH=/workspace/services/api/src:/workspace/plugins/python/common/src:/workspace -e SENSORYPLEX_TEST_DATABASE_URL -e SENSORYPLEX_TEST_NATS_URL=$(TEST_NATS_URL) api
 # api / gateway / console 容器里的可执行入口：
 PY_API        = /app/.venv/bin/python
 PY_GATEWAY    = /app/.venv/bin/python
@@ -60,6 +60,7 @@ TEST_NATS_URL ?= $(if $(filter container,$(EXEC_MODE)),nats://nats:4222,nats://1
 .PHONY: setup configure proto check test integration format infra up down migrate gateway runtime pipeline-check runtime-smoke gateway-smoke media-replay media-check handoff-check backpressure-check
 .PHONY: stream-up stream-down stream-status stream-logs live-check model-check asr-check ocr-check embed-check index-check semantic-check parallelism-check plugin-artifact capability-check accelerator-check
 .PHONY: outbox-check outbox-run
+.PHONY: node-check
 .PHONY: consume-check
 .PHONY: event-pipeline-check events-up events-down events-logs
 .PHONY: media-test resident-probe resident-install resident-uninstall resident-status
@@ -395,6 +396,9 @@ semantic-check:
 # 边界（不得含糊）：本目标只验"发布这一跳"——事件确认发到 JetStream、`Nats-Msg-Id` 去重、
 # 漂移不静默、NATS 不可达显式失败。"事件被消费成向量、并且能被检索到"由 `consume-check`
 # 单独验（ADR-025）；`outbox-check` 通过**不等于**"向量已经被事件驱动地写进去了"。
+node-check:
+	$(EXEC_API) $(PY_API) tools/verify_node_topology.py --base-url http://127.0.0.1:8091
+
 outbox-check:
 	$(EXEC_API) $(PY_API) tools/verify_outbox_relay.py --nats-url "$(OUTBOX_NATS)"
 

@@ -1,24 +1,63 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Box, Check, Settings2 } from 'lucide-react';
+import { AlertCircle, Box, Check, CheckCircle2, Download, Settings2 } from 'lucide-react';
 import { PluginFields, readConfig } from './PluginFields';
 import { api, post } from '../api/client';
-import type { PluginConfigList, PluginEntry, PluginList } from '../api/contracts';
+import type { NodeList, PluginConfigList, PluginEntry, PluginList, PreflightResponse } from '../api/contracts';
 import { Badge, date, Empty, ErrorNotice, Heading, Loading, Modal, Notice } from '../components';
 
 export default function Plugins() {
     const cache = useQueryClient();
     const [selected, setSelected] = useState<PluginEntry | null>(null);
+    const [installingPlugin, setInstallingPlugin] = useState<PluginEntry | null>(null);
+    const [targetNodeId, setTargetNodeId] = useState<string>('');
+    const [selectedConfigId, setSelectedConfigId] = useState<string>('');
     const [tab, setTab] = useState('catalog');
+
     const catalog = useQuery({
         queryKey: ['catalog'],
         queryFn: ({ signal }) => api<PluginList>('/admin/v1/catalog', { signal }),
     });
+
     const configs = useQuery({
         queryKey: ['configs'],
         queryFn: ({ signal }) =>
             api<PluginConfigList>('/admin/v1/plugin-configurations?limit=100', { signal }),
     });
+
+    const nodes = useQuery({
+        queryKey: ['nodes'],
+        queryFn: ({ signal }) => api<NodeList>('/admin/v1/nodes?limit=100', { signal }),
+    });
+
+    const preflight = useQuery({
+        queryKey: ['preflight', targetNodeId, installingPlugin?.id, selectedConfigId],
+        queryFn: () =>
+            post<PreflightResponse>(
+                `/admin/v1/nodes/${targetNodeId}/preflight`,
+                {
+                    node_id: targetNodeId,
+                    plugin_id: installingPlugin!.id,
+                    config_id: selectedConfigId || undefined,
+                },
+            ),
+        enabled: !!targetNodeId && !!installingPlugin,
+        retry: false,
+    });
+
+    const deploy = useMutation({
+        mutationFn: () =>
+            post(`/admin/v1/nodes/${targetNodeId}/plugins/${installingPlugin!.id}:deploy`, {
+                config_id: selectedConfigId || undefined,
+            }),
+        onSuccess: () => {
+            void cache.invalidateQueries({ queryKey: ['nodes'] });
+            setInstallingPlugin(null);
+            setTargetNodeId('');
+            setSelectedConfigId('');
+        },
+    });
+
     const save = useMutation({
         mutationFn: (form: FormData) =>
             post('/admin/v1/plugin-configurations', {
@@ -32,6 +71,7 @@ export default function Plugins() {
             setTab('configs');
         },
     });
+
     return (
         <>
             <Heading
@@ -40,8 +80,7 @@ export default function Plugins() {
                 description="按契约扩展处理能力，让模型与工作流保持独立。"
             />
             <Notice>
-                当前目录来自本机插件 Manifest。源码可用不等于已经安装；安装、启停与卸载需要 Runtime
-                执行器接入。
+                依据 ADR-026 拓扑设计：插件不再全局泛化安装，而是由管理员选择目标计算节点。控制面预检硬件加速、容器/原生运行时、制品摘要与数据本地性；数据面仅限同机共享内存。
             </Notice>
             <div className="tabs">
                 <button
@@ -89,17 +128,25 @@ export default function Plugins() {
                                 <small className="mono">{item.digest.slice(0, 30)}…</small>
                                 <footer>
                                     <button
-                                        className="primary"
                                         onClick={() => {
                                             save.reset();
                                             setSelected(item);
                                         }}
                                     >
                                         <Settings2 size={16} />
-                                        配置插件
+                                        配置
                                     </button>
-                                    <button disabled title="安装执行器尚未接入">
-                                        安装
+                                    <button
+                                        className="primary"
+                                        onClick={() => {
+                                            deploy.reset();
+                                            setInstallingPlugin(item);
+                                            const defaultNode = nodes.data?.items?.[0]?.node_id || '';
+                                            setTargetNodeId(defaultNode);
+                                        }}
+                                    >
+                                        <Download size={16} />
+                                        安装到节点
                                     </button>
                                 </footer>
                             </article>
@@ -153,6 +200,7 @@ export default function Plugins() {
                     ) : null}
                 </section>
             )}
+
             {selected ? (
                 <Modal title="保存插件配置" onClose={() => setSelected(null)}>
                     <ErrorNotice error={save.error} />
@@ -180,6 +228,100 @@ export default function Plugins() {
                             保存配置版本
                         </button>
                     </form>
+                </Modal>
+            ) : null}
+
+            {installingPlugin ? (
+                <Modal title={`部署插件 · ${installingPlugin.name}`} onClose={() => setInstallingPlugin(null)}>
+                    <ErrorNotice error={deploy.error} />
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                        <div>
+                            <span className="eyebrow">PLUGIN ARTIFACT</span>
+                            <div className="card" style={{ padding: '10px', marginTop: '4px' }}>
+                                <strong>{installingPlugin.id}</strong> (v{installingPlugin.version})
+                                <br />
+                                <small className="mono" style={{ color: '#a1a1aa' }}>{installingPlugin.digest}</small>
+                            </div>
+                        </div>
+
+                        <label>
+                            选择目标计算节点
+                            <select
+                                value={targetNodeId}
+                                onChange={(e) => setTargetNodeId(e.target.value)}
+                            >
+                                <option value="" disabled>-- 请选择部署节点 --</option>
+                                {nodes.data?.items?.map((n) => (
+                                    <option key={n.node_id} value={n.node_id}>
+                                        {n.display_name || n.node_id} ({n.is_co_located ? '同机数据面' : '局域网子节点'}) - {n.capabilities?.platform || "unknown"}/{n.capabilities?.arch || "unknown"} [{n.status}]
+                                    </option>
+                                ))}
+                            </select>
+                        </label>
+
+                        {configs.data?.items?.filter((c) => c.plugin_id === installingPlugin.id).length ? (
+                            <label>
+                                绑定配置版本（可选）
+                                <select
+                                    value={selectedConfigId}
+                                    onChange={(e) => setSelectedConfigId(e.target.value)}
+                                >
+                                    <option value="">默认配置</option>
+                                    {configs.data.items
+                                        .filter((c) => c.plugin_id === installingPlugin.id)
+                                        .map((c) => (
+                                            <option key={c.id} value={c.id}>
+                                                {c.name} (v{c.revision})
+                                            </option>
+                                        ))}
+                                </select>
+                            </label>
+                        ) : null}
+
+                        {targetNodeId ? (
+                            <div className="card" style={{ padding: '12px', background: '#121215' }}>
+                                <small style={{ fontWeight: 600, display: 'block', marginBottom: '6px' }}>控制面预检 (ADR-026 Preflight)</small>
+                                {preflight.isPending ? (
+                                    <div style={{ fontSize: '0.85rem', color: '#a1a1aa' }}>正在执行硬件能力与数据本地性预检…</div>
+                                ) : preflight.data ? (
+                                    <div>
+                                        {preflight.data.eligible ? (
+                                            <div style={{ color: '#4ade80', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.88rem' }}>
+                                                <CheckCircle2 size={18} />
+                                                <span>预检通过：目标节点算力、架构与数据本地性满足要求。</span>
+                                            </div>
+                                        ) : (
+                                            <div style={{ color: '#f87171', display: 'flex', alignItems: 'flex-start', gap: '8px', fontSize: '0.88rem' }}>
+                                                <AlertCircle size={18} style={{ marginTop: '2px', flexShrink: 0 }} />
+                                                <div>
+                                                    <strong>预检拒绝 ({preflight.data.reason_code})</strong>
+                                                    <p style={{ margin: '4px 0 0 0', fontSize: '0.82rem', color: '#fca5a5' }}>
+                                                        {preflight.data.detail}
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                ) : (
+                                    <div style={{ fontSize: '0.85rem', color: '#f87171' }}>无法获取预检状态</div>
+                                )}
+                            </div>
+                        ) : (
+                            <p className="subtle">请先选择一个节点以触发控制面能力预检。</p>
+                        )}
+
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '12px' }}>
+                            <button onClick={() => setInstallingPlugin(null)}>取消</button>
+                            <button
+                                className="primary"
+                                disabled={!targetNodeId || !preflight.data?.eligible || deploy.isPending}
+                                onClick={() => deploy.mutate()}
+                            >
+                                <Download size={16} />
+                                下发部署意图
+                            </button>
+                        </div>
+                    </div>
                 </Modal>
             ) : null}
         </>

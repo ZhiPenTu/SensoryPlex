@@ -283,18 +283,20 @@ class ReportDeploymentRequest(_message.Message):
     def __init__(self, intent_id: _Optional[str] = ..., instance_id: _Optional[str] = ..., node_id: _Optional[str] = ..., action: _Optional[_Union[DeploymentAction, str]] = ..., success: bool = ..., actual_state: _Optional[str] = ..., error_code: _Optional[str] = ..., error_detail: _Optional[str] = ...) -> None: ...
 
 class PreflightRequest(_message.Message):
-    __slots__ = ("node_id", "plugin_id", "config_id", "requires_data_locality", "data_plane_node_id")
+    __slots__ = ("node_id", "plugin_id", "config_id", "requires_data_locality", "data_plane_node_id", "config")
     NODE_ID_FIELD_NUMBER: _ClassVar[int]
     PLUGIN_ID_FIELD_NUMBER: _ClassVar[int]
     CONFIG_ID_FIELD_NUMBER: _ClassVar[int]
     REQUIRES_DATA_LOCALITY_FIELD_NUMBER: _ClassVar[int]
     DATA_PLANE_NODE_ID_FIELD_NUMBER: _ClassVar[int]
+    CONFIG_FIELD_NUMBER: _ClassVar[int]
     node_id: str
     plugin_id: str
     config_id: str
     requires_data_locality: bool
     data_plane_node_id: str
-    def __init__(self, node_id: _Optional[str] = ..., plugin_id: _Optional[str] = ..., config_id: _Optional[str] = ..., requires_data_locality: bool = ..., data_plane_node_id: _Optional[str] = ...) -> None: ...
+    config: _struct_pb2.Struct
+    def __init__(self, node_id: _Optional[str] = ..., plugin_id: _Optional[str] = ..., config_id: _Optional[str] = ..., requires_data_locality: bool = ..., data_plane_node_id: _Optional[str] = ..., config: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ...) -> None: ...
 
 class PreflightResponse(_message.Message):
     __slots__ = ("eligible", "reason_code", "detail", "matched_capabilities", "missing_capabilities")

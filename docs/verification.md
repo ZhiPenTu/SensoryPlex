@@ -2320,3 +2320,41 @@ true。也就是说：**capability 是"这个部署有没有挂载仓库"的函�
 - `make gateway-smoke` **仍不在 `make check` / CI 里**（两处都没有 compose 栈），所以这类"能力与行为
   漂移"下次仍可能只在本机被发现；
 - 向量 GC 未做：本次验收又把 `unindexed_hits` 从 5 推到 20，检索窗口会被陈旧向量占用。
+
+---
+
+## 局域网插件 worker 拓扑与能力预检闭环（ADR-026）
+
+**背景**：
+SensoryPlex 是以 Web Console 交付的边缘多模态素材底座。客户需要将模型插件部署在主节点同机或局域网内的异构计算节点（如 Mac mini、3090Ti 工作站或厂商 NPU 盒子）。控制面必须作为唯一调度权威，在 Web Console 提供安装位置选择、节点算力画像、状态管理与 5 项硬性预检，严格守护 host-local 共享内存安全边界。
+
+**落地组件**：
+1. **跨语言契约**：`proto/node/v1/node.proto` 定义 `NodeInfo`, `NodeCapabilityProfile`, `EnrollNodeRequest`, `NodeHeartbeatRequest`, `DeploymentIntent`, `PreflightRequest` 等契约，同步生成 Rust / Python / Console TypeScript 绑定。
+2. **数据库迁移**：新增追加式迁移 `db/migrations/0004_node_topology.sql`，建立 `console_node`, `console_node_enrollment_token`, `console_plugin_instance`, `console_deployment_intent`, `console_task_assignment` 五张事实表。
+3. **控制面与预检引擎**：`services/api/src/sensoryplex_api/infrastructure/preflight.py` 严格执行节点状态、数据本地性、制品形态、加速器匹配、资源预算 5 项硬性预检，绝不静默改派。
+4. **子节点 Agent**：`tools/node_agent.py`，支持基于一次性令牌入网、周期心跳汇报指标、认领主节点下发的部署意图、不可变 digest 校验、安装/启停/卸载/回滚执行并上报结果。
+5. **Web 控制台**：新增 `apps/console/src/features/Nodes.tsx` 拓扑管理界面，支持签发注册令牌、排空与撤销节点；插件中心 `Plugins.tsx` 接入按节点部署与实时预检校验。
+6. **自动化验收工具**：`tools/verify_node_topology.py`（Makefile 目标 `make node-check`）。
+
+**真实容器栈实测结果（make node-check）**：
+
+| 验收场景 | 验证内容与断言 | 实测结果 |
+| --- | --- | --- |
+| 场景 1：多节点注册 | 签发短效令牌；注册同机数据面 Mac mini (Metal/CoreML)、局域网 3090Ti (CUDA) 与边缘 CPU 盒子；验证清单与画像 | PASS |
+| 场景 2：心跳与状态机 | 周期心跳刷新；排空（draining）阻断新任务；撤销（revoked）吊销凭据，后续心跳阻断 | PASS |
+| 场景 3：数据本地性 | 消费 `cpu_shared_memory` 的 VLM 部署到远程节点被 `data_locality_violation` 阻断（422）；同机节点通过；消费 observation 的 BGE 允许远端执行 | PASS |
+| 场景 4：加速器对账 | Apple Silicon MLX 插件在 Linux 节点被 `unsupported_platform` 拒绝；向仅支持 Metal 的 Mac 请求 CUDA 被 `accelerator_not_available` 拒绝 | PASS |
+| 场景 5：意图执行与回滚 | 下发部署意图（installing）→ Agent 认领并执行 → 状态转为 ready；无历史 digest 拒绝回滚（422）；升级后执行回滚恢复历史状态（rolled_back） | PASS |
+| 场景 6：全生命周期审计 | 检验 `console_audit` 包含 `node.token.create`, `node.enroll.success`, `node.preflight.pass`, `node.preflight.reject`, `node.drain`, `node.revoke`, `plugin.instance.deploy`, `plugin.instance.ready` | PASS |
+
+**回归验证**：
+- `make node-check`：6 大场景全部通过（exit 0）；
+- `make test-py`：440 个契约与集成测试全绿（371 passed in contracts, 69 passed in integration）；
+- `make lint-ruff`：全量 Python 源码格式化与静态检查通过（167 文件）；
+- `cargo test --workspace`：Rust 契约与全部单元/集成测试通过（154 passed）；
+- `make console-build`：Web 前端构建通过（Vite 产物成功打包）；
+- `./deploy/status.sh`：本地 Docker 容器栈（console, api, gateway, postgres, nats）全健康（200 OK）。
+
+**当前边界与后续演进**：
+- 节点入网当前使用短效凭据换取 Session Token；生产级跨机双向 mTLS 证书自动签发与 CA 轮换留待后续阶段实施；
+- 主节点当前为单实例权威调度；高可用主节点选主与 Raft 复制留待高可用阶段规划。

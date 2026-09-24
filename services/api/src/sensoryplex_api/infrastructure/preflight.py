@@ -3,7 +3,7 @@
 绝不自动静默改派：预检失败一律返回稳定原因码并落审计记录。
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 
@@ -11,8 +11,12 @@ def parse_memory_bytes(mem_str: str) -> int:
     """解析 1Gi / 512Mi 等格式为字节数。"""
     mem_str = str(mem_str).strip()
     multipliers = {
-        "k": 1000, "m": 1000 * 1000, "g": 1000 * 1000 * 1000,
-        "ki": 1024, "mi": 1024 * 1024, "gi": 1024 * 1024 * 1024,
+        "k": 1000,
+        "m": 1000 * 1000,
+        "g": 1000 * 1000 * 1000,
+        "ki": 1024,
+        "mi": 1024 * 1024,
+        "gi": 1024 * 1024 * 1024,
     }
     for unit, mult in sorted(multipliers.items(), key=lambda x: -len(x[0])):
         if mem_str.lower().endswith(unit):
@@ -33,16 +37,8 @@ def check_preflight(
     config: dict[str, Any] | None = None,
     data_plane_node_id: str | None = None,
 ) -> dict[str, Any]:
-    """执行 ADR-026 §2.2 规定的 5 项硬性预检。
-
-    1. 节点身份、状态与心跳新鲜度；
-    2. 平台、架构、CPU/内存、加速器与制品形态匹配；
-    3. 制品摘要、签名与配置；
-    4. 数据本地性：接受共享内存的插件必须同机；
-    5. 资源与并发预算。
-    """
+    """执行 ADR-026 §2.2 规定的 5 项硬性预检。"""
     matched = []
-    missing = []
 
     # 1. 节点身份与心跳状态
     if not node:
@@ -99,7 +95,7 @@ def check_preflight(
         else:
             last_hb_dt = last_hb
         if last_hb_dt:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             if (now - last_hb_dt).total_seconds() > 60:
                 return {
                     "eligible": False,
@@ -112,14 +108,13 @@ def check_preflight(
 
     # 2. 数据本地性预检 (ADR-010 / ADR-026 §2.5)
     accepts_memory = plugin_entry.get("accepts_memory_kinds", [])
-    requires_shm = any(k in {"cpu_shared_memory", "cuda_ipc", "metal_shared_memory"} for k in accepts_memory)
+    shm_kinds = {"cpu_shared_memory", "cuda_ipc", "metal_shared_memory"}
+    requires_shm = any(k in shm_kinds for k in accepts_memory)
     is_co_located = bool(node.get("is_co_located", False))
 
     if requires_shm:
-        # 如果需要共享内存，必须同机
         if not is_co_located:
             if data_plane_node_id and node.get("node_id") == data_plane_node_id:
-                # 显式指定数据面节点且一致
                 matched.append("data_locality_colocated")
             else:
                 return {
@@ -192,7 +187,7 @@ def check_preflight(
             return {
                 "eligible": False,
                 "reason_code": "accelerator_not_available",
-                "detail": f"Requested accelerator '{requested_provider}' not available on target node",
+                "detail": f"Requested accelerator '{requested_provider}' not available on node",
                 "matched_capabilities": matched,
                 "missing_capabilities": [f"accelerator_{requested_provider}"],
             }

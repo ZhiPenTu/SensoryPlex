@@ -41,6 +41,19 @@ const messages: Record<string, string> = {
     semantic_index_unreachable: '向量检索面暂时不可达，请稍后重试。',
     semantic_index_unauthenticated: '向量检索面拒绝了网关的访问：令牌不一致，需要运维改配置。',
     semantic_filters_not_supported: '语义检索暂不支持筛选条件，请只用查询文字与条数。',
+    data_locality_violation: '数据本地性约束：该插件读取共享内存句柄，不能安装到局域网远端节点，必须部署在同机数据面节点。',
+    node_not_found: '目标节点不存在或尚未注册。',
+    node_offline: '目标节点当前处于离线状态。',
+    node_draining: '目标节点正在排空中，不接受新部署。',
+    node_revoked: '目标节点凭据已被管理员撤销，禁止调度。',
+    accelerator_not_available: '目标节点缺少插件所要求的硬件加速器。',
+    unsupported_platform: '目标节点的操作系统或架构不满足插件要求。',
+    container_runtime_unsupported: '目标节点不支持容器运行环境。',
+    native_runtime_unsupported: '目标节点不支持原生运行时环境。',
+    insufficient_cpu: '目标节点 CPU 核心数低于插件最低要求。',
+    insufficient_memory: '目标节点物理内存低于插件最低要求。',
+    digest_mismatch: '插件制品摘要校验失败。',
+    no_previous_digest_for_rollback: '该插件实例无历史版本摘要，无法执行回滚。',
 };
 
 export class RequestError extends Error {

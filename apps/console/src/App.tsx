@@ -11,6 +11,7 @@ import {
     LogOut,
     Menu,
     Search,
+    Server,
     ShieldCheck,
     Users,
     X,
@@ -26,6 +27,7 @@ const Assets = lazy(() => import('./features/Assets'));
 const Jobs = lazy(() => import('./features/Jobs'));
 const Materials = lazy(() => import('./features/Materials'));
 const Plugins = lazy(() => import('./features/Plugins'));
+const Nodes = lazy(() => import('./features/Nodes'));
 const MaterialDetail = lazy(() =>
     import('./features/Materials').then((m) => ({ default: m.MaterialDetail })),
 );
@@ -47,6 +49,7 @@ const navigation = [
         group: '工作空间',
     },
     { path: '/plugins', label: '插件中心', icon: Box, scope: 'plugins:manage', group: '平台管理' },
+    { path: '/nodes', label: '节点拓扑', icon: Server, scope: 'plugins:manage', group: '平台管理' },
     {
         path: '/pipelines',
         label: '处理方案',
@@ -364,6 +367,7 @@ export default function App() {
                     </Route>
                     <Route element={<Guard scope="plugins:manage" />}>
                         <Route path="plugins" element={<Plugins />} />
+                        <Route path="nodes" element={<Nodes />} />
                     </Route>
                     <Route element={<Guard scope="pipelines:manage" />}>
                         <Route path="pipelines" element={<Pipelines />} />
