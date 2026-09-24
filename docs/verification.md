@@ -1614,6 +1614,7 @@ runner 上（`runner_id != 0`、`steps` 有内容）：`check-console` success�
 | `#56`–`#74`（19 次） | push / pull_request | failure（无效） | `steps = []`、`runner = 0`：账号计费拦截 |
 | `#75` attempt 1 | pull_request `codex/index-pipeline` | failure（无效） | 同上 |
 | `#75` attempt 2 | pull_request `codex/index-pipeline` | failure（真实） | 公开仓库后真跑，暴露第 5 条缺陷（ADR-027 §10.5） |
+| `#76` / `#77` | push / pull_request `codex/index-pipeline` @ `e7c6480` | success | 第 5 条修好后三 job 全绿（`check` 15 step、`check-console` 14 step、`check-apple-silicon` 20 step），流水线恢复可用 |
 
 该缺陷的复现与修复（容器内摘掉 `SENSORYPLEX_DATABASE_URL` 以对齐 CI 条件——CI 既没有仓库
 `.env` 也没有这个变量，而本机容器两者都有）：
