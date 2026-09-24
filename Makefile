@@ -50,9 +50,12 @@ CARGO_HOST    ?= $(CARGO)
 # 需要"主机专属资源"的验收也固定在主机执行，理由与 cargo 相同：HF 权重缓存、CoreML EP、
 # MLX/Metal 都只存在于 macOS 主机，compose 容器里没有（.env 只挂 MEDIA_DIR）。
 PY_HOST       ?= uv run --frozen python
+# outbox-check / outbox-run 要连的 NATS：容器内是服务名 nats:4222，宿主是回环端口。
+OUTBOX_NATS   ?= $(if $(filter container,$(EXEC_MODE)),nats://nats:4222,nats://127.0.0.1:24222)
 
 .PHONY: setup configure proto check test integration format infra up down migrate gateway runtime pipeline-check runtime-smoke gateway-smoke media-replay media-check handoff-check backpressure-check
 .PHONY: stream-up stream-down stream-status stream-logs live-check model-check asr-check ocr-check embed-check index-check semantic-check parallelism-check plugin-artifact capability-check accelerator-check
+.PHONY: outbox-check outbox-run
 .PHONY: media-test resident-probe resident-install resident-uninstall resident-status
 .PHONY: lint-ruff test-py test-contracts test-integration proto-generate plugin-artifact-check
 
@@ -364,6 +367,20 @@ index-check:
 # 与 HF 权重一样只存在于主机，所以固定在主机执行（理由同 cargo 与 index-check）。
 semantic-check:
 	$(PY_HOST) tools/verify_semantic_search.py $(if $(DATABASE_URL),--database-url "$(DATABASE_URL)",) $(if $(MODEL_DIR),--model-dir "$(MODEL_DIR)",) $(if $(PROVIDER),--provider "$(PROVIDER)",)
+
+# ── outbox → NATS JetStream 的 relay：验收与常驻运行（① / ADR-024） ──────────
+# 这个目标与其它 *-check 不同，它**在 api 容器内**执行：需要的只有真实 PostgreSQL 与真实
+# JetStream（都在 compose 里），Milvus Lite / HF 权重 / CoreML 一个都不用——没有退回主机的理由。
+# 边界（不得含糊）：本目标验的是"发布这一跳"——事件确认发到 JetStream、`Nats-Msg-Id` 去重、
+# 漂移不静默、NATS 不可达显式失败。JetStream → sink 的**消费**循环尚未接线（ADR-024 §8），
+# 所以 `outbox-check` 通过**不等于**"向量已经被事件驱动地写进去了"。
+outbox-check:
+	$(EXEC_API) $(PY_API) tools/verify_outbox_relay.py --nats-url "$(OUTBOX_NATS)"
+
+# 常驻形态：前台运行本机 relay，一有事件落 outbox 就发布到 JetStream（Ctrl-C / SIGTERM 优雅收尾）。
+# 只做发布，不做消费；JetStream 里的消息目前没有常驻消费者。
+outbox-run:
+	$(EXEC_API) $(PY_API) -m sensoryplex_relay.cli --nats-url "$(OUTBOX_NATS)"
 
 # ── 模型 worker 分级并发上限验收（M8 剩余，ADR-021） ────────────────────────
 # 上游必须是**真实** `ocr_blocks` 观测：每个 MEDIA 跑一次未改动的 tools/verify_ocr.py 真实链路
