@@ -3,6 +3,18 @@
 端侧 AI 多模态素材预处理框架。按现有 ADR 建立 **Rust Core + Python AI SDK +
 Protobuf/gRPC + FastAPI** 工程，为 SRT/文件接入、感知、时间轴融合和可溯源检索提供基础。
 
+产品当前以 **Web Console** 交付，不做 Electron/Tauri 等桌面客户端。部署目标是一个可跨受支持平台运行的
+主节点（控制面）和可选的插件子节点：子节点可与主节点同机，也可安装到局域网内的 Mac mini、NVIDIA 或
+厂商 NPU 主机，由主节点按节点能力、资源和数据本地性调度。该局域网 worker 拓扑是必做目标，但在
+`0.1.0` 中尚未实现节点 agent、节点注册、插件远程安装或跨机调度；当前真实验收均是单机路径。详见
+[ADR-026](docs/adr/ADR-026-Web主节点与局域网插件worker拓扑.md) 与
+[实现状态](docs/implementation-status.md)。
+
+“跨平台”只承诺受支持组合：控制面为 `linux-x86_64` / `linux-aarch64` 容器，以及
+`macos-aarch64` 主机上的无加速容器组件；模型 worker 按硬件原生或容器运行。Windows 当前仅可通过
+WSL2/Docker 兼容运行，不是已验收的一等部署目标。共享内存、DMA、CUDA/Metal 句柄严格 host-local，
+不会因局域网拓扑而经 NATS 传输原始媒体。
+
 当前版本 **0.1.0：可运行工程底座**。已实现素材元数据事务写入、不可变 revision、
 来源/模型血缘校验，以及带鉴权的关键词、标签、时间范围查询。媒体侧已接入 GStreamer 真实解码
 （可选 `gstreamer` feature）：解码 → 有界 arena → `BufferDescriptor` → lease 签发/校验/释放 → 音频 5 秒切段，
@@ -163,6 +175,7 @@ tools/                  配置、代码生成、迁移、测试与真实媒体�
 - [ADR-021：模型 worker 按分级并发上限限流（准入、重试与账目）](docs/adr/ADR-021-模型worker按分级并发上限限流.md)
 - [ADR-022：宿主加速器能力探测与上报（三态、只写真值、与进程能力分离）](docs/adr/ADR-022-宿主加速器能力探测与上报.md)
 - [ADR-023：网关语义检索接线与索引检索面（进程独占、同源守卫、状态码与 retryable 分野）](docs/adr/ADR-023-网关语义检索接线与索引检索面.md)
+- [ADR-026：Web 主节点与局域网插件 worker 拓扑（必做目标，尚未实施）](docs/adr/ADR-026-Web主节点与局域网插件worker拓扑.md)
 - [ADR-020：向量索引落库与检索闭环](docs/adr/ADR-020-向量索引落库与检索闭环.md)
 - [ADR-019：运行时消费分级队列上限（准入，而不是改写）](docs/adr/ADR-019-运行时消费分级队列上限.md)
 - [ADR-015：macOS 常驻形态（launchd）与统一内存分级](docs/adr/ADR-015-macOS常驻形态与统一内存分级.md)
