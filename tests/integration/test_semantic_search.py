@@ -314,10 +314,13 @@ def test_semantic_rejects_what_it_does_not_implement_without_calling_the_surface
     assert servicer.calls == []
 
 
-def test_unconfigured_semantic_search_reports_unavailable_not_not_implemented(database, material):
+def test_unconfigured_semantic_search_reports_unavailable_not_not_implemented(
+    database, material, bare_settings
+):
     with psycopg.connect(database) as conn:
         seed(conn, material)
-    settings = Settings(database_url=database, api_token=TOKEN, principal="owner")
+    # 本用例断言"检索面未配置时是显式不可用"，所以环境不许替它决定（见 tests/conftest.py）。
+    settings = bare_settings(database_url=database, api_token=TOKEN, principal="owner")
     with TestClient(create_app(settings)) as client:
         headers = {"Authorization": f"Bearer {TOKEN}"}
         response = client.post(

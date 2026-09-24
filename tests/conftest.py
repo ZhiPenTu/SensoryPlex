@@ -8,6 +8,7 @@ from edge_material_sdk.generated.material.v1.material_pb2 import (
     Provenance,
     SourceReference,
 )
+from sensoryplex_api.settings import Settings
 
 DIGEST = "sha256:" + "a" * 64
 
@@ -62,3 +63,28 @@ def material(observation):
         pending_enrichments=["vlm"],
         created_at_unix_ms=observation.created_at_unix_ms,
     )
+
+
+# 检索面配置只从参数来：POC 容器栈（compose environment + 仓库 `.env`）是**真的**把
+# SENSORYPLEX_INDEX_SEARCH_* 配上了。断言"未配置 / 半配置会被拒绝"的用例必须自己控制
+# 环境，否则验的是宿主环境（还可能是别人机器上的环境），而不是这条契约。
+INDEX_SEARCH_ENV = (
+    "SENSORYPLEX_INDEX_SEARCH_ENDPOINT",
+    "SENSORYPLEX_INDEX_SEARCH_TOKEN",
+    "SENSORYPLEX_INDEX_SEARCH_TIMEOUT_S",
+)
+
+
+@pytest.fixture
+def bare_settings(monkeypatch):
+    """构造不受宿主/容器环境影响的 `Settings`（`_env_file=None` + 摘掉检索面变量）。
+
+    显式传进来的 `index_search_*` 仍然生效——被挡掉的只有"环境替用例做决定"这件事。
+    """
+
+    def build(**overrides):
+        for name in INDEX_SEARCH_ENV:
+            monkeypatch.delenv(name, raising=False)
+        return Settings(_env_file=None, **overrides)
+
+    return build

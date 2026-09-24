@@ -191,8 +191,42 @@ subject 是精确订阅而不是 `>` 通配。`make consume-check` 用真实写�
 的检索面立刻检索到、换 durable 重放不重复、目录锁与优雅停止、坏事件 fail-stop、三类启动期显式失败、
 状态行不外泄）。决策见 [ADR-025](adr/ADR-025-常驻消费循环与sink接线.md)，实测见
 `docs/verification.md` 的"常驻消费循环与 sink 接线（ADR-025）"一节。
-**仍未做**：dead-letter 与按原因分流、`ack_wait` 到期重投的单独验收、消费侧/relay 进 compose、
-吞吐与背压（ADR-019 的队列上限没有接到这一层）。
+**仍未做**：dead-letter 与按原因分流、`ack_wait` 到期重投的单独验收、多副本消费、吞吐曲线。
+（"消费侧/relay 进 compose"与"ADR-019 的队列上限接到这一层"已由下一段的 ADR-027 收掉。）
+
+**事件链路的分级背压与容器化常驻也已接线**
+（[ADR-027](adr/ADR-027-事件链路分级背压与容器化常驻.md)）：ADR-019 的"分级是准入上限"从媒体面
+（Rust `replay`/`ingest`）对称地接到了事件链路。分级表新增**独立一列** `event_queue_capacity`
+（16/32/64/128，今天与媒体队列同值——要分化只改这一张表，而不是让事件链路悄悄继承媒体队列那个数），
+渲染成 `SENSORYPLEX_EVENT_QUEUE_CAPACITY`。relay 的 `--batch`（每轮认领）与 `serve --consume` 的
+`--consume-batch`（= `max_ack_pending`，在飞未 ack）任一超过本档上限就**拒绝启动**
+（`event_inflight_exceeds_tier_cap: declared=<n> tier_capacity=<n> tier=<name>`，与 Rust 侧逐字对齐），
+变量缺失是显式 `not_injected`（上限记 0，**绝不**填默认值）、空串与坏值报 `invalid_resident_limit`
+——三种输入三种结果，不夹取、不改写。两个进程**各自判定**、不共享令牌桶：relay 的在飞是"已认领未发布"、
+消费的是"已投递未 ack"，合成一个数会把两件事抹平并引入新的跨进程协调点。两个状态行（`relay.status` /
+`consume.status`）与 `serve` 的就绪行各多 4 个字段（`inflight_state` / `inflight_declared` /
+`inflight_capacity` / `resident_tier`）。`relay` 与 `index` 以 `events` profile 进 compose
+（`make events-up` / `events-down` / `events-logs`）：默认栈不拖起 BGE 与向量库；向量库落仓库
+bind mount 的 `.data/index/`（**不用命名卷**——挂载点 root 所有会让非 root 容器 `PermissionError`）；
+relay 的健康检查是"状态行还在滚动"（停在那里的 relay 不该被读成在跑），index 的是"端口真的开了"
+（端口在编码器与向量库契约**之后**才开，但**早于**消费侧接上——"消费真的接上了"的凭据是 ready 行，
+它在 `runner.wait_ready` 确认之后才写）；api 顺带接上检索面（`index:50077` + 令牌，`.env` 里
+`AUTH_TOKEN` / `SEARCH_TOKEN` 两个名字由 `tools/configure.py` **一次** replace 写成同一个随机值）。
+`make event-pipeline-check`（`tools/verify_event_pipeline.py`，**api 容器内**）用真实写侧 +
+**compose 里常驻的** relay/index + 真实 NATS JetStream + 真实 BGE + 真实 Milvus Lite + 运行中 api 的
+`POST /v1/materials:search` 跑 **7 步**全过（准入对账与越界拒绝、真事件被搬运、真向量 ready、
+HTTP 语义检索命中且排第一、事实回查挡住 stale、清理为 0、不外泄）。
+**边界**：接的是**准入**不是吞吐（没有吞吐/延迟曲线）；向量本体**不随事实行删除而消失**（验收因此用
+"本次运行唯一的批次标记 + 相对基线"判定，并如实报告留下的条数），向量 GC 未做；
+服务端 Milvus 形态、多副本消费、跨主机 NATS 集群、`ack_wait` 到期重投仍未验收；
+`make event-pipeline-check` **不**覆盖检索面停机降级（那由集成测试覆盖）。
+本切片顺带修掉 4 个真实缺陷（见 ADR-027 §10）：宿主环境绑架契约/集成用例、准入抛错位置在
+`try` 之外、空串配置让 api 拒绝启动，以及**检索面的配置来源曾经是"venv 放在哪"的函数**——
+`pymilvus.settings` 在 import 期调用 `load_dotenv()`，python-dotenv 从它所在目录向上找 `.env`，
+宿主 venv 就在仓库根下所以命中了仓库 `.env`（容器里在 `/app/.venv`，不命中），于是
+`serve` 的"缺失即拒绝启动"契约在主机上不成立。现在 `cli` 只读 import 期取好的
+`BASE_ENVIRON`（`services/index-worker/src/sensoryplex_index_worker/environ.py`）。
+实测见 `docs/verification.md` 的"事件链路分级背压与容器化常驻（ADR-027）"一节。
 
 媒体格式准入（M9）已按 [ADR-009](adr/ADR-009-媒体格式支持矩阵与拒绝语义.md) 落地：承诺矩阵写成
 数据（容器 → 编码 → 位深 → 色彩 → 采样格式 → 声道），判定输入是**解码前采集的源格式上下文**加上

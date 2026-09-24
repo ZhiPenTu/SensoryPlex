@@ -27,9 +27,10 @@ SRT 实时接入（M4）同样可用：`ingest` 在有限窗口内拉流、解�
 背压指标（M2）与四个端侧模型插件（VLM/ASR/OCR/BGE，ADR-012/016/017）已接入；BGE 向量也已能
 落库并检索回来（`services/index-worker`，ADR-020，本机为 Milvus Lite 文件形态）。事务性 outbox
 的事件也已能**确认发到** NATS JetStream（`services/outbox-relay`，ADR-024：`published_at` 只在确认
-之后写、`Nats-Msg-Id = event_id` 由 duplicate window 吸收重发、stream 漂移只报不改）；仍未接线的是
-NATS 任务分发与 **NATS → sink 的消费循环**（上游 observation 还没有事件，`material.upserted`
-也携带不了 BGE 需要的文本）。网关侧语义检索已按 ADR-023 接上真实检索面
+之后写、`Nats-Msg-Id = event_id` 由 duplicate window 吸收重发、stream 漂移只报不改）；
+**NATS → sink 的消费循环**（ADR-025）与 **relay / index 进 compose + 事件链路按机型档位准入**
+（ADR-027）也已接上——两个常驻进程在 `events` profile 里跑，消费深度超过本档上限即拒绝启动。
+仍未接线的是 NATS 任务分发。网关侧语义检索已按 ADR-023 接上真实检索面
 （`mode=semantic` 不再是 501：常驻 `sensoryplex-index serve` 持有向量库，API 只转发查询并按
 `(material_unit_id, revision)` 水合事实），服务端 Milvus 拓扑在本机 Docker Hub 不可达的情况下
 未经验收。相关 API 明确报告能力不可用。
@@ -106,6 +107,17 @@ make embed-check MEDIA=/absolute/path/to/authorized-video.webm    # BGE 文本�
 检索到；另验换 durable 重放不重复、坏事件重投到上限 fail-stop（**退出码 3**，不 ack 不记账）、
 启动期三类显式失败（stream 缺失 / durable 漂移 / NATS 不可达）与状态行不外泄。
 
+`make events-up` 把两个常驻服务放进 compose 的 `events` profile（`make events-down` / `events-logs`），
+`make event-pipeline-check` 则是**容器内**的端到端验收（[ADR-027](docs/adr/ADR-027-事件链路分级背压与容器化常驻.md)）：
+真实写侧（素材 + 观测 + outbox 同事务）→ **compose 里常驻的** relay → 真 JetStream →
+**compose 里常驻的** index（真 BGE → 真 Milvus Lite → 检索面同进程）→ 运行中 api 的
+`POST /v1/materials:search`（`mode=semantic`，真 gRPC）命中且排第一；另验两个状态行的准入对账、
+一条越界配置被真实 relay CLI 拒绝启动、事实回查挡 stale、清理为 0 与不外泄。与 `make consume-check`
+的分工：那个验**单进程内**的消费正确性（主机执行），这个验**两个常驻服务在 compose 里真的把链路跑通**。
+事件链路的深度上限来自分级的**独立一列** `SENSORYPLEX_EVENT_QUEUE_CAPACITY`（`medium` 档 32）：
+relay 的 `--batch` 与 `--consume-batch` 越界即 `event_inflight_exceeds_tier_cap`，缺变量是显式
+`not_injected` —— 与媒体面同一口径，不夹取、不改写。
+
 `make embed-check` 是唯一**不接数据面**的链路：它先跑一遍真实 OCR 产出文字块，再让 BGE 消费这些
 文字（`acceptsMemoryKinds: []`，喂字节以 `buffer_reader_not_attached` 明确拒绝），产出维度版本化的
 L2 归一化向量。想跳过 OCR、直接复用已有的 `ai-worker.json` 时传
@@ -177,6 +189,7 @@ apps/console/           React + TypeScript + Vite 素材工作台
 services/api/           模块化 Business / Admin / Identity API
 services/gateway/       旧 Gateway 导入与启动兼容入口
 services/outbox-relay/ 事务性 outbox → NATS JetStream 的 relay（ADR-024）
+services/index-worker/ 向量落库与检索面：常驻消费（JetStream → sink）+ gRPC 检索（ADR-020/023/025）
 db/migrations/          只追加的显式 PostgreSQL 迁移
 config/pipelines/       文件与 SRT 实时接入的 pipeline 配置
 deploy/compose/         本地容器基础设施
@@ -194,6 +207,7 @@ tools/                  配置、代码生成、迁移、测试与真实媒体�
 - [ADR-022：宿主加速器能力探测与上报（三态、只写真值、与进程能力分离）](docs/adr/ADR-022-宿主加速器能力探测与上报.md)
 - [ADR-023：网关语义检索接线与索引检索面（进程独占、同源守卫、状态码与 retryable 分野）](docs/adr/ADR-023-网关语义检索接线与索引检索面.md)
 - [ADR-026：Web 主节点与局域网插件 worker 拓扑（必做目标，尚未实施）](docs/adr/ADR-026-Web主节点与局域网插件worker拓扑.md)
+- [ADR-027：事件链路的分级背压准入与容器化常驻（relay / index 进 compose）](docs/adr/ADR-027-事件链路分级背压与容器化常驻.md)
 - [ADR-020：向量索引落库与检索闭环](docs/adr/ADR-020-向量索引落库与检索闭环.md)
 - [ADR-019：运行时消费分级队列上限（准入，而不是改写）](docs/adr/ADR-019-运行时消费分级队列上限.md)
 - [ADR-015：macOS 常驻形态（launchd）与统一内存分级](docs/adr/ADR-015-macOS常驻形态与统一内存分级.md)

@@ -192,10 +192,25 @@ def test_resident_env_carries_tier_limits_and_memory_source():
     assert values["SENSORYPLEX_HANDOFF_RETAINED_LIMIT"] == str(tier.handoff_retained_limit)
     assert values["SENSORYPLEX_HANDOFF_ARENA_BYTES"] == str(tier.handoff_arena_bytes)
     assert values["SENSORYPLEX_MEDIA_QUEUE_CAPACITY"] == str(tier.media_queue_capacity)
+    assert values["SENSORYPLEX_EVENT_QUEUE_CAPACITY"] == str(tier.event_queue_capacity)
     assert values["SENSORYPLEX_MODEL_PARALLELISM"] == str(tier.model_parallelism)
     assert values["SENSORYPLEX_MODEL_BUDGET_BYTES"] == str(memory // 3)
     assert values["SENSORYPLEX_MEMORY_SOURCE"] == "sysctl"
     assert values["SENSORYPLEX_UNIFIED_MEMORY_BYTES"] == str(memory)
+
+
+def test_event_queue_capacity_is_its_own_tier_column():
+    """事件链路的在飞上限是**独立字段**（ADR-027）：今天与媒体队列同值，但必须有自己的一列。
+
+    这样"媒体队列改了、事件链路没改"才是一种可以表达的配置，而不是只能靠两处数字巧合。
+    """
+
+    tiers = sorted(resident.TIERS, key=lambda tier: tier.min_bytes)
+    capacities = [tier.event_queue_capacity for tier in tiers]
+    assert all(capacity > 0 for capacity in capacities)
+    assert capacities == sorted(capacities), "分级越高，在飞上限不得变小"
+    for tier in tiers:
+        assert resident.tier_values(tier)["EVENT_QUEUE_CAPACITY"] == str(tier.event_queue_capacity)
 
 
 def test_declared_plugin_memory_comes_from_the_manifests():

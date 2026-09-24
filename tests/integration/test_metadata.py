@@ -99,11 +99,14 @@ def test_append_replay_conflict_history_and_atomic_outbox(database, material):
         assert conn.execute("SELECT count(*) FROM event_outbox").fetchone()[0] == 2
 
 
-def test_api_filters_auth_time_boundaries_and_unavailable_capabilities(database, material):
+def test_api_filters_auth_time_boundaries_and_unavailable_capabilities(
+    database, material, bare_settings
+):
     with psycopg.connect(database) as conn:
         seed_references(conn, material)
         append_material(conn, material, trace_id="contract-trace")
-    settings = Settings(database_url=database, api_token=TOKEN, principal="owner")
+    # 本用例断言"检索面未配置时是显式不可用"，所以环境不许替它决定（见 tests/conftest.py）。
+    settings = bare_settings(database_url=database, api_token=TOKEN, principal="owner")
     # 测试 schema 必须在 pool 建立后仍可用：连接选项中包含 search_path。
     with TestClient(create_app(settings)) as client:
         headers = {"Authorization": f"Bearer {TOKEN}"}

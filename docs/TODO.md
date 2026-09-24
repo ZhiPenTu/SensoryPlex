@@ -23,8 +23,10 @@
 - [ ] **M8 整体仍在研发中**：四个模型（VLM / ASR / OCR / BGE）已接入并通过本机真实样本验收，
   向量落库与检索闭环也已落地（Lite 形态，见 §M8），宿主加速器能力也已真实探测并单独上报（ADR-022），
   网关侧语义检索接线也已落地（`mode=semantic` 不再是 501，见 §M8），
-  剩余的是常驻 index-worker 消费**循环**（outbox → JetStream 的**发布**已由
-  [ADR-024](adr/ADR-024-outbox分发接线与消费去重边界.md) 接上）与按机型选模型（明细见 §M8）。
+  outbox → JetStream 的**发布**已由 [ADR-024](adr/ADR-024-outbox分发接线与消费去重边界.md) 接上、
+  JetStream → sink 的**消费**已由 [ADR-025](adr/ADR-025-常驻消费循环与sink接线.md) 接上、
+  两个常驻进程也已在 compose 里跑通并接上分级上限（[ADR-027](adr/ADR-027-事件链路分级背压与容器化常驻.md)），
+  剩余的是按机型档位选择模型（依赖 M5）与宿主加速器探测的真机覆盖面（明细见 §M8）。
   分项测试通过不等于整个 M8 或 Golden Path 完成，具体进展按其验收证据更新。
 - [x] **分级模型并发上限已接线（ADR-021）**：`tools/ai_worker.py` 按 `SENSORYPLEX_MODEL_PARALLELISM` /
   运行时转述的分级上限做准入与在飞调用限流，坏值、flag/env 冲突与越界在连插件之前 exit 2；
@@ -63,8 +65,24 @@
   真实 gRPC 检索面跑 **6 个场景**全过（事件驱动写入→同一进程立刻检索到、换 durable 重放不重复、
   目录锁与优雅停止、坏事件 fail-stop、三类启动期显式失败、状态行不外泄）。
   证据见 `docs/verification.md` 的"常驻消费循环与 sink 接线（ADR-025）"。
-  **仍未做**：dead-letter 与按原因分流、`ack_wait` 到期重投的单独验收、消费侧/relay 进 compose、
-  吞吐与背压（ADR-019 的队列上限没接到这一层）。
+  **仍未做**：dead-letter 与按原因分流、`ack_wait` 到期重投的单独验收、多副本消费、吞吐曲线。
+  （"消费侧/relay 进 compose"与"ADR-019 的队列上限接到这一层"已由
+  [ADR-027](adr/ADR-027-事件链路分级背压与容器化常驻.md) 收掉，见下一条。）
+- [x] **事件链路分级背压与容器化常驻（ADR-027）**：ADR-019 的"分级是准入上限"接到事件链路。
+  分级表新增独立一列 `event_queue_capacity`（16/32/64/128，今天与媒体队列同值但是**独立字段**——
+  要分化只改这一张表），渲染成 `SENSORYPLEX_EVENT_QUEUE_CAPACITY`；relay 的 `--batch`（每轮认领）与
+  消费的 `--consume-batch`（= `max_ack_pending`，在飞未 ack）任一超本档上限就**拒绝启动**
+  （`event_inflight_exceeds_tier_cap`，与 Rust 侧逐字对齐），缺变量是显式 `not_injected`（上限记 0，
+  绝不填默认值）、空串/坏值报 `invalid_resident_limit`。两个进程各自判定、不共享令牌桶
+  （两段是不同的在飞）。状态行与就绪行各多 4 个字段。`relay` / `index` 以 `events` profile 进
+  compose（`make events-up` / `events-down` / `events-logs`；向量库落仓库 bind mount 的 `.data/index/`，
+  不用命名卷——挂载点 root 所有会让非 root 容器 `PermissionError`）；relay 的健康检查是"状态行还在滚动"，
+  index 的是"端口真的开了"（端口在编码器与向量库契约之后才开，但早于消费侧接上——"消费真的接上了"
+  的凭据是 ready 行，它在消费确认之后才写）。`make event-pipeline-check`
+  在 api 容器内用真实写侧 + **compose 里常驻的** relay/index + 真实 HTTP 语义检索跑 7 步全过。
+  证据见 `docs/verification.md` 的"事件链路分级背压与容器化常驻（ADR-027）"。
+  **边界**：接的是**准入**不是吞吐；向量本体不随事实删除消失（验收按"相对基线"判定并如实报告残留条数），
+  向量 GC 未做；服务端 Milvus 形态、多副本消费、跨主机 NATS 集群、`ack_wait` 到期重投仍未验收。
 - [x] **outbox 分发已接线（ADR-024）**：新增 `services/outbox-relay`，把事务性 outbox 的事件
   **确认发到** NATS JetStream。四条写死的语义：`published_at` 只在确认之后写（发失败时保持 NULL，
   否则事件永久消失）；`Nats-Msg-Id = event_id`，重发由 duplicate window 吸收；认领用
@@ -309,9 +327,11 @@
   Milvus standalone **起不来也未验收**；Milvus Lite 是**进程独占**的（目录 flock，
   被占用即 `vector_store_locked`），因此 edge 是单写进程。详见
   [ADR-020](adr/ADR-020-向量索引落库与检索闭环.md)。
-- 剩余子项：dead-letter 与按原因分流、把消费侧/relay 进 compose（消费**循环**本身已接：
-  outbox → JetStream 的发布见 [ADR-024](adr/ADR-024-outbox分发接线与消费去重边界.md)，
-  JetStream → sink 的消费见 [ADR-025](adr/ADR-025-常驻消费循环与sink接线.md)）、
+- 剩余子项：dead-letter 与按原因分流、多副本消费、向量 GC（陈旧向量不随事实删除消失）、
+  吞吐与延迟曲线（消费**循环**已接：outbox → JetStream 的发布见
+  [ADR-024](adr/ADR-024-outbox分发接线与消费去重边界.md)，JetStream → sink 的消费见
+  [ADR-025](adr/ADR-025-常驻消费循环与sink接线.md)，两个常驻进程进 compose 并接上分级上限见
+  [ADR-027](adr/ADR-027-事件链路分级背压与容器化常驻.md)）、
   语义检索的排序面（`mode=semantic` 已接真实检索，但只有单路 COSINE 距离：
   RRF/混合检索与相关性校准未做，见 [ADR-023](adr/ADR-023-网关语义检索接线与索引检索面.md)）、
   向量质量验收（无带参考文本的检索样本 → 无 recall/MRR）、

@@ -8,11 +8,15 @@
 - 写入失败必须显式失败：`state` 只可能是 `ready`（已确认写入）或 `failed`（带原因码）。
 """
 
+# 必须排在 `milvus_store` 之前：它 import `pymilvus`，后者在 import 期会把仓库 `.env` 写进
+# `os.environ`（见 environ.py 与 ADR-027 §10 第 4 条）。快照晚一步就不是"OS 给的环境"。
+from .environ import BASE_ENVIRON
 from .errors import VectorStoreError
 from .milvus_store import VectorIndex
 from .worker import IndexOutcome, SearchOutcome, index_embedding, search_embeddings
 
 __all__ = [
+    "BASE_ENVIRON",
     "IndexOutcome",
     "SearchOutcome",
     "VectorIndex",

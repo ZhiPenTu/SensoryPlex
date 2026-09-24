@@ -57,19 +57,30 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_index_search(self):
-        """终结点与令牌要么都不配，要么都配齐：半配置的检索面不允许启动。"""
+        """终结点与令牌要么都不配，要么都配齐：半配置的检索面不允许启动。
+
+        **空白等于没配**：容器编排只能表达"变量是空串"（compose 的 `${VAR:-}` 无法表达"这个变量
+        不存在"，`docker compose exec -e VAR=` 同理）。把空白令牌读成缺省值，`up.sh` 才不会因为
+        一个老 `.env` 少了这一项就整个栈起不来。**半配置仍然被挡住**——只给一处（任一处为空）照样
+        落 `*_required`，所以"配了一半"依旧不会被当成"配好了"。
+        """
         endpoint = self.index_search_endpoint.strip()
+        token = self.index_search_token
+        if token is not None and not token.get_secret_value().strip():
+            token = None
         if not endpoint:
-            if self.index_search_token is not None:
+            if token is not None:
                 raise ValueError("index_search_endpoint_required")
+            self.index_search_endpoint = ""
+            self.index_search_token = None
             return self
         if "://" in endpoint:
             # 这里要的是 gRPC target（`host:port`）；写成 URL 会被静默当成域名。
             raise ValueError("index_search_endpoint_invalid")
         if not self.index_vector_index_key:
             raise ValueError("index_vector_index_key_required")
-        token = self.index_search_token
         if token is None or len(token.get_secret_value()) < 32:
             raise ValueError("index_search_token_required")
         self.index_search_endpoint = endpoint
+        self.index_search_token = token
         return self

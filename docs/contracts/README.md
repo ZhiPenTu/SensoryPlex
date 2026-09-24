@@ -376,11 +376,29 @@ stream 漂移只报不改）；消费去重原语在 `records.is_consumed` / `re
 - 顺序是**先干活后记账**：编码 → 落库 → 确认写入 → `record_consumed` → `ack`。
   少一条向量就不算消费完成：重投到 `max_deliver` 上限后以 `event_retry_exhausted` **退出码 3**
   显式停止（本切片没有 dead-letter）；
-- 状态行 `consume.status` 只有 16 个字段（计数 + 标识 + 稳定原因码），不放载荷、文本、向量、
-  令牌、DSN 或主机路径。
+- 状态行 `consume.status` 只有 20 个字段（计数 + 标识 + 稳定原因码 + 分级背压四元组），不放载荷、
+  文本、向量、令牌、DSN 或主机路径。
 
 因此"已写 outbox"仍**不能**解释为"已被消费"——它只表示事件被可靠地记了下来；
 "已发布 NATS"由 `make outbox-check` 出证据（subject / `Nats-Msg-Id` / 载荷逐字节对回来），
-"已被消费成向量、并且能被同一个检索面检索到"由 `make consume-check` 出证据。
+"已被消费成向量、并且能被同一个检索面检索到"由 `make consume-check` 出证据；
+"**两个常驻进程都在 compose 里、并且端到端跑得通**"由 `make event-pipeline-check` 出证据。
 语义检索本身已接线；它的输入除了显式调用（`sensoryplex-index index`），现在也可以来自
 NATS 消费（走同一个进程）。
+
+**事件链路的分级背压**（[ADR-027](../adr/ADR-027-事件链路分级背压与容器化常驻.md)，ADR-019 的
+"准入而不是改写"接到事件链路）：
+
+- 上限来自环境变量 `SENSORYPLEX_EVENT_QUEUE_CAPACITY`（由 `tools/macos_resident.py` 的分级表渲染，
+  与媒体队列的上限**同一处**事实源，但是**独立一列**：16 / 32 / 64 / 128）；
+- 两个**声明深度**都要落在上限内：relay 的 `--batch`（每轮认领）与 `serve --consume` 的
+  `--consume-batch`（= `max_ack_pending`，在飞未 ack）。越界即
+  `event_inflight_exceeds_tier_cap: declared=<n> tier_capacity=<n> tier=<name>`，**拒绝启动**，
+  不夹取、不改写；空串与坏值报 `invalid_resident_limit`（与 Rust 侧逐字相同）；
+- 变量缺失是显式 `not_injected`（`inflight_capacity=0`，**绝不**填默认值）——开发机上"这一层没有被
+  分级管着"必须看得出来；
+- `relay.status`（18 项）与 `consume.status`（20 项）各带四个字段：
+  `inflight_state`（`admitted` / `not_injected`）、`inflight_declared`、`inflight_capacity`、
+  `resident_tier`；`serve` 的就绪行在 `consume` 块里给同样的四元组（不开 `--consume` 时该块为 `null`）；
+- 两个进程**各自判定**，不共享令牌桶：relay 的在飞是"已认领未发布"，消费的是"已投递未 ack"，
+  是两段不同的在飞。

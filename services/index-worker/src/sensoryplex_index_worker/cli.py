@@ -20,6 +20,11 @@ import threading
 
 import psycopg
 from sensoryplex_relay.contract import DEFAULT_STREAM, DEFAULT_SUBJECT_PREFIX
+from sensoryplex_relay.residency import (
+    EventBackpressure,
+    ResidencyError,
+    read_event_backpressure,
+)
 
 from .consumer import (
     DEFAULT_ACK_WAIT_S,
@@ -34,6 +39,7 @@ from .consumer import (
     ConsumerRunner,
     json_line,
 )
+from .environ import BASE_ENVIRON
 from .errors import IndexContractError, VectorStoreError
 from .milvus_store import VectorIndex
 from .query_encoder import QueryEncoderError, build_query_encoder
@@ -221,18 +227,39 @@ def consume_options_of(arguments) -> ConsumerOptions | None:
     )
     # 参数越界在**占向量库的锁之前**失败：先崩在参数上，不要去抢一个别人正在用的目录。
     options.validate()
+    # 分级背压准入（ADR-027）：在飞未 ack 的深度超本档上限就**不接消费**。与参数越界同一位置，
+    # 理由也同一句话——先崩在准入上，不要带着一个注定要被夹取/放大的深度去抢向量库的锁。
+    # 档位与上限同样只认快照：本进程 import 了 `pymilvus`，而它会顺着 venv 位置把仓库 `.env`
+    # 写进 `os.environ`——那样"这台机器有没有注入 resident.env"会变成"venv 放在哪"的函数。
+    read_event_backpressure(options.batch, environ=BASE_ENVIRON)
     return options
+
+
+def consume_backpressure_of(options: ConsumerOptions | None) -> EventBackpressure | None:
+    """消费开着时把准入结论取出来放进 ready 行；关着时是 None（没有"看起来在跑"的字段）。"""
+
+    if options is None:
+        return None
+    return read_event_backpressure(options.batch, environ=BASE_ENVIRON)
 
 
 def run_serve(arguments) -> int:
     """常驻节点：先建编码器（失败就不占向量库的锁），再开库、开库成功才对外服务。"""
     if not arguments.database_url:
         raise SystemExit("database_url_required")
-    auth_token = arguments.auth_token or os.getenv("SENSORYPLEX_INDEX_AUTH_TOKEN", "")
+    # 令牌只从快照读（environ.py / ADR-027 §10 第 4 条）：`pymilvus` 在 import 期会把仓库 `.env`
+    # 写进 `os.environ`，直接读它会让"缺失即拒绝启动"的契约随 venv 的部署位置变。
+    auth_token = arguments.auth_token or BASE_ENVIRON.get("SENSORYPLEX_INDEX_AUTH_TOKEN", "")
     if not auth_token:
         # 检索面一旦跨容器接入就必须显式开端口；没有令牌的服务不允许起来。
         raise SystemExit("index_auth_token_required")
-    consume_options = consume_options_of(arguments)
+    try:
+        # 参数越界与分级背压准入都必须在这里变成**原因码退出的 SystemExit**，
+        # 而不是一个冒到顶层的 traceback（两者的失败位置都在抢向量库之前）。
+        consume_options = consume_options_of(arguments)
+        backpressure = consume_backpressure_of(consume_options)
+    except ResidencyError as error:
+        raise SystemExit(error.code) from error
     try:
         encoder = build_query_encoder(
             model_dir=arguments.model_dir,
@@ -256,36 +283,13 @@ def run_serve(arguments) -> int:
         )
     except (VectorStoreError, IndexContractError, QueryEncoderError) as error:
         return _emit_run_failure(arguments, error)
-    _emit(
-        {
-            "command": "serve",
-            "uri": arguments.uri,
-            "address": f"{arguments.bind}:{arguments.port}",
-            "collection": index.collection,
-            "vector_index_key": arguments.vector_index_key,
-            "index_version": INDEX_VERSION,
-            "max_concurrency": arguments.max_concurrency,
-            "encoder": encoder.describe(),
-            # 消费侧要么明确关着（null），要么把契约原样写出来：不写"看起来在跑"的 ready。
-            "consume": None
-            if consume_options is None
-            else {
-                "stream": consume_options.stream,
-                "subject": consume_options.subject,
-                "durable": consume_options.durable,
-                "batch": consume_options.batch,
-                "max_deliver": consume_options.max_deliver,
-                "idle_exit_cycles": consume_options.idle_exit_cycles,
-            },
-        },
-        arguments.out,
-    )
     runner = None
     if consume_options is not None:
         runner = ConsumerRunner(
             database_url=arguments.database_url,
             nats_url=arguments.nats_url,
             options=consume_options,
+            backpressure=backpressure,
             index=index,
             encoder=encoder,
             emit=StatusWriter(arguments.consume_status_out),
@@ -319,6 +323,34 @@ def run_serve(arguments) -> int:
             index.close()
             return 1
 
+    # ready 行在消费侧**确认接上之后**才写：它是"检索面 + 消费都就绪"的凭据。
+    # 早写一步就会造出"文件说消费在跑、进程其实还没接上"的窗口——这正是本项目要避免的形状。
+    _emit(
+        {
+            "command": "serve",
+            "uri": arguments.uri,
+            "address": f"{arguments.bind}:{arguments.port}",
+            "collection": index.collection,
+            "vector_index_key": arguments.vector_index_key,
+            "index_version": INDEX_VERSION,
+            "max_concurrency": arguments.max_concurrency,
+            "encoder": encoder.describe(),
+            # 消费侧要么明确关着（null），要么把已经接上的契约原样写出来：不写"看起来在跑"的 ready。
+            "consume": None
+            if consume_options is None
+            else {
+                "stream": consume_options.stream,
+                "subject": consume_options.subject,
+                "durable": consume_options.durable,
+                "batch": consume_options.batch,
+                "max_deliver": consume_options.max_deliver,
+                "idle_exit_cycles": consume_options.idle_exit_cycles,
+                **backpressure.document(),
+            },
+        },
+        arguments.out,
+    )
+
     def stop_everything(*_):
         # SIGTERM 走优雅停止：进程退出即释放 Milvus Lite 的目录锁，锁是瞬时的容量约束。
         server.stop(SERVE_GRACE_SECONDS)
@@ -340,12 +372,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="sensoryplex-index", description=__doc__)
     parser.add_argument(
         "--uri",
-        default=os.getenv("SENSORYPLEX_MILVUS_URI", ""),
+        default=BASE_ENVIRON.get("SENSORYPLEX_MILVUS_URI", ""),
         help="Milvus URI：本地文件路径（Milvus Lite）或 http(s):// 服务端端点",
     )
     parser.add_argument(
         "--database-url",
-        default=os.getenv("SENSORYPLEX_INDEX_DATABASE_URL", ""),
+        default=BASE_ENVIRON.get("SENSORYPLEX_INDEX_DATABASE_URL", ""),
         help="PostgreSQL DSN（embedding_record 事实库）",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -402,7 +434,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     serve.add_argument(
         "--nats-url",
-        default=os.getenv("SENSORYPLEX_NATS_URL", "nats://127.0.0.1:24222"),
+        default=BASE_ENVIRON.get("SENSORYPLEX_NATS_URL", "nats://127.0.0.1:24222"),
         help="NATS 端点；容器内是 nats://nats:4222，主机是 127.0.0.1",
     )
     serve.add_argument("--stream", default=DEFAULT_STREAM, help="JetStream stream 名")
