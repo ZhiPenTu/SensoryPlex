@@ -1892,8 +1892,10 @@ PR #9 / #10 已记录同一现象。按既有口径处理：**不反复重跑**�
 
 切片：**① 常驻 index-worker 消费的上游那一跳**——把事务性 outbox 的事件确认发到 NATS JetStream，
 并把 sink 侧的消费去重原语准备好。边界写在 [ADR-024](adr/ADR-024-outbox分发接线与消费去重边界.md) §9：
-`NATS → sink` 的**消费循环仍未接线**（它不只是接线问题，见下），所以本节的证据**不代表**
-"向量已被事件驱动地写进去了"。
+`NATS → sink` 的**消费循环**在本切片里**仍未接线**（它不只是接线问题，见下），所以本节的证据
+**不代表**"向量已被事件驱动地写进去了"。这条边界已由下一个切片
+[ADR-025](adr/ADR-025-常驻消费循环与sink接线.md) 收掉（见本文档"常驻消费循环与 sink 接线（ADR-025）"一节）；
+本节保留当时的实测记录。
 
 **接线与依赖**：新增工作区成员 `services/outbox-relay`（`sensoryplex-relay`，依赖 `nats-py` 与
 `psycopg`）。`uv lock` 在 api 容器内执行，只新增 `nats-py v2.16.0` 与 `sensoryplex-relay v0.1.0`
@@ -1957,9 +1959,12 @@ gateway 镜像补 `COPY services/outbox-relay`（`uv sync --frozen --package sen
 
 #### 仍未验证（不得当成完成）
 
-- **NATS → sink 的常驻消费循环没有写**：本轮只做"发布这一跳"。而且它不只是接线——
+- **NATS → sink 的常驻消费循环没有写（本切片内）**：本轮只做"发布这一跳"。当时判断它不只是接线——
   上游 observation 连 `event_id` 都没有，唯一存在的 `material.upserted` 携带不了 BGE 需要的
-  `ocr_blocks` 文本，所以"消费到 sink"要先补 observation 事件契约；
+  `ocr_blocks` 文本，所以当时认为"消费到 sink"要先补 observation 事件契约。
+  **该结论已被下一个切片改写**：[ADR-025](adr/ADR-025-常驻消费循环与sink接线.md) 证明不需要新增
+  observation 事件契约——事件只是通知，消费侧按 `payload_ref` 回查 `observation.payload_jsonb`
+  即可拿到可编码文本；
 - **没有 dead-letter 与重试上限**：`attempt` 只被计数（本轮最多到 1），超过阈值怎么办未定义；
 - **relay 没进 compose**：常驻形态靠 `make outbox-run` 显式起（JetStream 里还没有消费者，
   先常驻一个只发不收的进程没有意义）；
@@ -1967,3 +1972,59 @@ gateway 镜像补 `COPY services/outbox-relay`（`uv sync --frozen --package sen
 - **没有端到端背压**：ADR-019 的队列上限没有接到 relay，`--batch` 是固定上限；
 - 本目标在容器内执行，**没有**单独在 Apple Silicon / Mac mini 上验收（NATS 与 PostgreSQL
   与主机架构无关，但"跑在 MAC mini 家庭工作站上"这句话本轮没有证据）。
+
+### 常驻消费循环与 sink 接线（ADR-025）（2026-09-24）
+
+切片：**① 的下半跳**——把 JetStream 里的事件**真正消费成向量库里 ready 的事实**，并证明
+"事件驱动写入的向量能在**同一个进程**的检索面里立刻被检索到"。设计决策与未验证边界见
+[ADR-025](adr/ADR-025-常驻消费循环与sink接线.md)。
+
+命令：`make consume-check`（`tools/verify_index_consume.py`，**主机执行**：Milvus Lite 的数据目录
+是进程独占的本地文件、BGE 权重也只存在于主机，理由同 `semantic-check` / `index-check`）。
+
+**真实角色（没有替身）**：真实写侧 `append_material`（素材 + 观测 + outbox **同事务**）→
+真实 `python -m sensoryplex_relay.cli --once` 进程 → 真实 NATS JetStream（每场景独立 stream 与
+前缀，用完删掉）→ `python -m sensoryplex_index_worker.cli serve --consume`（**常驻消费 + 检索面
+同进程**，真实 BGE 权重、与检索面同一个编码器实例）→ 真实 Milvus Lite → 真实 gRPC 检索面查询。
+事件、素材、观测、向量都不是脚本造的。
+
+| # | 场景 | 实测结果 |
+| --- | --- | --- |
+| 1 | 事件驱动写入 + 同进程检索 | 真实写侧追加 2 条素材（各 1 条 `ocr_blocks` 观测）→ relay 发布 2 条事件（`published=2`/`failed=0`）→ 常驻消费后 `embedding_record` 2 行 `ready`（`vector_ref = milvus://<key>/<embedding_id>`、`indexed_at` 非空、`dimension=512`）、`consumed_event` 2 行、`model_release` 登记了编码器实测身份；查询文本经真实 BGE 编码后命中**排第一**是对的素材（`hits=2`、`unindexedHits=0`）；非 owner 查询 `hits` 为空且 `unindexedHits=2`（丢弃被计数，不是"没有命中"） |
+| 2 | 重放不重复 | 换一个 durable（新消费视角）重投同一批事件：`consumed_total=2` 重新记账（`consumed_event` 变成 4 行），但 `embedding_record` 仍是 2 行、`inspect.rows` 仍是 2（`embedding_id` 确定性 → 向量不重复） |
+| 3 | 单写进程与优雅停止 | 消费进程持锁期间第二个进程读同一目录 → `vector_store_locked`；SIGTERM 后退出码 0，且另一个进程能重新打开该目录（`inspect.rows=2`） |
+| 4 | 坏事件 fail-stop | 指向不存在素材的事件（唯一一处刻意手写的坏事件）重投到 `max_deliver=2` → 进程**退出码 3** + 状态文件 `consume.fatal`（`event_retry_exhausted` / `event_missing_facts`）；`num_ack_pending >= 1`（没 ack）、该 consumer 的 `consumed_event` 0 行、vector 行 0 行 |
+| 5 | 启动期显式失败 | stream 缺失 → 退出码 1 + `event_stream_missing`，且事后确认**流没有被建出来**；手工造一个 `max_deliver=1` 漂移的 durable → `event_consumer_contract_mismatch`；NATS 指向 `127.0.0.1:1` → `nats_unreachable`（三者都在"接上之前"失败，且状态行没有泄露 DSN 与主机路径） |
+| 6 | 状态行契约 | `consume.status` 字段集合逐字等于契约的 16 项；整份状态行与就绪行里没有 DSN、主机路径、素材文本、令牌或向量库引用 |
+
+本机一次实跑：`make consume-check` **13.6s** 全过（`outbox: 2 events appended by the real write path`
+→ 场景 1/2/3 通过 → fail-stop → 三类启动失败）。
+
+同切片的其余证据（容器内）：
+
+- `tests/contracts/test_index_consumer_contract.py` **53 passed**：subject 精确绑定（不用 `>` 通配）、
+  consumer 参数 16 条越界、`parse_payload_ref` 正反例、durable 契约六种漂移、枚举/字符串归一、
+  `ensure_consumer` 三条路径（建 / 接受 / 漂移）、`payload_jsonb` → 插件文本契约往返、7 种不可编码
+  payload 必须被拒（不截断）、状态行字段集合与不外泄；
+- `tests/integration/test_index_consumer.py` **9 passed**（真 PostgreSQL + 真迁移，其中 3 例用真
+  JetStream）：记账与重投幂等、缺事实/空文本零写入、只有 VLM 观测也消费、真 JetStream 投递→ack
+  （`num_ack_pending == 0`）、坏事件重投到上限 fail-stop、stream 缺失必须报错。
+  注意这一层用 `MemoryIndex` / `FixedEncoder` 替身，**不等于**向量真的写进了 Milvus——那由
+  `make consume-check` 承担；
+
+  这 3 例真 JetStream 用例在**容器模式**下默认真跑：`EXEC_TEST` 现在按 `TEST_NATS_URL`
+  （默认 `nats://nats:4222`）注入 `SENSORYPLEX_TEST_NATS_URL`（与 `SENSORYPLEX_TEST_DATABASE_URL`
+  同一套注入方式）。主机模式（含远端 CI）没有 NATS 时它们仍是**显式 skip**，所以这部分的证据
+  只来自容器模式。
+
+  **前置**：`consumer.py` / `contract.py` 是新增模块，容器里 import 的是镜像内 `site-packages`
+  的副本（bind mount 的源码不参与 import），所以跑这些容器内用例前必须先 `./deploy/up.sh api`
+  重建 api 镜像；否则会以 `ImportError: cannot import name 'consumer'` 直接红。
+
+**顺带修掉的缺陷**：`consume_loop` 只把本轮 `failed` 写进状态行、`failed_total` 从不累加 →
+常驻进程会永远显示"从没失败过"。契约测试钉的是字段集合、集成测试钉的是本轮计数，累计口径没人钉；
+现在循环里累加，集成测试补了断言。另外两处是**验收脚本自己**的缺陷（protobuf JSON 省略 0 与空
+repeated → 把"没这个键"读成"丢了 `None` 条"；状态行先写、进程后退出 → 判退出码读到的还是 `None`），
+记在 [ADR-025](adr/ADR-025-常驻消费循环与sink接线.md) §10。
+
+`golden_path_verified` 仍恒为 false：真实媒体端到端（真实视频 → Runtime/Timeline → 事件）仍未联调。

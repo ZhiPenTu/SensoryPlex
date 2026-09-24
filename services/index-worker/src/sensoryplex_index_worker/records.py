@@ -242,3 +242,74 @@ def consumed_state(conn, *, event_id: str, consumer_name: str) -> dict | None:
         "consumer_name": consumer_name,
         "consumed_at": row[0].isoformat(),
     }
+
+
+# ── 事件消费侧的事实回查与模型身份（ADR-025） ────────────────────────────────
+#
+# 事件只是**通知**：`material.upserted` 的 `payload_ref` 是受控引用，可编码文本仍在
+# `observation.payload_jsonb` 里（ADR-010：控制面不传载荷）。因此消费侧必须能按引用回查到
+# 与写侧同事务落下的那些事实行——回查不到不是"没数据"，而是写侧缺陷，调用方要显式失败。
+
+
+def load_material(conn, *, material_unit_id: str, revision: int) -> dict | None:
+    """按 `(material_unit_id, revision)` 读素材事实；不存在返回 None（由调用方判定性质）。"""
+    row = conn.execute(
+        "SELECT stream_id, start_ms, end_ms, status FROM material_unit "
+        "WHERE material_unit_id=%s AND revision=%s",
+        (material_unit_id, revision),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "material_unit_id": material_unit_id,
+        "revision": revision,
+        "stream_id": row[0],
+        "start_ms": row[1],
+        "end_ms": row[2],
+        "status": row[3],
+    }
+
+
+def load_observations(conn, *, material_unit_id: str, revision: int) -> list[dict]:
+    """这个 revision 引用到的观测（含 `payload_jsonb`），按 observation_id 稳定排序。
+
+    顺序写死是刻意的：同一份事实两次消费必须得到同一批 `embedding_id` 与同一条文本，
+    否则"重跑得到同一份向量"这条幂等性就没有依据。
+    """
+    rows = conn.execute(
+        "SELECT o.observation_id, o.modality, o.payload_jsonb FROM material_observation mo "
+        "JOIN observation o ON o.observation_id = mo.observation_id "
+        "WHERE mo.material_unit_id=%s AND mo.revision=%s ORDER BY o.observation_id",
+        (material_unit_id, revision),
+    ).fetchall()
+    return [{"observation_id": row[0], "modality": row[1], "payload": dict(row[2])} for row in rows]
+
+
+def ensure_model_release(
+    conn,
+    *,
+    model_release_id: str,
+    name: str,
+    version: str,
+    artifact_hash: str,
+    backend: str,
+    config_hash: str,
+) -> None:
+    """登记模型身份（`embedding_record.model_release_id` 的外键指向它）。
+
+    存在就**校验一致**：同一个 release id 对应两份不同的身份，说明有人改了权重却复用了旧身份，
+    那是身份体系的缺陷。这种情况显式冲突，不覆盖、也不"用最新的一份算了"。
+    """
+    conn.execute(
+        "INSERT INTO model_release("
+        "model_release_id,name,version,artifact_hash,backend,config_hash) "
+        "VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT (model_release_id) DO NOTHING",
+        (model_release_id, name, version, artifact_hash, backend, config_hash),
+    )
+    row = conn.execute(
+        "SELECT name,version,artifact_hash,backend,config_hash FROM model_release "
+        "WHERE model_release_id=%s",
+        (model_release_id,),
+    ).fetchone()
+    if row != (name, version, artifact_hash, backend, config_hash):
+        raise IdentityConflict("model_release_identity_conflict")

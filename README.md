@@ -97,8 +97,14 @@ make embed-check MEDIA=/absolute/path/to/authorized-video.webm    # BGE 文本�
 `Nats-Msg-Id`、载荷），并验证重放去重、漂移不被静默修好、NATS 不可达时**一行都不写**。
 这个目标在 api 容器内执行（只要真实 PostgreSQL 与真实 JetStream，都在 compose 里）。
 `make outbox-run` 是同一入口的常驻形态。**边界**：它是"发布这一跳"，
-[NATS → sink 的消费循环仍未接线](docs/adr/ADR-024-outbox分发接线与消费去重边界.md)，
 所以通过**不代表**向量已被事件驱动地写进去了。
+
+`make consume-check` 补上**消费这一跳**（[ADR-025](docs/adr/ADR-025-常驻消费循环与sink接线.md)，
+**主机执行**：Milvus Lite 的数据目录是进程独占的本地文件、BGE 权重也只在本机）：真实写侧
+（素材 + 观测 + outbox 同事务）→ 真实 relay → 真 NATS JetStream → `sensoryplex-index serve
+--consume` 常驻消费 → 真实 BGE 编码写入真实 Milvus Lite → **同一个进程**的 gRPC 检索面立刻
+检索到；另验换 durable 重放不重复、坏事件重投到上限 fail-stop（**退出码 3**，不 ack 不记账）、
+启动期三类显式失败（stream 缺失 / durable 漂移 / NATS 不可达）与状态行不外泄。
 
 `make embed-check` 是唯一**不接数据面**的链路：它先跑一遍真实 OCR 产出文字块，再让 BGE 消费这些
 文字（`acceptsMemoryKinds: []`，喂字节以 `buffer_reader_not_attached` 明确拒绝），产出维度版本化的

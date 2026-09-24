@@ -73,6 +73,22 @@ class QueryEncoder:
             )
         return vector
 
+    def provenance(self) -> dict:
+        """`model_release` 行需要的身份（ADR-025 的消费侧要把它登记进事实库）。
+
+        全部取自插件实测的模型身份与配置摘要，**不是**配置里写的版本号：同一个 release id
+        对应两份不同身份是有缺陷的，登记时会显式冲突（`records.ensure_model_release`）。
+        """
+        model = self._engine.model
+        return {
+            "model_release_id": model.release_id,
+            "name": model.model_id,
+            "version": model.model_version,
+            "artifact_hash": model.artifact_digest,
+            "backend": model.backend,
+            "config_hash": self._engine.config.config_hash(),
+        }
+
     def describe(self) -> dict:
         """可观测字段：不含权重目录、不含主机路径。"""
         return {

@@ -22,10 +22,12 @@ EXEC_API      = $(COMPOSE) exec -T api
 EXEC_GATEWAY  = $(COMPOSE) exec -T gateway
 EXEC_CONSOLE  = $(COMPOSE) exec -T console
 EXEC_MIGRATE  = $(COMPOSE) run --rm -T migrate
-# 集成测试的库地址：容器模式用 compose exec -e 从调用者环境注入；`-e` 必须写在 SERVICE
+# 集成测试的库/总线地址：容器模式用 compose exec -e 从调用者环境注入；`-e` 必须写在 SERVICE
 # **之前**（`docker compose exec [OPTIONS] SERVICE COMMAND`），所以这里不复用 EXEC_API。
-# 主机模式由调用者自己提供该变量（见下方 test-integration 注释）。
-EXEC_TEST     = $(COMPOSE) exec -T -e SENSORYPLEX_TEST_DATABASE_URL api
+# `SENSORYPLEX_TEST_NATS_URL` 给了容器内可达的默认值（`TEST_NATS_URL`），让真 JetStream 的
+# 集成用例默认**真跑**而不是被 skip（跳过不算证据）；主机模式由调用者自己提供这两个变量
+# （见下方 test-integration 注释）。
+EXEC_TEST     = $(COMPOSE) exec -T -e SENSORYPLEX_TEST_DATABASE_URL -e SENSORYPLEX_TEST_NATS_URL=$(TEST_NATS_URL) api
 # api / gateway / console 容器里的可执行入口：
 PY_API        = /app/.venv/bin/python
 PY_GATEWAY    = /app/.venv/bin/python
@@ -52,10 +54,13 @@ CARGO_HOST    ?= $(CARGO)
 PY_HOST       ?= uv run --frozen python
 # outbox-check / outbox-run 要连的 NATS：容器内是服务名 nats:4222，宿主是回环端口。
 OUTBOX_NATS   ?= $(if $(filter container,$(EXEC_MODE)),nats://nats:4222,nats://127.0.0.1:24222)
+# 集成测试（EXEC_TEST）连的 NATS：与 OUTBOX_NATS 同一套推导。
+TEST_NATS_URL ?= $(if $(filter container,$(EXEC_MODE)),nats://nats:4222,nats://127.0.0.1:24222)
 
 .PHONY: setup configure proto check test integration format infra up down migrate gateway runtime pipeline-check runtime-smoke gateway-smoke media-replay media-check handoff-check backpressure-check
 .PHONY: stream-up stream-down stream-status stream-logs live-check model-check asr-check ocr-check embed-check index-check semantic-check parallelism-check plugin-artifact capability-check accelerator-check
 .PHONY: outbox-check outbox-run
+.PHONY: consume-check
 .PHONY: media-test resident-probe resident-install resident-uninstall resident-status
 .PHONY: lint-ruff test-py test-contracts test-integration proto-generate plugin-artifact-check
 
@@ -91,9 +96,11 @@ lint-ruff:
 test-contracts:
 	$(EXEC_TEST) $(PY_API) -m pytest tests/contracts -q
 
-# test-integration 跑 tests/integration：需要可写的 PostgreSQL（SENSORYPLEX_TEST_DATABASE_URL），
-# 容器模式由 compose postgres 提供，主机模式由调用者提供。没有数据库的主机会在
-# tests/integration/test_console.py 上**报错而不是跳过** —— 刻意的：漏配数据库必须显式失败。
+# test-integration 跑 tests/integration：需要可写的 PostgreSQL（SENSORYPLEX_TEST_DATABASE_URL）
+# 与可连的 NATS（SENSORYPLEX_TEST_NATS_URL，真 JetStream 用例用），容器模式由 compose
+# postgres / nats 提供，主机模式由调用者提供。没有数据库的主机会在 tests/integration/test_console.py
+# 上**报错而不是跳过** —— 刻意的：漏配数据库必须显式失败。主机模式（含远端 CI）没有 NATS 时，
+# 真 JetStream 用例仍是显式 skip，所以那些用例的证据只来自容器模式。
 test-integration:
 	$(EXEC_TEST) $(PY_API) -m pytest tests/integration -q
 
@@ -371,16 +378,26 @@ semantic-check:
 # ── outbox → NATS JetStream 的 relay：验收与常驻运行（① / ADR-024） ──────────
 # 这个目标与其它 *-check 不同，它**在 api 容器内**执行：需要的只有真实 PostgreSQL 与真实
 # JetStream（都在 compose 里），Milvus Lite / HF 权重 / CoreML 一个都不用——没有退回主机的理由。
-# 边界（不得含糊）：本目标验的是"发布这一跳"——事件确认发到 JetStream、`Nats-Msg-Id` 去重、
-# 漂移不静默、NATS 不可达显式失败。JetStream → sink 的**消费**循环尚未接线（ADR-024 §8），
-# 所以 `outbox-check` 通过**不等于**"向量已经被事件驱动地写进去了"。
+# 边界（不得含糊）：本目标只验"发布这一跳"——事件确认发到 JetStream、`Nats-Msg-Id` 去重、
+# 漂移不静默、NATS 不可达显式失败。"事件被消费成向量、并且能被检索到"由 `consume-check`
+# 单独验（ADR-025）；`outbox-check` 通过**不等于**"向量已经被事件驱动地写进去了"。
 outbox-check:
 	$(EXEC_API) $(PY_API) tools/verify_outbox_relay.py --nats-url "$(OUTBOX_NATS)"
 
 # 常驻形态：前台运行本机 relay，一有事件落 outbox 就发布到 JetStream（Ctrl-C / SIGTERM 优雅收尾）。
-# 只做发布，不做消费；JetStream 里的消息目前没有常驻消费者。
+# 只做发布，不做消费；消费侧是 `sensoryplex-index-worker.cli serve --consume`（见 consume-check）。
 outbox-run:
 	$(EXEC_API) $(PY_API) -m sensoryplex_relay.cli --nats-url "$(OUTBOX_NATS)"
+
+# ── 事件驱动的常驻消费验收（① / ADR-025） ────────────────────────────────────
+# 闭环证据：真实写侧落 outbox（事实与事件同事务）→ 真实 relay 发到 JetStream →
+# `cli serve --consume` 常驻消费 → 真实 BGE 编码写入真实 Milvus Lite → **同一个进程**的检索面
+# 立刻检索到；另验重放不重复、坏事件 fail-stop（退出码 3）、启动期三类显式失败
+# （stream 缺失 / durable 漂移 / NATS 不可达）以及状态行不外泄。
+# Milvus Lite 的数据目录是进程独占的本地文件、BGE 权重也只存在于主机，所以固定在主机执行
+# （理由同 semantic-check / index-check）。
+consume-check:
+	$(PY_HOST) tools/verify_index_consume.py $(if $(DATABASE_URL),--database-url "$(DATABASE_URL)",) $(if $(NATS_URL),--nats-url "$(NATS_URL)",) $(if $(MODEL_DIR),--model-dir "$(MODEL_DIR)",) $(if $(PROVIDER),--provider "$(PROVIDER)",)
 
 # ── 模型 worker 分级并发上限验收（M8 剩余，ADR-021） ────────────────────────
 # 上游必须是**真实** `ocr_blocks` 观测：每个 MEDIA 跑一次未改动的 tools/verify_ocr.py 真实链路
