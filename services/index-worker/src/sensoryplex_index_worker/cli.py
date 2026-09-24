@@ -1,20 +1,31 @@
 """index-worker 命令行入口；进程边界与其它 worker 一致（显式参数、显式失败）。
 
-本切片只提供**显式调用**：常驻消费（NATS 事件 / outbox 轮询）尚未接线，因此这里不做
-"看起来在跑"的服务，也不谎报 ready。
+两个形态：
+
+- `index` / `search` / `inspect`：**显式调用**，各自一个短命进程（落库、按向量检索、看契约）；
+- `serve`：**常驻检索面**（ADR-023）。Milvus Lite 是进程独占的，因此"持有索引的进程"与
+  "回答语义检索的进程"必须是同一个：`serve` 打开向量库后一直持有，调用方只提交查询文本。
+
+常驻消费（NATS 事件 / outbox 轮询）仍未接线，因此这里不做"看起来在跑"的消费循环，
+也不谎报 ready。
 """
 
 import argparse
 import json
 import os
 import pathlib
+import signal
 import sys
 
 import psycopg
 
 from .errors import IndexContractError, VectorStoreError
 from .milvus_store import VectorIndex
+from .query_encoder import QueryEncoderError, build_query_encoder
+from .service import INDEX_VERSION, start_server
 from .worker import index_embedding, search_embeddings
+
+SERVE_GRACE_SECONDS = 3
 
 
 def _load_observations(path: pathlib.Path) -> list[dict]:
@@ -177,6 +188,59 @@ def run_inspect(arguments) -> int:
     return 0
 
 
+def run_serve(arguments) -> int:
+    """常驻检索面：先建编码器（失败就不占向量库的锁），再开库、开库成功才对外服务。"""
+    if not arguments.database_url:
+        raise SystemExit("database_url_required")
+    auth_token = arguments.auth_token or os.getenv("SENSORYPLEX_INDEX_AUTH_TOKEN", "")
+    if not auth_token:
+        # 检索面一旦跨容器接入就必须显式开端口；没有令牌的服务不允许起来。
+        raise SystemExit("index_auth_token_required")
+    try:
+        encoder = build_query_encoder(
+            model_dir=arguments.model_dir,
+            model_file=arguments.model_file,
+            provider=arguments.provider,
+            max_length=arguments.max_length,
+        )
+        index = VectorIndex(arguments.uri, arguments.vector_index_key)
+        # 契约必须在**启动时**就对完：漂移的 collection 是配置事实，不是"稍后重试可能成功"的
+        # 瞬时故障。留到第一次查询才失败，会把 `vector_collection_contract_mismatch` 伪装成
+        # `vector_search_failed`（可重试），运维会被指向错误的排查方向。
+        index.ensure_collection()
+        server, pool = start_server(
+            database_url=arguments.database_url,
+            index=index,
+            encoder=encoder,
+            auth_token=auth_token,
+            bind=arguments.bind,
+            port=arguments.port,
+            max_concurrency=arguments.max_concurrency,
+        )
+    except (VectorStoreError, IndexContractError, QueryEncoderError) as error:
+        return _emit_run_failure(arguments, error)
+    _emit(
+        {
+            "command": "serve",
+            "uri": arguments.uri,
+            "address": f"{arguments.bind}:{arguments.port}",
+            "collection": index.collection,
+            "vector_index_key": arguments.vector_index_key,
+            "index_version": INDEX_VERSION,
+            "max_concurrency": arguments.max_concurrency,
+            "encoder": encoder.describe(),
+        },
+        arguments.out,
+    )
+    # SIGTERM 走优雅停止：进程退出即释放 Milvus Lite 的目录锁，锁是瞬时的容量约束。
+    signal.signal(signal.SIGTERM, lambda *_: server.stop(SERVE_GRACE_SECONDS))
+    signal.signal(signal.SIGINT, lambda *_: server.stop(SERVE_GRACE_SECONDS))
+    server.wait_for_termination()
+    pool.close()
+    index.close()
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="sensoryplex-index", description=__doc__)
     parser.add_argument(
@@ -217,6 +281,25 @@ def build_parser() -> argparse.ArgumentParser:
     inspect.add_argument("--vector-index-key", required=True)
     inspect.add_argument("--out", type=pathlib.Path, default=None)
     inspect.set_defaults(handler=run_inspect)
+
+    serve = subparsers.add_parser(
+        "serve", help="常驻检索面（gRPC）：持有向量库，把查询文本编码成查询向量后检索"
+    )
+    serve.add_argument("--vector-index-key", required=True)
+    serve.add_argument("--bind", default="127.0.0.1", help="默认只绑回环；跨容器接入要显式开")
+    serve.add_argument("--port", type=int, default=50077)
+    serve.add_argument("--model-dir", required=True, help="BGE 权重目录（不联网下载）")
+    serve.add_argument("--model-file", default="")
+    serve.add_argument("--provider", default="cpu")
+    serve.add_argument("--max-length", type=int, default=0)
+    serve.add_argument("--max-concurrency", type=int, default=2)
+    serve.add_argument(
+        "--auth-token",
+        default="",
+        help="共享令牌；也可用环境变量 SENSORYPLEX_INDEX_AUTH_TOKEN，缺失即拒绝启动",
+    )
+    serve.add_argument("--out", type=pathlib.Path, default=None)
+    serve.set_defaults(handler=run_serve)
     return parser
 
 

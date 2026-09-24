@@ -165,3 +165,21 @@ def ready_ids(conn, principal: str, vector_index_key: str) -> list[str]:
         (vector_index_key, principal),
     ).fetchall()
     return [row[0] for row in rows]
+
+
+def collection_model_releases(conn, vector_index_key: str, *, limit: int = 2) -> list[str]:
+    """这个 collection 里已确认写入的模型身份（去重、按 key 名的顺序，最多 limit 个）。
+
+    检索面用它做**同源守卫**：距离只有在查询向量与索引向量出自同一份模型时才有意义。
+    刻意不按 principal 过滤——collection 是所有 owner 共用的，混进另一个 release 的向量会
+    让所有人的距离失去可比性，因此这里的一致性是 collection 级，不是租户级的。
+
+    只回 release id（形如 `bge:<模型>@<权重摘要前缀>`），不带 owner、不带路径。
+    """
+    rows = conn.execute(
+        "SELECT model_release_id FROM embedding_record "
+        "WHERE vector_index_key=%s AND state='ready' "
+        "GROUP BY model_release_id ORDER BY model_release_id LIMIT %s",
+        (vector_index_key, limit),
+    ).fetchall()
+    return [row[0] for row in rows]

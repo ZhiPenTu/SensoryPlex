@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "SensoryPlex embedding sink: Milvus upsert/confirm and provenance-checked search"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+  "edge-material-plugin-embed-bge-onnx",
   "edge-material-sdk",
+  "grpcio>=1.71,<1.72",
   "psycopg[binary,pool]>=3.2,<4",
   "pymilvus>=2.6,<3",
   "milvus-lite>=2.4",
@@ -14,6 +16,9 @@ dependencies = [
 sensoryplex-index = "sensoryplex_index_worker.cli:main"
 
 [tool.uv.sources]
+# 检索面把 BGE 插件的 Start 当库调用（ADR-023）：查询向量与索引向量必须同一份模型身份，
+# 所以这里**引入插件而不复制它的装配逻辑**。
+edge-material-plugin-embed-bge-onnx = { workspace = true }
 edge-material-sdk = { workspace = true }
 
 [build-system]
