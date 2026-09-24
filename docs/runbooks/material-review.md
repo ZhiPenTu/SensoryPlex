@@ -75,3 +75,32 @@ docker compose --env-file .env -f deploy/compose/docker-compose.poc.yml exec -T 
 `apps/console/tests/material-utils.test.mjs` 验证毫秒转换、查询边界、来源覆盖、URL/版本和嵌套文字展示。
 浏览器人工/自动验收需实际登录、读取真实 API，并用授权原片检查播放位置、历史版本与错误状态。
 测试 fixture 不得写进业务库或被称作模型识别结果。
+
+实际浏览器结果与截图见 [2026-09-24 专项记录](../verification-material-review.md)。
+
+## 独立验收环境复用
+
+`deploy/material-review-local.sh` 从脚本所在仓库解析路径，只读取该仓库忽略目录下的
+`.data/material-review/preview.env` 和 `compose.yml`；缺失配置时明确退出，不会转向主业务栈。
+本机验收配置使用 Compose 项目 `sensoryplex-material-review`、独立 `review-db` 卷、
+console 端口 15173、API 端口 18091。配置与密码不要提交，也不要清理仍在使用的 worktree。
+
+已缓存的本机 ARM64 验收镜像是 `sensoryplex-browser-tools:chromium136-agent0.27.0`。
+它基于现有 console 镜像保存，仅供开发验收；不是生产服务镜像，也未发布到远端。
+复用前先用 `docker image inspect` 检查本机标签；存在时让隔离 Compose 的 console 指向此标签，
+通过 `./deploy/material-review-local.sh up -d --no-deps --pull never console` 启动。
+不要在每个任务中重新执行 `apk add chromium` 或下载 Playwright 浏览器。
+
+容器中工具路径固定如下，可以直接复用：
+
+```sh
+./deploy/material-review-local.sh exec -T console \
+  /opt/material-ui-tools/node_modules/.bin/agent-browser \
+  --executable-path /opt/material-chromium/usr/lib/chromium/chromium \
+  --args --no-sandbox open http://console:5173
+./deploy/material-review-local.sh exec -T console \
+  /opt/material-ui-tools/node_modules/.bin/agent-browser snapshot -i
+```
+
+新机器没有此缓存时，先确认已有浏览器镜像及 CPU 架构再选择一次性的工具准备方式，
+避免把 macOS 二进制或 x86_64 缓存误用到 Linux ARM64。
