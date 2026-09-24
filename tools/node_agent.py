@@ -304,6 +304,20 @@ def execute_intent(intent: dict[str, Any], client: NodeAgentClient) -> bool:
         )
         return True
 
+    elif action == "task_process":
+        # 任务意图与插件安装意图共用传输通道，但 Agent 尚未接入受控 Runtime 执行器。
+        # 必须给控制面稳定的失败事实，不能返回 unknown action 后让任务永久停在处理中。
+        client.report_deployment(
+            intent_id=intent_id,
+            instance_id=instance_id,
+            action=intent["action"],
+            success=False,
+            actual_state="PLUGIN_INSTANCE_STATE_UNSPECIFIED",
+            error_code="runtime_task_service_not_attached",
+            error_detail="task_process requires a controlled runtime executor",
+        )
+        return False
+
     else:
         client.report_deployment(
             intent_id=intent_id,

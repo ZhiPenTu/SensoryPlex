@@ -223,6 +223,86 @@ def test_config_versions_pipeline_references_and_drafts(console_app, console_dat
         assert conn.execute("SELECT count(*) FROM processing_job").fetchone()[0] == 0
 
 
+def test_task_dispatch_surfaces_unattached_runtime(console_app, console_database):
+    """任务意图必须有明确动作与终态失败，不能无限停在 processing。"""
+    with TestClient(console_app) as client:
+        login(client)
+        cfg = config(client)
+        plan = pipeline(client, cfg)
+        asset_id, _ = upload(client)
+        draft = client.post(
+            "/v1/job-drafts",
+            json={"name": "runtime unavailable", "asset_id": asset_id, "pipeline_id": plan["id"]},
+        ).json()
+
+        token = client.post(
+            "/admin/v1/nodes/enrollment-tokens",
+            json={"node_id": "task-worker", "expires_in_minutes": 30},
+        ).json()["token"]
+        session_token = client.post(
+            "/v1/agent/enroll",
+            json={
+                "enrollment_token": token,
+                "node_id": "task-worker",
+                "display_name": "Task worker",
+                "is_co_located": True,
+                "capabilities": {
+                    "platform": "macos",
+                    "arch": "aarch64",
+                    "cpu_cores": 8,
+                    "memory_bytes": "17179869184",
+                    "supported_artifacts": ["local_native"],
+                },
+            },
+        ).json()["session_token"]
+
+        dispatched = client.post(f"/v1/job-drafts/{draft['id']}:dispatch")
+        assert dispatched.status_code == 200, dispatched.text
+        assert dispatched.json()["state"] == "processing"
+
+        heartbeat = client.post(
+            "/v1/agent/heartbeat",
+            json={"node_id": "task-worker", "session_token": session_token},
+        )
+        assert heartbeat.status_code == 200, heartbeat.text
+        intent = heartbeat.json()["pending_intents"]
+        assert len(intent) == 1
+        assert intent[0]["action"] == "DEPLOYMENT_ACTION_TASK_PROCESS"
+
+        reported = client.post(
+            "/v1/agent/report",
+            json={
+                "intent_id": intent[0]["intent_id"],
+                "instance_id": "",
+                "node_id": "task-worker",
+                "action": "DEPLOYMENT_ACTION_TASK_PROCESS",
+                "success": False,
+                "actual_state": "PLUGIN_INSTANCE_STATE_UNSPECIFIED",
+                "error_code": "runtime_task_service_not_attached",
+                "error_detail": "task_process requires a controlled runtime executor",
+            },
+        )
+        assert reported.status_code == 200, reported.text
+
+        listed = client.get("/v1/job-drafts").json()["items"]
+        visible = next(item for item in listed if item["id"] == draft["id"])
+        assert visible["state"] == "failed"
+        assert visible["reason"] == "runtime_task_service_not_attached"
+        capability_items = client.get("/v1/capabilities").json()["capabilities"]
+        capabilities = {item["name"]: item for item in capability_items}
+        assert capabilities["task_execution"] == {
+            "name": "task_execution",
+            "available": False,
+            "reason": "runtime_task_service_not_attached",
+        }
+
+    with psycopg.connect(console_database) as conn:
+        intent_state, intent_code = conn.execute(
+            "SELECT state,error_code FROM console_deployment_intent WHERE job_id=%s", (draft["id"],)
+        ).fetchone()
+        assert (intent_state, intent_code) == ("failed", "runtime_task_service_not_attached")
+
+
 def test_token_scope_revocation_and_secret_storage(console_app, console_database):
     with TestClient(console_app) as client:
         login(client)
