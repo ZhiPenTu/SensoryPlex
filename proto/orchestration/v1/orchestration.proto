@@ -69,6 +69,12 @@ message PipelineRun {
   string idempotency_key = 5;
   int64 deadline_unix_ms = 6;
   PipelineRunState state = 7;
+  string owner = 8;
+  string error_code = 9;
+  string error_detail = 10;
+  int64 created_at_unix_ms = 11;
+  int64 updated_at_unix_ms = 12;
+  int64 completed_at_unix_ms = 13;
 }
 
 message PipelineTask {
@@ -80,6 +86,11 @@ message PipelineTask {
   PipelineTaskState state = 6;
   string assignment_id = 7;
   string reason_code = 8;
+  uint32 max_attempts = 9;
+  string error_detail = 10;
+  string output_ref = 11;
+  int64 created_at_unix_ms = 12;
+  int64 updated_at_unix_ms = 13;
 }
 
 message SchedulerAssignment {
@@ -91,4 +102,126 @@ message SchedulerAssignment {
   string decision = 6;
   string reason_code = 7;
   int64 lease_expires_at_unix_ms = 8;
+  string run_id = 9;
+  uint32 attempt = 10;
+  int64 created_at_unix_ms = 11;
+}
+
+message ValidatePipelineRevisionRequest {
+  string pipeline_id = 1;
+  repeated PipelineNode nodes = 2;
+  repeated PipelineEdge edges = 3;
+}
+
+message ValidatePipelineRevisionResponse {
+  bool valid = 1;
+  repeated string errors = 2;
+  string graph_digest = 3;
+}
+
+message PublishPipelineRevisionRequest {
+  string pipeline_id = 1;
+  string name = 2;
+  string description = 3;
+  repeated PipelineNode nodes = 4;
+  repeated PipelineEdge edges = 5;
+}
+
+message PublishPipelineRevisionResponse {
+  PipelineRevision revision = 1;
+}
+
+message SubmitPipelineRunRequest {
+  string pipeline_id = 1;
+  uint64 revision = 2;
+  string input_ref = 3;
+  string idempotency_key = 4;
+  int64 deadline_unix_ms = 5;
+}
+
+message SubmitPipelineRunResponse {
+  PipelineRun run = 1;
+  repeated PipelineTask tasks = 2;
+  bool is_duplicate = 3;
+}
+
+message GetPipelineRunRequest {
+  string run_id = 1;
+}
+
+message GetPipelineRunResponse {
+  PipelineRun run = 1;
+  repeated PipelineTask tasks = 2;
+  repeated SchedulerAssignment assignments = 3;
+}
+
+message CancelPipelineRunRequest {
+  string run_id = 1;
+  string reason = 2;
+}
+
+message CancelPipelineRunResponse {
+  PipelineRun run = 1;
+  repeated PipelineTask cancelled_tasks = 2;
+}
+
+message RetryPipelineTaskRequest {
+  string task_id = 1;
+}
+
+message RetryPipelineTaskResponse {
+  PipelineTask task = 1;
+}
+
+message ClaimTaskRequest {
+  string node_id = 1;
+  repeated string supported_plugins = 2;
+  uint32 max_tasks = 3;
+}
+
+message ClaimTaskResponse {
+  repeated PipelineTask tasks = 1;
+  repeated SchedulerAssignment assignments = 2;
+}
+
+message TaskResult {
+  string task_id = 1;
+  string run_id = 2;
+  uint32 attempt = 3;
+  string assignment_id = 4;
+  bool success = 5;
+  string output_ref = 6;
+  bool retryable = 7;
+  string reason_code = 8;
+  string error_detail = 9;
+}
+
+message ReportTaskResultRequest {
+  TaskResult result = 1;
+}
+
+message ReportTaskResultResponse {
+  PipelineTask task = 1;
+  repeated string unlocked_task_ids = 2;
+}
+
+message CancelTaskRequest {
+  string task_id = 1;
+  string reason = 2;
+}
+
+message CancelTaskResponse {
+  PipelineTask task = 1;
+}
+
+service OrchestrationService {
+  rpc ValidatePipeline(ValidatePipelineRevisionRequest) returns (ValidatePipelineRevisionResponse);
+  rpc PublishPipeline(PublishPipelineRevisionRequest) returns (PublishPipelineRevisionResponse);
+  rpc SubmitRun(SubmitPipelineRunRequest) returns (SubmitPipelineRunResponse);
+  rpc GetRun(GetPipelineRunRequest) returns (GetPipelineRunResponse);
+  rpc CancelRun(CancelPipelineRunRequest) returns (CancelPipelineRunResponse);
+  rpc RetryTask(RetryPipelineTaskRequest) returns (RetryPipelineTaskResponse);
+  rpc ClaimTask(ClaimTaskRequest) returns (ClaimTaskResponse);
+  rpc ReportTaskResult(ReportTaskResultRequest) returns (ReportTaskResultResponse);
+  rpc CancelTask(CancelTaskRequest) returns (CancelTaskResponse);
 }

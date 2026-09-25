@@ -39,23 +39,27 @@ window 吸收重发、stream 漂移只报不改、NATS 不可达显式失败而�
 `material.upserted` 也带不了可编码文本——该判断已由 ADR-025 改写）；RRF/混合检索与相关性校准未做；服务端 Milvus 形态（本机 Docker Hub 不可达，未验收）；ASR 的 Linux 后端（`mlx` 是 Apple Silicon 专属）；插件**未签名**（`local_native` 形态，签名/SBOM 只有结构预检）；旋转的采集与应用（v1 未实现） |
 | 工程 | uv/Cargo 锁文件、Docker、检查命令、CI（`check`/`check-console` + **Apple Silicon** `check-apple-silicon`，远端 `macos-15-arm64` 已真实通过）、macOS `launchd` 常驻形态与统一内存分级（`tools/macos_resident.py`，见 ADR-015） | 真视频 Golden Path、Linux NVIDIA 侧 CI、压测、监控仪表盘 |
 
-## 可编排插件执行核心（ADR-029）：P0 编译内核已实现，执行面尚未接线
+## 可编排插件执行核心（ADR-029）：P0 编译内核与 P1 持久执行编排闭环已落地
 
-已新增 `proto/orchestration/v1/orchestration.proto`、Runtime 内的 `orchestration` 模块与
-`config/pipelines/orchestrated-file-material.yaml`。P0 在解析期拒绝环、悬空端点、重复节点/边、未生产或
-未消费 modality、非法 `same_item` placement、无上限 attempt；它将图按稳定顺序编译，并在内存状态机中
-验证必需上游解锁、有界 retry、失败阻塞与取消不解锁更多工作。`make orchestration-check` 会实际编译
-示例图，不会把普通 processor 列表误读为已可执行 DAG。
-
-[ADR-029](adr/ADR-029-可编排插件执行核心.md) 与[执行设计](design/plugin-orchestration.md)已将实现收敛为：
 不可变 Pipeline revision → DAG 编译 → `PipelineRun` / `PipelineTask` 状态机 → 基于数据本地性与资源上限的
-单主调度 → outbox/JetStream 控制命令 → 真实 Agent/worker 生命周期回报。P0 尚未接真实 worker、数据库与
-事件；因此不能关闭 501、不能创建可恢复的 PipelineRun，更不能宣称 Golden Path。
+单主调度 → 事务对账与租约恢复已在 P1 完整闭环落地：
 
-P1（单节点持久执行）、P2（受控多节点）与 P3（场景产品包、Console/API 和真实端到端闭环）现已被定义为
-V1 的核心能力门禁：P1 前不能称“可执行编排”，P2 前不能称“跨节点编排”，P3 前不能称“第三方可基于底座
-交付场景产品”。它们的逐项需求与验收分别见 ADR-029 §4.1、[执行设计](design/plugin-orchestration.md) §9
-和[技术蓝图](../技术选型ADR与V1实施蓝图.md) §4.1。
+1. **不可变 Revision 与持久化模型**：
+   - 追加数据库迁移 `0008_orchestration_run_task.sql`，落 `pipeline_definition`、`pipeline_revision`、`pipeline_run`、`pipeline_task`、`pipeline_task_edge` 与 `scheduler_assignment`；
+   - `pipeline_revision` 挂载 `deny_fact_update` 触发器，发布后禁止原地修改或删除；
+   - `pipeline_run` 建立基于 `(pipeline_id, revision, input_ref, idempotency_key)` 的部分唯一索引，实现活跃状态严格幂等。
+2. **状态机与调度硬约束**：
+   - 调度器基于数据本地性与节点角色派发就绪任务；`same_item` 关联的 `data_plane_local` 任务若被指派到远程节点，显式以 `data_locality_violation` 记录拒绝；
+   - 任务结果对账严格校验 `(run_id, task_id, attempt, assignment_id)`，过期或非活跃结果拒绝为 `stale_task_result`；
+   - 必需上游成功后递归级联解锁下游就绪任务；必需上游失败时递归级联阻断下游任务（`state='blocked'`，`reason_code='upstream_failed'`）；
+   - 取消优先原则：Run 取消后级联未完成任务，迟到结果安全审计丢弃，绝不反向改写为成功，绝不解锁下游；
+   - 有界重试机制：可重试错误进入 `retry_wait` 状态，退避后刷新 deadline 重派，超过 `max_attempts` 显式落 `retry_exhausted:<reason>`；
+   - 崩溃恢复器：原子扫描过期租约，安全收敛已写入事实或重置回 `ready` 重新派发，尝试耗尽则标记失败，彻底杜绝孤儿任务与重复计算。
+3. **接口与验收**：
+   - API 提供 `/v1/orchestration/pipelines[:validate]`、`/v1/orchestration/runs[/:id/cancel]`、`/v1/orchestration/scheduler:step`、`/v1/orchestration/tasks/:id:result`，受 `pipelines:manage`、`jobs:write`、`jobs:read` 保护；
+   - 验收命令 `make orchestration-p1-check`（7 大核心场景）与 `pytest tests/integration/test_orchestration_api.py` 全部在真实 PostgreSQL 上通过。
+
+P2（受控多节点 Agent 生命周期与跨节点策略）与 P3（场景产品包、Console/API 和真实端到端闭环）仍是后续进阶门禁。
 
 下一里程碑：**本地文件 → GStreamer → PTS 正确的 frame/audio descriptor**，先完成
 真实样本回放、lease 生命周期和断流测试，再引入实际模型。真实媒体、lease 生命周期、断流测试

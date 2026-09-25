@@ -57,7 +57,7 @@ OUTBOX_NATS   ?= $(if $(filter container,$(EXEC_MODE)),nats://nats:4222,nats://1
 # 集成测试（EXEC_TEST）连的 NATS：与 OUTBOX_NATS 同一套推导。
 TEST_NATS_URL ?= $(if $(filter container,$(EXEC_MODE)),nats://nats:4222,nats://127.0.0.1:24222)
 
-.PHONY: setup configure proto check test integration format infra up down migrate gateway runtime pipeline-check orchestration-check runtime-smoke gateway-smoke media-replay media-check handoff-check backpressure-check
+.PHONY: setup configure proto check test integration format infra up down migrate gateway runtime pipeline-check orchestration-check orchestration-p1-check runtime-smoke gateway-smoke media-replay media-check handoff-check backpressure-check
 .PHONY: stream-up stream-down stream-status stream-logs live-check model-check asr-check ocr-check embed-check index-check semantic-check parallelism-check plugin-artifact capability-check accelerator-check
 .PHONY: outbox-check outbox-run
 .PHONY: node-check golden-path-check
@@ -159,6 +159,9 @@ pipeline-check:
 
 orchestration-check:
 	$(CARGO_HOST) run --locked -p sensoryplex-runtime -- orchestration-check config/pipelines/orchestrated-file-material.yaml
+
+orchestration-p1-check:
+	$(EXEC_API) $(PY_API) tools/verify_orchestration.py
 
 runtime-smoke:
 	$(CARGO_HOST) build --locked -p sensoryplex-runtime

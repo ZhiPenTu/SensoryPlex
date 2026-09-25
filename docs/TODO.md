@@ -19,11 +19,10 @@
   modality/placement 校验和 `PipelineRun` / `PipelineTask` 确定性内存状态机；`make orchestration-check`
   成功编译 3 节点/2 边示例，Rust workspace fmt/clippy/test 全通过（含 3 项编排内核测试），证据见
   `docs/verification.md` 的“ADR-029 P0”节。它**不**调用 worker、不写数据库、不发事件。
-- [ ] **可编排插件执行核心（ADR-029，P1）**：追加数据库迁移，持久化 immutable Pipeline revision、
-  Run/Task/assignment 与状态转换；经 outbox/JetStream 下发同机真实插件的 `Start/Process/Cancel`，验证
-  幂等、取消、崩溃恢复和数据本地性拒绝。完成前，Console 草稿、`tools/ai_worker.py`、节点心跳或部署意图
-  均不能被表述为可执行编排。设计见 [ADR-029](adr/ADR-029-可编排插件执行核心.md) 与
-  [执行设计](design/plugin-orchestration.md)。
+- [x] **可编排插件执行核心（ADR-029，P1）**：已完成。追加数据库迁移 `0008_orchestration_run_task.sql`，
+  持久化 immutable Pipeline revision、Run、Task、Edge 与 assignment 租约；实现事务 CAS/幂等提交、
+  取消传播、有界重试（`retry_wait` / `retry_exhausted`）、崩溃恢复（租约过期自动回收）与数据本地性拒绝（`data_locality_violation`）；
+  经 `make orchestration-p1-check` 7 个场景及 pytest 集成测试全量通过；证据见 `docs/verification.md` 的“ADR-029 P1”节。
 - [ ] **可编排插件执行核心（ADR-029，P2）**：使 Node Agent 执行并回报真实 Plugin 生命周期；以
   artifact/config、数据本地性、节点能力、资源上限和显式 failover 策略生成持久 assignment lease。跨机仅允许
   Observation/object reference，descriptor、共享内存和 GPU 句柄必须拒绝跨机。完成前不能宣称局域网 worker
