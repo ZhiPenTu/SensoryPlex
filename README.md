@@ -47,11 +47,10 @@ SRT 实时接入（M4）同样可用：`ingest` 在有限窗口内拉流、解�
 没有 PostgreSQL 的主机（如 macOS runner）改跑 `make lint-ruff test-contracts`，
 集成测试只由带数据库的 job 覆盖。
 
-GitHub Actions 对目标为 `master` 的 PR 执行 Linux 的基础检查与 Console 构建，合并到 `master`
-后再执行 Apple Silicon 基线检查；分支 `push` 不再与 PR 同一提交重复执行，纯 Markdown/文档改动
-也不会启动工作流。对改动 Rust 媒体、macOS、GStreamer、CoreML/Metal 或原生部署路径的 PR，合并前在
-Actions 的 **Run workflow** 中勾选 `run_apple_silicon` 主动执行完整 macOS 检查；不能把未运行的
-macOS 检查表述为已通过。新提交会取消同一 PR/分支中已过时的运行。
+GitHub Actions 仅保留手动触发，不会因 `push` 或 PR 自动消耗托管 runner 额度。日常门禁在本机完成：
+底座 Python/Node 验证仍通过容器执行，Rust 与 macOS 硬件验证按工程约束使用宿主工具链。需要独立的
+远端复核时，在 Actions 的 **Run workflow** 手动运行；只有勾选 `run_apple_silicon` 才会启动计费较高的
+macOS 作业。未执行的远端 macOS 作业不能表述为已通过。
 
 ```sh
 make setup

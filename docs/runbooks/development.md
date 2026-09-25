@@ -56,14 +56,13 @@ CI 使用临时 PostgreSQL；集成测试必须显式通过，不能把跳过等
 
 ## GitHub Actions 额度策略
 
-目标为 `master` 的 PR 执行 Linux 基础检查与 Console 构建；同一提交的分支 `push` 不重复启动一套
-工作流，合并到 `master` 后才自动运行完整的 Apple Silicon 基线。仅修改 Markdown、`docs/` 或
-Issue 模板时不运行 CI，因为这些路径不生成可执行工件。
+日常验证只在本地完成：底座 Python/Node 工具链必须在 compose 容器内执行，Rust/Cargo 与 macOS 硬件
+检查是宿主例外。`engineering-checks` 不监听 `push` 或 PR，因而不会自动消耗 GitHub Actions 额度。
 
-`check-apple-silicon` 使用 `macos-15`，其分钟数按 GitHub 的 macOS 倍率计入额度。涉及 Rust 媒体、
-macOS、GStreamer、CoreML/Metal 或原生常驻部署的 PR，必须在合并前使用 Actions 的 **Run workflow**，
-勾选 `run_apple_silicon` 来获得这项证据；未选择时 job 是刻意跳过，不得称为 macOS 已验收。工作流以
-PR 编号或分支名分组，后续提交会取消同组已过时的运行。
+需要独立远端复核时，维护者在 Actions 的 **Run workflow** 显式启动；默认只运行两个 Linux job。
+`check-apple-silicon` 使用 `macos-15`，其分钟数按 GitHub 的 macOS 倍率计入额度，只有勾选
+`run_apple_silicon` 才会启动。未选择时 job 是刻意跳过，不得称为远端 macOS 已验收；重复手动运行同一
+ref 时，较新的运行会取消旧运行。
 
 事件链路的两个常驻服务（`relay` / `index`）在 compose 的 `events` profile 里，不在默认栈中：
 `./deploy/up-events.sh` 起、`./deploy/down-events.sh [--volumes]` 停（见

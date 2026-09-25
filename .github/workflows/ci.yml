@@ -1,22 +1,7 @@
 name: engineering-checks
 on:
-  push:
-    # 分支推送会由下面的 pull_request 触发器覆盖；只在合入主线后再做一次基线验证，
-    # 避免同一提交被 branch push 与 PR synchronize 重复计费。
-    branches: [master]
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
-      - ".github/ISSUE_TEMPLATE/**"
-  pull_request:
-    branches: [master]
-    # 仅文档变更不影响可执行工件；不启动工作流而不是假装执行了验证。
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
-      - ".github/ISSUE_TEMPLATE/**"
-  # 允许在不制造空提交的前提下重跑。Apple Silicon 检查默认关闭，按需打开，
-  # 使 macOS 额度留给合并基线和有 macOS 风险的提交。
+  # 日常验证在本地完成；不因 push 或 PR 自动消耗托管 runner 额度。
+  # 只有维护者在 Actions 页面显式选择 Run workflow 时才会运行。
   workflow_dispatch:
     inputs:
       run_apple_silicon:
@@ -27,8 +12,8 @@ on:
 permissions:
   contents: read
 concurrency:
-  # 同一个 PR 或分支只保留最新一次执行；被新提交替代的安装/测试立即取消。
-  group: engineering-checks-${{ github.event.pull_request.number || github.ref }}
+  # 同一 ref 的重复手动运行只保留最新一次，避免重复消耗额度。
+  group: engineering-checks-${{ github.ref }}
   cancel-in-progress: true
 # 远端 CI 没有本项目的 compose 栈（ubuntu runner 上没起容器，macOS runner 根本没有
 # Docker），所以各 job 都用 EXEC_MODE=host 让 `make <target>` 退回主机命令：
@@ -92,11 +77,9 @@ jobs:
 
   check-apple-silicon:
     # macOS 是一等端侧目标（ADR-008）；容器集成测试仍留在 ubuntu，
-    # 因为 macOS runner 上的 service container 行为未经本项目验证。它只在
-    # master 合并后，或 workflow_dispatch 明确选择时运行，避免每次 PR 更新消耗 10 倍额度。
-    if: >-
-      github.event_name == 'push' ||
-      (github.event_name == 'workflow_dispatch' && inputs.run_apple_silicon)
+    # 因为 macOS runner 上的 service container 行为未经本项目验证。只在手动运行时
+    # 明确勾选输入才消耗 macOS 额度；日常 macOS 验证由本机完成。
+    if: inputs.run_apple_silicon
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
