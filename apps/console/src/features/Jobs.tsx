@@ -121,7 +121,7 @@ export default function Jobs() {
                             borderRadius: 8,
                             background: '#f8fafc',
                             border: '1px solid #e2e8f0',
-                            color: '#1668dc',
+                            color: '#475569',
                             display: 'grid',
                             placeItems: 'center',
                             fontSize: 16,
@@ -187,7 +187,6 @@ export default function Jobs() {
                             icon={<CaretRightOutlined />}
                             loading={dispatchMutation.isPending}
                             onClick={() => dispatchMutation.mutate(item.id)}
-                            style={{ background: '#10b981', borderColor: '#10b981' }}
                         >
                             开始处理
                         </Button>

@@ -250,8 +250,9 @@ export default function Nodes() {
                     }
                     style={{
                         marginBottom: 20,
-                        borderColor: '#fde68a',
-                        background: '#fffbeb',
+                        border: '1px solid #e2e8f0',
+                        borderLeft: '4px solid #d97706',
+                        background: '#ffffff',
                     }}
                 >
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -295,7 +296,6 @@ export default function Nodes() {
                                     <Button
                                         type="primary"
                                         size="small"
-                                        style={{ background: '#10b981', borderColor: '#10b981' }}
                                         loading={acceptMutation.isPending}
                                         onClick={() => acceptMutation.mutate(node.node_id)}
                                     >

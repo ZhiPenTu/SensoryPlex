@@ -95,9 +95,9 @@ export default function Assets() {
                             width: 38,
                             height: 38,
                             borderRadius: 8,
-                            background: '#eff6ff',
-                            border: '1px solid #bfdbfe',
-                            color: '#1d4ed8',
+                            background: '#f8fafc',
+                            border: '1px solid #e2e8f0',
+                            color: '#475569',
                             display: 'grid',
                             placeItems: 'center',
                             fontSize: 18,
@@ -250,7 +250,7 @@ export default function Assets() {
             </Notice>
 
             {upload.isPending ? (
-                <Card style={{ marginBottom: 20, borderColor: '#93c5fd', background: '#eff6ff' }}>
+                <Card style={{ marginBottom: 20, borderColor: '#e2e8f0', background: '#ffffff' }}>
                     <Space direction="vertical" style={{ width: '100%' }} size={12}>
                         <div
                             style={{
@@ -262,15 +262,15 @@ export default function Assets() {
                             <Space size={10}>
                                 <InboxOutlined style={{ fontSize: 24, color: '#1d4ed8' }} />
                                 <div>
-                                    <Text strong style={{ color: '#1e3a8a' }}>
+                                    <Text strong style={{ color: '#0f172a' }}>
                                         正在上传视频母带至边缘存储…
                                     </Text>
-                                    <div style={{ fontSize: 12, color: '#3b82f6' }}>
+                                    <div style={{ fontSize: 12, color: '#64748b' }}>
                                         数据直通端侧存储，请保持当前页面开启
                                     </div>
                                 </div>
                             </Space>
-                            <Text strong style={{ color: '#1d4ed8', fontSize: 16 }}>
+                            <Text strong style={{ color: '#0f172a', fontSize: 16 }}>
                                 {progress}%
                             </Text>
                         </div>

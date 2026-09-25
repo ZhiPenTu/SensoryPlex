@@ -6,7 +6,6 @@ import {
     Button,
     Form,
     Input,
-    Tag,
     Alert,
     Tooltip,
     Avatar,
@@ -381,9 +380,30 @@ function Layout() {
                         <strong>本地主计算节点</strong>
                         <small>Edge Cluster · 127.0.0.1</small>
                     </div>
-                    <Tag color="cyan" style={{ margin: 0, fontSize: 10, padding: '1px 5px' }}>
-                        在线
-                    </Tag>
+                    <span
+                        style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 5,
+                            background: 'rgba(5, 150, 105, 0.15)',
+                            border: '1px solid rgba(5, 150, 105, 0.25)',
+                            padding: '2px 7px',
+                            borderRadius: 12,
+                        }}
+                    >
+                        <span
+                            style={{
+                                width: 5,
+                                height: 5,
+                                borderRadius: '50%',
+                                background: '#10b981',
+                                display: 'inline-block',
+                            }}
+                        />
+                        <span style={{ color: '#6ee7b7', fontSize: 10, fontWeight: 600 }}>
+                            在线
+                        </span>
+                    </span>
                 </div>
 
                 <nav>
@@ -475,8 +495,13 @@ function Layout() {
 
                         <Dropdown menu={{ items: userMenuItems }} placement="bottomRight">
                             <Avatar
-                                size={32}
-                                style={{ backgroundColor: '#1668dc', cursor: 'pointer' }}
+                                size={30}
+                                style={{
+                                    backgroundColor: '#1e293b',
+                                    color: '#94a3b8',
+                                    border: '1px solid #cbd5e1',
+                                    cursor: 'pointer',
+                                }}
                                 icon={<UserOutlined />}
                             />
                         </Dropdown>

@@ -8,13 +8,12 @@ import {
     Tag,
     Typography,
     Card,
-    Statistic,
 } from 'antd';
 import {
-    CheckCircleOutlined,
-    ClockCircleOutlined,
-    CloseCircleOutlined,
-    ExclamationCircleOutlined,
+    CheckCircleFilled,
+    ClockCircleFilled,
+    CloseCircleFilled,
+    ExclamationCircleFilled,
     SyncOutlined,
 } from '@ant-design/icons';
 import { RequestError } from './api/client';
@@ -22,7 +21,7 @@ import { RequestError } from './api/client';
 const { Title, Paragraph, Text } = Typography;
 
 /**
- * 统一页面头部卡片组件
+ * 统一页面头部组件：极简、沉稳
  */
 export function Heading({
     eyebrow,
@@ -36,7 +35,7 @@ export function Heading({
     action?: ReactNode;
 }) {
     return (
-        <div className="page-header-wrap" style={{ marginBottom: 20 }}>
+        <div style={{ marginBottom: 20 }}>
             <div
                 style={{
                     display: 'flex',
@@ -52,9 +51,9 @@ export function Heading({
                             <span
                                 style={{
                                     fontSize: 11,
-                                    fontWeight: 700,
-                                    letterSpacing: '1.5px',
-                                    color: '#1668dc',
+                                    fontWeight: 650,
+                                    letterSpacing: '1px',
+                                    color: '#64748b',
                                     textTransform: 'uppercase',
                                     display: 'inline-block',
                                 }}
@@ -65,21 +64,25 @@ export function Heading({
                     ) : null}
                     <Title
                         level={2}
-                        style={{ margin: 0, fontWeight: 650, letterSpacing: '-0.5px' }}
+                        style={{
+                            margin: 0,
+                            fontWeight: 700,
+                            letterSpacing: '-0.4px',
+                            color: '#0f172a',
+                            fontSize: 22,
+                        }}
                     >
                         {title}
                     </Title>
-                    <Paragraph type="secondary" style={{ margin: '4px 0 0', fontSize: 13 }}>
+                    <Paragraph
+                        type="secondary"
+                        style={{ margin: '4px 0 0', fontSize: 13, color: '#475569' }}
+                    >
                         {description}
                     </Paragraph>
                 </div>
                 {action ? (
-                    <div
-                        className="page-header-action"
-                        style={{ display: 'flex', gap: 8, alignItems: 'center' }}
-                    >
-                        {action}
-                    </div>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>{action}</div>
                 ) : null}
             </div>
         </div>
@@ -98,7 +101,7 @@ export function Loading({ tip = '正在读取…' }: { tip?: string }) {
 }
 
 /**
- * 统一错误提示
+ * 统一错误提示：柔和不刺眼
  */
 export function ErrorNotice({ error }: { error: unknown }) {
     if (!error) return null;
@@ -109,13 +112,28 @@ export function ErrorNotice({ error }: { error: unknown }) {
         <Alert
             type="error"
             showIcon
-            style={{ marginBottom: 16, borderRadius: 8 }}
+            style={{
+                marginBottom: 16,
+                borderRadius: 6,
+                background: '#fef2f2',
+                border: '1px solid #fecaca',
+            }}
             message={
                 <div>
-                    <span>{message}</span>
+                    <span style={{ color: '#991b1b', fontSize: 13, fontWeight: 500 }}>
+                        {message}
+                    </span>
                     {trace ? (
                         <div style={{ marginTop: 4 }}>
-                            <Tag color="error" style={{ fontFamily: 'monospace', fontSize: 11 }}>
+                            <Tag
+                                style={{
+                                    fontFamily: 'monospace',
+                                    fontSize: 11,
+                                    background: '#fee2e2',
+                                    border: '1px solid #fca5a5',
+                                    color: '#991b1b',
+                                }}
+                            >
                                 追踪编号: {trace}
                             </Tag>
                         </div>
@@ -127,15 +145,20 @@ export function ErrorNotice({ error }: { error: unknown }) {
 }
 
 /**
- * 统一普通提示通知
+ * 统一普通提示通知：精致灰蓝调
  */
 export function Notice({ children }: { children: ReactNode }) {
     return (
         <Alert
             type="info"
             showIcon
-            style={{ marginBottom: 16, borderRadius: 8 }}
-            message={<span style={{ fontSize: 13 }}>{children}</span>}
+            style={{
+                marginBottom: 16,
+                borderRadius: 6,
+                background: '#f8fafc',
+                border: '1px solid #e2e8f0',
+            }}
+            message={<span style={{ fontSize: 13, color: '#334155' }}>{children}</span>}
         />
     );
 }
@@ -149,11 +172,19 @@ export function Empty({ title, children }: { title: string; children?: ReactNode
             image={AntEmpty.PRESENTED_IMAGE_SIMPLE}
             description={
                 <div>
-                    <Text strong style={{ fontSize: 15, display: 'block', marginBottom: 4 }}>
+                    <Text
+                        strong
+                        style={{
+                            fontSize: 14,
+                            display: 'block',
+                            marginBottom: 4,
+                            color: '#334155',
+                        }}
+                    >
                         {title}
                     </Text>
                     {children ? (
-                        <Text type="secondary" style={{ fontSize: 13 }}>
+                        <Text type="secondary" style={{ fontSize: 12, color: '#64748b' }}>
                             {children}
                         </Text>
                     ) : null}
@@ -164,84 +195,236 @@ export function Empty({ title, children }: { title: string; children?: ReactNode
     );
 }
 
-const statusMap: Record<string, { label: string; color: string; icon?: React.ReactNode }> = {
-    // 资产与素材状态
-    pending: { label: '等待上传', color: 'default', icon: <ClockCircleOutlined /> },
-    awaiting_admission: { label: '待媒体准入', color: 'warning', icon: <ClockCircleOutlined /> },
-    draft: { label: '草稿', color: 'default', icon: <ClockCircleOutlined /> },
-    published: { label: '已发布', color: 'success', icon: <CheckCircleOutlined /> },
-    processing: { label: '处理中', color: 'processing', icon: <SyncOutlined spin /> },
-    completed: { label: '已完成', color: 'success', icon: <CheckCircleOutlined /> },
-    archived: { label: '已归档', color: 'default' },
-    source_available: { label: '源码可用', color: 'cyan', icon: <CheckCircleOutlined /> },
-    unverified: { label: '未验证来源', color: 'warning', icon: <ExclamationCircleOutlined /> },
-    fast_ready: { label: '基础素材', color: 'blue', icon: <CheckCircleOutlined /> },
-    partial: { label: '部分结果', color: 'warning', icon: <ClockCircleOutlined /> },
-    enriched: { label: '已补全', color: 'success', icon: <CheckCircleOutlined /> },
-    failed: { label: '失败', color: 'error', icon: <CloseCircleOutlined /> },
-    rejected: { label: '已拒绝', color: 'error', icon: <CloseCircleOutlined /> },
+/**
+ * 现代企业级精致状态 Tag 配色系统：
+ * 采用微底色 + 深饱和文字 + 细微边框，杜绝刺眼大块亮色
+ */
+interface StatusStyle {
+    label: string;
+    bg: string;
+    text: string;
+    border: string;
+    icon?: React.ReactNode;
+}
 
-    // 节点拓扑状态
-    NODE_STATUS_CANDIDATE: { label: '待接纳', color: 'warning', icon: <ClockCircleOutlined /> },
-    NODE_STATUS_ENROLLING: { label: '注册中', color: 'processing', icon: <SyncOutlined spin /> },
-    NODE_STATUS_READY: { label: '可调度', color: 'success', icon: <CheckCircleOutlined /> },
-    NODE_STATUS_DRAINING: { label: '排空中', color: 'warning', icon: <ClockCircleOutlined /> },
-    NODE_STATUS_OFFLINE: { label: '离线', color: 'default', icon: <CloseCircleOutlined /> },
-    NODE_STATUS_REVOKED: { label: '已撤销', color: 'error', icon: <CloseCircleOutlined /> },
+const statusConfig: Record<string, StatusStyle> = {
+    // 成功 / 可调度 / 就绪 (Emerald)
+    published: {
+        label: '已发布',
+        bg: '#ecfdf5',
+        text: '#047857',
+        border: '#a7f3d0',
+        icon: <CheckCircleFilled />,
+    },
+    completed: {
+        label: '已完成',
+        bg: '#ecfdf5',
+        text: '#047857',
+        border: '#a7f3d0',
+        icon: <CheckCircleFilled />,
+    },
+    source_available: {
+        label: '源码可用',
+        bg: '#ecfdf5',
+        text: '#047857',
+        border: '#a7f3d0',
+        icon: <CheckCircleFilled />,
+    },
+    enriched: {
+        label: '已补全',
+        bg: '#ecfdf5',
+        text: '#047857',
+        border: '#a7f3d0',
+        icon: <CheckCircleFilled />,
+    },
+    NODE_STATUS_READY: {
+        label: '可调度',
+        bg: '#ecfdf5',
+        text: '#047857',
+        border: '#a7f3d0',
+        icon: <CheckCircleFilled />,
+    },
+    PLUGIN_INSTANCE_STATE_READY: {
+        label: '就绪',
+        bg: '#ecfdf5',
+        text: '#047857',
+        border: '#a7f3d0',
+        icon: <CheckCircleFilled />,
+    },
 
-    // 插件实例状态
+    // 运行中 / 处理中 / 索引 (Sky Blue)
+    processing: {
+        label: '处理中',
+        bg: '#eff6ff',
+        text: '#1d4ed8',
+        border: '#bfdbfe',
+        icon: <SyncOutlined spin />,
+    },
+    fast_ready: { label: '基础素材', bg: '#eff6ff', text: '#1d4ed8', border: '#bfdbfe' },
+    NODE_STATUS_ENROLLING: {
+        label: '注册中',
+        bg: '#eff6ff',
+        text: '#1d4ed8',
+        border: '#bfdbfe',
+        icon: <SyncOutlined spin />,
+    },
     PLUGIN_INSTANCE_STATE_PLANNED: {
         label: '已下发',
-        color: 'processing',
-        icon: <ClockCircleOutlined />,
+        bg: '#eff6ff',
+        text: '#1d4ed8',
+        border: '#bfdbfe',
     },
     PLUGIN_INSTANCE_STATE_INSTALLING: {
         label: '安装中',
-        color: 'processing',
+        bg: '#eff6ff',
+        text: '#1d4ed8',
+        border: '#bfdbfe',
         icon: <SyncOutlined spin />,
     },
-    PLUGIN_INSTANCE_STATE_READY: { label: '就绪', color: 'success', icon: <CheckCircleOutlined /> },
+
+    // 警告 / 待办 / 审批 (Warm Amber)
+    pending: {
+        label: '等待上传',
+        bg: '#fffbeb',
+        text: '#b45309',
+        border: '#fde68a',
+        icon: <ClockCircleFilled />,
+    },
+    awaiting_admission: {
+        label: '待媒体准入',
+        bg: '#fffbeb',
+        text: '#b45309',
+        border: '#fde68a',
+        icon: <ClockCircleFilled />,
+    },
+    unverified: {
+        label: '未验证来源',
+        bg: '#fffbeb',
+        text: '#b45309',
+        border: '#fde68a',
+        icon: <ExclamationCircleFilled />,
+    },
+    partial: { label: '部分结果', bg: '#fffbeb', text: '#b45309', border: '#fde68a' },
+    NODE_STATUS_CANDIDATE: {
+        label: '待接纳',
+        bg: '#fffbeb',
+        text: '#b45309',
+        border: '#fde68a',
+        icon: <ClockCircleFilled />,
+    },
+    NODE_STATUS_DRAINING: {
+        label: '排空中',
+        bg: '#fffbeb',
+        text: '#b45309',
+        border: '#fde68a',
+        icon: <ClockCircleFilled />,
+    },
     PLUGIN_INSTANCE_STATE_DEGRADED: {
         label: '降级',
-        color: 'warning',
-        icon: <ExclamationCircleOutlined />,
+        bg: '#fffbeb',
+        text: '#b45309',
+        border: '#fde68a',
+        icon: <ExclamationCircleFilled />,
     },
     PLUGIN_INSTANCE_STATE_DRAINING: {
         label: '排空中',
-        color: 'warning',
-        icon: <ClockCircleOutlined />,
+        bg: '#fffbeb',
+        text: '#b45309',
+        border: '#fde68a',
+    },
+
+    // 失败 / 错误 / 撤销 (Rose Red)
+    failed: {
+        label: '失败',
+        bg: '#fef2f2',
+        text: '#b91c1c',
+        border: '#fecaca',
+        icon: <CloseCircleFilled />,
+    },
+    rejected: {
+        label: '已拒绝',
+        bg: '#fef2f2',
+        text: '#b91c1c',
+        border: '#fecaca',
+        icon: <CloseCircleFilled />,
+    },
+    NODE_STATUS_REVOKED: {
+        label: '已撤销',
+        bg: '#fef2f2',
+        text: '#b91c1c',
+        border: '#fecaca',
+        icon: <CloseCircleFilled />,
+    },
+    PLUGIN_INSTANCE_STATE_FAILED: {
+        label: '失败',
+        bg: '#fef2f2',
+        text: '#b91c1c',
+        border: '#fecaca',
+        icon: <CloseCircleFilled />,
+    },
+
+    // 中性 / 归档 / 离线 (Slate Neutral)
+    draft: { label: '草稿', bg: '#f8fafc', text: '#475569', border: '#e2e8f0' },
+    archived: { label: '已归档', bg: '#f8fafc', text: '#64748b', border: '#e2e8f0' },
+    NODE_STATUS_OFFLINE: {
+        label: '离线',
+        bg: '#f8fafc',
+        text: '#64748b',
+        border: '#e2e8f0',
+        icon: <CloseCircleFilled />,
     },
     PLUGIN_INSTANCE_STATE_STOPPED: {
         label: '已停止',
-        color: 'default',
-        icon: <CloseCircleOutlined />,
+        bg: '#f8fafc',
+        text: '#64748b',
+        border: '#e2e8f0',
     },
-    PLUGIN_INSTANCE_STATE_FAILED: { label: '失败', color: 'error', icon: <CloseCircleOutlined /> },
-    PLUGIN_INSTANCE_STATE_ROLLED_BACK: { label: '已回滚', color: 'default' },
-    PLUGIN_INSTANCE_STATE_UNINSTALLED: { label: '已卸载', color: 'default' },
+    PLUGIN_INSTANCE_STATE_ROLLED_BACK: {
+        label: '已回滚',
+        bg: '#f8fafc',
+        text: '#64748b',
+        border: '#e2e8f0',
+    },
+    PLUGIN_INSTANCE_STATE_UNINSTALLED: {
+        label: '已卸载',
+        bg: '#f8fafc',
+        text: '#64748b',
+        border: '#e2e8f0',
+    },
 };
 
 /**
- * 统一状态徽标
+ * 统一状态徽标：优雅细腻
  */
 export function Badge({ state }: { state: string }) {
-    const conf = statusMap[state] || { label: state, color: 'default' };
+    const conf = statusConfig[state] || {
+        label: state,
+        bg: '#f8fafc',
+        text: '#475569',
+        border: '#e2e8f0',
+    };
     return (
-        <Tag
-            color={conf.color}
-            icon={conf.icon}
+        <span
             style={{
-                borderRadius: 4,
-                padding: '2px 8px',
-                fontSize: 12,
-                fontWeight: 500,
                 display: 'inline-flex',
                 alignItems: 'center',
-                gap: 4,
+                gap: 5,
+                background: conf.bg,
+                color: conf.text,
+                border: `1px solid ${conf.border}`,
+                padding: '2px 8px',
+                borderRadius: 4,
+                fontSize: 12,
+                fontWeight: 500,
+                lineHeight: '18px',
+                whiteSpace: 'nowrap',
             }}
         >
-            {conf.label}
-        </Tag>
+            {conf.icon ? (
+                <span style={{ fontSize: 11, display: 'inline-flex' }}>{conf.icon}</span>
+            ) : null}
+            <span>{conf.label}</span>
+        </span>
     );
 }
 
@@ -290,7 +473,7 @@ export function Modal({
 }) {
     return (
         <AntModal
-            title={<span style={{ fontWeight: 600 }}>{title}</span>}
+            title={<span style={{ fontWeight: 650, color: '#0f172a' }}>{title}</span>}
             open
             footer={null}
             onCancel={onClose}
@@ -304,33 +487,78 @@ export function Modal({
 }
 
 /**
- * 概览指标卡片组件
+ * 现代企业级指标卡片组件：纯白底、深灰字、小巧图标容器、告别玩具化大彩色
  */
 export function StatSummary({
     title,
     value,
     prefix,
-    suffix,
-    color,
+    tag,
 }: {
     title: string;
     value: number | string;
     prefix?: ReactNode;
-    suffix?: ReactNode;
-    color?: string;
+    tag?: ReactNode;
+    color?: string; // 保留向后兼容
 }) {
     return (
         <Card
             size="small"
-            style={{ borderRadius: 8, boxShadow: '0 1px 3px 0 rgba(15, 23, 42, 0.04)' }}
+            style={{
+                borderRadius: 8,
+                border: '1px solid #e2e8f0',
+                background: '#ffffff',
+                boxShadow: '0 1px 2px 0 rgba(15, 23, 42, 0.03)',
+            }}
+            bodyStyle={{ padding: '14px 18px' }}
         >
-            <Statistic
-                title={<span style={{ fontSize: 13, color: '#64748b' }}>{title}</span>}
-                value={value}
-                prefix={prefix}
-                suffix={suffix}
-                valueStyle={{ color: color || '#0f172a', fontWeight: 650, fontSize: 24 }}
-            />
+            <div
+                style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    marginBottom: 8,
+                }}
+            >
+                <span style={{ fontSize: 12, fontWeight: 500, color: '#64748b' }}>{title}</span>
+                {prefix ? (
+                    <div
+                        style={{
+                            width: 26,
+                            height: 26,
+                            borderRadius: 6,
+                            background: '#f8fafc',
+                            border: '1px solid #e2e8f0',
+                            color: '#475569',
+                            display: 'grid',
+                            placeItems: 'center',
+                            fontSize: 13,
+                        }}
+                    >
+                        {prefix}
+                    </div>
+                ) : null}
+            </div>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                <span
+                    style={{
+                        color: '#0f172a',
+                        fontWeight: 700,
+                        fontSize: typeof value === 'number' || String(value).length <= 4 ? 24 : 18,
+                        letterSpacing: '-0.5px',
+                        fontFamily:
+                            typeof value === 'string' && value.includes('_')
+                                ? 'monospace'
+                                : 'inherit',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                    }}
+                >
+                    {value}
+                </span>
+                {tag ? <span style={{ marginLeft: 'auto' }}>{tag}</span> : null}
+            </div>
         </Card>
     );
 }
