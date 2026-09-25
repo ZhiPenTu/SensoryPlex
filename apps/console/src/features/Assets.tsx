@@ -1,6 +1,27 @@
 import { useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowUpRight, FileVideo, Plus, UploadCloud } from 'lucide-react';
+import {
+    Button,
+    Card,
+    Descriptions,
+    Progress,
+    Space,
+    Table,
+    Typography,
+    Row,
+    Col,
+    Popconfirm,
+} from 'antd';
+import {
+    VideoCameraOutlined,
+    UploadOutlined,
+    EyeOutlined,
+    DeleteOutlined,
+    ArrowRightOutlined,
+    CheckCircleOutlined,
+    ClockCircleOutlined,
+    InboxOutlined,
+} from '@ant-design/icons';
 import { Link } from 'react-router-dom';
 import { api, post, uploadFile } from '../api/client';
 import type { Upload, UploadList } from '../api/contracts';
@@ -14,9 +35,11 @@ import {
     Loading,
     Modal,
     Notice,
-    Pager,
+    StatSummary,
 } from '../components';
 import { usePermission } from '../session';
+
+const { Text } = Typography;
 
 export default function Assets() {
     const cache = useQueryClient();
@@ -25,11 +48,13 @@ export default function Assets() {
     const [progress, setProgress] = useState(0);
     const input = useRef<HTMLInputElement>(null);
     const canUpload = usePermission('assets:write');
+
     const listing = useQuery({
         queryKey: ['assets', offset],
         queryFn: ({ signal }) =>
             api<UploadList>(`/v1/assets?limit=20&offset=${offset}`, { signal }),
     });
+
     const upload = useMutation({
         mutationFn: async (file: File) => {
             const type =
@@ -48,29 +73,138 @@ export default function Assets() {
             void cache.invalidateQueries({ queryKey: ['assets'] });
         },
     });
+
     const cancel = useMutation({
         mutationFn: (id: string) => api(`/v1/uploads/${id}`, { method: 'DELETE' }),
         onSuccess: () => cache.invalidateQueries({ queryKey: ['assets'] }),
     });
+
+    const totalCount = listing.data?.total || 0;
+    const awaitingAdmissionCount =
+        listing.data?.items.filter((x) => x.state === 'awaiting_admission').length || 0;
+
+    const columns = [
+        {
+            title: '视频名称',
+            dataIndex: 'filename',
+            key: 'filename',
+            render: (name: string, item: Upload) => (
+                <Space align="center" size={12}>
+                    <div
+                        style={{
+                            width: 38,
+                            height: 38,
+                            borderRadius: 8,
+                            background: '#f8fafc',
+                            border: '1px solid #e2e8f0',
+                            color: '#475569',
+                            display: 'grid',
+                            placeItems: 'center',
+                            fontSize: 18,
+                            flexShrink: 0,
+                        }}
+                    >
+                        <VideoCameraOutlined />
+                    </div>
+                    <div>
+                        <Text
+                            strong
+                            style={{ fontSize: 13, display: 'block', maxWidth: 360 }}
+                            ellipsis={{ tooltip: name }}
+                        >
+                            {name}
+                        </Text>
+                        <Text type="secondary" style={{ fontSize: 11 }}>
+                            {item.content_type} · ID: {item.id.slice(0, 16)}…
+                        </Text>
+                    </div>
+                </Space>
+            ),
+        },
+        {
+            title: '文件大小',
+            dataIndex: 'size_bytes',
+            key: 'size_bytes',
+            width: 120,
+            render: (size: string) => <Text style={{ fontSize: 13 }}>{bytes(size)}</Text>,
+        },
+        {
+            title: '状态',
+            dataIndex: 'state',
+            key: 'state',
+            width: 140,
+            render: (state: string) => <Badge state={state} />,
+        },
+        {
+            title: '导入时间',
+            dataIndex: 'created_at',
+            key: 'created_at',
+            width: 180,
+            render: (time: string) => (
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                    {date(time)}
+                </Text>
+            ),
+        },
+        {
+            title: '操作',
+            key: 'actions',
+            width: 160,
+            align: 'right' as const,
+            render: (_: unknown, item: Upload) => (
+                <Space size={8}>
+                    {item.state === 'pending' && canUpload ? (
+                        <Popconfirm
+                            title="确定取消该视频的上传？"
+                            onConfirm={() => cancel.mutate(item.id)}
+                            okText="确定"
+                            cancelText="取消"
+                        >
+                            <Button
+                                size="small"
+                                danger
+                                type="text"
+                                icon={<DeleteOutlined />}
+                                loading={cancel.isPending}
+                            >
+                                取消
+                            </Button>
+                        </Popconfirm>
+                    ) : null}
+                    <Button
+                        size="small"
+                        type="link"
+                        icon={<EyeOutlined />}
+                        disabled={item.state === 'pending'}
+                        onClick={() => setSelected(item)}
+                    >
+                        详情
+                    </Button>
+                </Space>
+            ),
+        },
+    ];
+
     return (
-        <>
+        <div>
             <Heading
-                eyebrow="MEDIA LIBRARY"
+                eyebrow="Media Library"
                 title="视频库"
-                description="保存原始视频，为每一份素材保留可以回溯的来源。"
+                description="存储原始视频母带，为每一份多模态感知与切片素材保留精准可溯的真实来源。"
                 action={
                     canUpload ? (
-                        <button
-                            className="primary"
-                            disabled={upload.isPending}
+                        <Button
+                            type="primary"
+                            icon={<UploadOutlined />}
+                            loading={upload.isPending}
                             onClick={() => input.current?.click()}
                         >
-                            <Plus size={17} />
                             导入视频
-                        </button>
+                        </Button>
                     ) : null
                 }
             />
+
             <input
                 className="sr-only"
                 aria-label="选择视频文件"
@@ -83,112 +217,154 @@ export default function Assets() {
                     e.target.value = '';
                 }}
             />
+
             <ErrorNotice error={listing.error || upload.error || cancel.error} />
+
+            <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
+                <Col xs={24} sm={8}>
+                    <StatSummary
+                        title="视频总数"
+                        value={totalCount}
+                        prefix={<VideoCameraOutlined style={{ color: '#1668dc' }} />}
+                    />
+                </Col>
+                <Col xs={24} sm={8}>
+                    <StatSummary
+                        title="当前页待准入"
+                        value={awaitingAdmissionCount}
+                        prefix={<ClockCircleOutlined style={{ color: '#f59e0b' }} />}
+                        color="#f59e0b"
+                    />
+                </Col>
+                <Col xs={24} sm={8}>
+                    <StatSummary
+                        title="支持格式"
+                        value="MP4 / WebM"
+                        prefix={<CheckCircleOutlined style={{ color: '#10b981' }} />}
+                    />
+                </Col>
+            </Row>
+
             <Notice>
-                文件可上传和预览；媒体准入与自动处理尚未接入，上传完成后会保留为“待媒体准入”。
+                视频母带已在边缘存储落盘；当前阶段视频可直接上传和流式预览，媒体准入与自动编排完成后状态将自动流转。
             </Notice>
+
             {upload.isPending ? (
-                <div className="card upload-progress">
-                    <UploadCloud size={22} />
-                    <div>
-                        <strong>正在上传 · {progress}%</strong>
-                        <progress max={100} value={progress} />
-                        <small>请保持当前页面打开</small>
-                    </div>
-                </div>
+                <Card style={{ marginBottom: 20, borderColor: '#e2e8f0', background: '#ffffff' }}>
+                    <Space direction="vertical" style={{ width: '100%' }} size={12}>
+                        <div
+                            style={{
+                                display: 'flex',
+                                justifyContent: 'space-between',
+                                alignItems: 'center',
+                            }}
+                        >
+                            <Space size={10}>
+                                <InboxOutlined style={{ fontSize: 24, color: '#1d4ed8' }} />
+                                <div>
+                                    <Text strong style={{ color: '#0f172a' }}>
+                                        正在上传视频母带至边缘存储…
+                                    </Text>
+                                    <div style={{ fontSize: 12, color: '#64748b' }}>
+                                        数据直通端侧存储，请保持当前页面开启
+                                    </div>
+                                </div>
+                            </Space>
+                            <Text strong style={{ color: '#0f172a', fontSize: 16 }}>
+                                {progress}%
+                            </Text>
+                        </div>
+                        <Progress percent={progress} status="active" strokeColor="#1668dc" />
+                    </Space>
+                </Card>
             ) : null}
-            <section className="card">
-                <div className="section-heading">
-                    <h2>全部视频</h2>
-                    <span className="subtle">MP4 / WebM · 最大 1 GiB</span>
-                </div>
+
+            <Card
+                title={
+                    <Space size={8}>
+                        <span style={{ fontWeight: 650, fontSize: 15 }}>视频资产列表</span>
+                        <Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>
+                            单文件上限 1 GiB
+                        </Text>
+                    </Space>
+                }
+                bodyStyle={{ padding: 0 }}
+            >
                 {listing.isPending ? (
-                    <Loading />
+                    <Loading tip="正在载入视频资产…" />
                 ) : listing.data?.items.length ? (
-                    <div className="table-wrap">
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th>视频名称</th>
-                                    <th>大小</th>
-                                    <th>状态</th>
-                                    <th>导入时间</th>
-                                    <th />
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {listing.data.items.map((item) => (
-                                    <tr key={item.id}>
-                                        <td>
-                                            <div className="file-name">
-                                                <span className="file-icon">
-                                                    <FileVideo size={20} />
-                                                </span>
-                                                <div>
-                                                    <strong>{item.filename}</strong>
-                                                    <small>{item.content_type}</small>
-                                                </div>
-                                            </div>
-                                        </td>
-                                        <td>{bytes(item.size_bytes)}</td>
-                                        <td>
-                                            <Badge state={item.state} />
-                                        </td>
-                                        <td className="subtle">{date(item.created_at)}</td>
-                                        <td>
-                                            {item.state === 'pending' && canUpload ? (
-                                                <button
-                                                    className="text-button"
-                                                    disabled={cancel.isPending || upload.isPending}
-                                                    onClick={() => cancel.mutate(item.id)}
-                                                >
-                                                    取消上传
-                                                </button>
-                                            ) : null}
-                                            <button
-                                                className="text-button"
-                                                disabled={item.state === 'pending'}
-                                                onClick={() => setSelected(item)}
-                                            >
-                                                查看 <ArrowUpRight size={15} />
-                                            </button>
-                                        </td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    </div>
+                    <Table
+                        columns={columns}
+                        dataSource={listing.data.items}
+                        rowKey="id"
+                        pagination={{
+                            current: Math.floor(offset / 20) + 1,
+                            pageSize: 20,
+                            total: totalCount,
+                            showTotal: (total) => `共 ${total} 段视频`,
+                            onChange: (page) => setOffset((page - 1) * 20),
+                        }}
+                    />
                 ) : !listing.error ? (
-                    <Empty title="从第一段视频开始">
-                        导入授权的 MP4 或 WebM 文件，原片将存储在当前节点。
+                    <Empty title="暂无视频资产">
+                        导入授权的 MP4 或 WebM 视频文件，原片将安全存储于当前边缘节点。
                     </Empty>
                 ) : null}
-                {listing.data ? (
-                    <Pager offset={offset} total={listing.data.total} onChange={setOffset} />
-                ) : null}
-            </section>
+            </Card>
+
             {selected ? (
-                <Modal title={selected.filename} onClose={() => setSelected(null)}>
-                    <video
-                        className="video"
-                        controls
-                        preload="metadata"
-                        src={`/v1/assets/${selected.id}/content`}
-                    />
-                    <Notice>浏览器预览取决于源文件编码。当前尚未经过媒体准入。</Notice>
-                    <dl className="details">
-                        <dt>文件大小</dt>
-                        <dd>{bytes(selected.size_bytes)}</dd>
-                        <dt>内容摘要</dt>
-                        <dd className="mono">{selected.sha256}</dd>
-                        <dt>导入时间</dt>
-                        <dd>{date(selected.created_at)}</dd>
-                    </dl>
-                    <Link className="button primary" to="/jobs">
-                        准备处理任务 <ArrowUpRight size={16} />
-                    </Link>
+                <Modal
+                    title={`视频详情 · ${selected.filename}`}
+                    onClose={() => setSelected(null)}
+                    width={720}
+                >
+                    <div className="video-preview-box" style={{ marginBottom: 16 }}>
+                        <video
+                            controls
+                            preload="metadata"
+                            src={`/v1/assets/${selected.id}/content`}
+                        />
+                    </div>
+
+                    <Notice>
+                        浏览器本地预览由源视频编码决定。准入完成后将提取关键帧与多模态流。
+                    </Notice>
+
+                    <Descriptions
+                        bordered
+                        size="small"
+                        column={1}
+                        style={{ marginTop: 16, marginBottom: 20 }}
+                        labelStyle={{ width: 120, fontWeight: 500, background: '#f8fafc' }}
+                    >
+                        <Descriptions.Item label="文件名称">{selected.filename}</Descriptions.Item>
+                        <Descriptions.Item label="文件大小">
+                            {bytes(selected.size_bytes)}
+                        </Descriptions.Item>
+                        <Descriptions.Item label="媒体类型">
+                            {selected.content_type}
+                        </Descriptions.Item>
+                        <Descriptions.Item label="当前状态">
+                            <Badge state={selected.state} />
+                        </Descriptions.Item>
+                        <Descriptions.Item label="SHA-256 摘要">
+                            <span className="mono">{selected.sha256}</span>
+                        </Descriptions.Item>
+                        <Descriptions.Item label="导入时间">
+                            {date(selected.created_at)}
+                        </Descriptions.Item>
+                    </Descriptions>
+
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12 }}>
+                        <Button onClick={() => setSelected(null)}>关闭</Button>
+                        <Link to="/jobs">
+                            <Button type="primary" icon={<ArrowRightOutlined />}>
+                                准备处理任务
+                            </Button>
+                        </Link>
+                    </div>
                 </Modal>
             ) : null}
-        </>
+        </div>
     );
 }

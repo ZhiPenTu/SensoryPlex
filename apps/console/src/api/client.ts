@@ -41,7 +41,8 @@ const messages: Record<string, string> = {
     semantic_index_unreachable: '向量检索面暂时不可达，请稍后重试。',
     semantic_index_unauthenticated: '向量检索面拒绝了网关的访问：令牌不一致，需要运维改配置。',
     semantic_filters_not_supported: '语义检索暂不支持筛选条件，请只用查询文字与条数。',
-    data_locality_violation: '数据本地性约束：该插件读取共享内存句柄，不能安装到局域网远端节点，必须部署在同机数据面节点。',
+    data_locality_violation:
+        '数据本地性约束：该插件读取共享内存句柄，不能安装到局域网远端节点，必须部署在同机数据面节点。',
     node_not_found: '目标节点不存在或尚未注册。',
     node_offline: '目标节点当前处于离线状态。',
     node_draining: '目标节点正在排空中，不接受新部署。',

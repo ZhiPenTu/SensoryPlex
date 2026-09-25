@@ -1,10 +1,33 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { ArrowLeft, ChevronLeft, ChevronRight, Clock3, RefreshCw } from 'lucide-react';
+import {
+    Button,
+    Card,
+    Col,
+    Collapse,
+    Descriptions,
+    InputNumber,
+    Row,
+    Space,
+    Table,
+    Tag,
+    Typography,
+} from 'antd';
+import {
+    ArrowLeftOutlined,
+    ReloadOutlined,
+    LeftOutlined,
+    RightOutlined,
+    HistoryOutlined,
+    ClockCircleOutlined,
+    BranchesOutlined,
+    FileTextOutlined,
+    CheckCircleOutlined,
+} from '@ant-design/icons';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
-import type { MaterialUnit, Observation } from '../api/contracts';
-import { ErrorNotice, Heading, Loading, Notice } from '../components';
+import type { MaterialUnit, Observation, SourceReference } from '../api/contracts';
+import { ErrorNotice, Heading, Loading } from '../components';
 import {
     formatTime,
     modalityNames,
@@ -16,17 +39,21 @@ import {
 import MaterialPlayer from './MaterialPlayer';
 import './materials.css';
 
+const { Text } = Typography;
+
 export default function MaterialDetail() {
     const { id = '' } = useParams();
     const [params, setParams] = useSearchParams();
     const revision = params.get('revision'),
         valid = validRevision(revision);
+
     const latest = useQuery({
         queryKey: ['material', id, 'latest'],
         queryFn: ({ signal }) =>
             api<MaterialUnit>(`/v1/materials/${encodeURIComponent(id)}`, { signal }),
         retry: false,
     });
+
     const historical = useQuery({
         queryKey: ['material', id, revision],
         queryFn: ({ signal }) =>
@@ -36,8 +63,10 @@ export default function MaterialDetail() {
         enabled: valid && revision !== null,
         retry: false,
     });
+
     const result = revision === null ? latest : historical;
     const item = valid ? result.data : undefined;
+
     function selectRevision(value: string) {
         const next = new URLSearchParams(params);
         if (value) next.set('revision', value);
@@ -45,355 +74,505 @@ export default function MaterialDetail() {
         next.delete('observation');
         setParams(next);
     }
+
+    const observationId = params.get('observation');
+    const selectedObservation =
+        item?.observations.find((o) => o.observation_id === observationId) || item?.observations[0];
+
+    const [seekSeq, setSeekSeq] = useState(0);
+
+    const statusTagColor: Record<string, string> = {
+        fast_ready: 'blue',
+        partial: 'warning',
+        enriched: 'success',
+        failed: 'error',
+        rejected: 'error',
+    };
+
+    const sourceColumns = [
+        {
+            title: '母带资产 ID',
+            dataIndex: 'asset_id',
+            key: 'asset_id',
+            render: (text: string) => <span className="mono">{text}</span>,
+        },
+        {
+            title: '时序区间',
+            key: 'time_range',
+            render: (_: unknown, row: SourceReference) => (
+                <span className="mono" style={{ color: '#059669' }}>
+                    {formatTime(row.time_range?.start_ms)} ~ {formatTime(row.time_range?.end_ms)}
+                </span>
+            ),
+        },
+        {
+            title: '内容哈希摘要',
+            dataIndex: 'content_hash',
+            key: 'content_hash',
+            render: (hash: string) => (
+                <span className="mono" style={{ color: '#64748b' }}>
+                    {hash || '摘要未知'}
+                </span>
+            ),
+        },
+    ];
+
     return (
         <div className="materials-page">
-            <Link to={`/materials?${searchParamsOnly(params)}`} className="back-link">
-                <ArrowLeft size={16} />
-                返回查询结果
-            </Link>
+            <div style={{ marginBottom: 14 }}>
+                <Link to={`/materials?${searchParamsOnly(params)}`}>
+                    <Button type="link" icon={<ArrowLeftOutlined />} style={{ padding: 0 }}>
+                        返回素材检索列表
+                    </Button>
+                </Link>
+            </div>
+
             <Heading
-                eyebrow="MATERIAL DETAIL"
-                title="素材详情"
-                description="查看原始观测、定位来源片段，并追溯每一个历史版本。"
+                eyebrow="Material Unit Detail"
+                title="素材详情与观测追溯"
+                description="多模态观测特征剖析、母带视听切片回看，并追溯每一次模型富化与置信度版本。"
                 action={
-                    <button
+                    <Button
+                        icon={<ReloadOutlined />}
                         disabled={result.isFetching || !valid}
                         onClick={() => {
                             void result.refetch();
                             if (revision) void latest.refetch();
                         }}
                     >
-                        <RefreshCw size={15} />
-                        刷新
-                    </button>
+                        刷新素材
+                    </Button>
                 }
             />
-            <section className="card material-revisions">
-                <span>
-                    <Clock3 size={17} />
-                    {item
-                        ? `版本 ${item.revision} · ${item.superseded ? '历史快照' : '当前版本'}`
-                        : '版本导航'}
-                </span>
-                <div className="row-actions">
-                    <button
-                        aria-label="上一版本"
-                        disabled={!item || item.revision <= 1}
-                        onClick={() => item && selectRevision(String(item.revision - 1))}
-                    >
-                        <ChevronLeft size={15} />
-                    </button>
-                    <button
-                        aria-label="下一版本"
-                        disabled={!item || !latest.data || item.revision >= latest.data.revision}
-                        onClick={() => item && selectRevision(String(item.revision + 1))}
-                    >
-                        <ChevronRight size={15} />
-                    </button>
-                    <form
-                        key={`${id}:${revision}`}
-                        onSubmit={(event) => {
-                            event.preventDefault();
-                            selectRevision(
-                                String(new FormData(event.currentTarget).get('revision') || ''),
-                            );
+
+            <ErrorNotice error={result.error} />
+
+            {item ? (
+                <>
+                    {/* 版本切换卡片 */}
+                    <Card
+                        size="small"
+                        style={{ marginBottom: 20, borderRadius: 8, background: '#f8fafc' }}
+                        bodyStyle={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            flexWrap: 'wrap',
+                            gap: 12,
                         }}
                     >
-                        <label>
-                            指定版本
-                            <input
-                                name="revision"
-                                aria-label="指定版本"
-                                type="number"
-                                min="1"
-                                max="2147483647"
-                                step="1"
-                                placeholder="最新"
-                                defaultValue={revision || ''}
+                        <Space size={10}>
+                            <HistoryOutlined style={{ color: '#1668dc', fontSize: 16 }} />
+                            <Text strong style={{ fontSize: 13 }}>
+                                版本导航:
+                            </Text>
+                            <Tag color="purple" style={{ margin: 0, fontWeight: 600 }}>
+                                v{item.revision}
+                            </Tag>
+                            <Tag
+                                color={item.superseded ? 'default' : 'success'}
+                                style={{ margin: 0 }}
+                            >
+                                {item.superseded ? '历史快照' : '当前激活最新版本'}
+                            </Tag>
+                        </Space>
+
+                        <Space size={8}>
+                            <Button
+                                size="small"
+                                icon={<LeftOutlined />}
+                                disabled={!item || item.revision <= 1}
+                                onClick={() => selectRevision(String(item.revision - 1))}
+                            >
+                                上一版本
+                            </Button>
+                            <Button
+                                size="small"
+                                icon={<RightOutlined />}
+                                disabled={
+                                    !item || !latest.data || item.revision >= latest.data.revision
+                                }
+                                onClick={() => selectRevision(String(item.revision + 1))}
+                            >
+                                下一版本
+                            </Button>
+
+                            <InputNumber
+                                size="small"
+                                min={1}
+                                max={2147483647}
+                                placeholder="输入版本号"
+                                defaultValue={revision ? Number(revision) : undefined}
+                                onPressEnter={(e) => {
+                                    const target = e.target as HTMLInputElement;
+                                    if (target.value) selectRevision(target.value);
+                                }}
+                                style={{ width: 100 }}
                             />
-                        </label>
-                        <button>查看</button>
-                    </form>
-                    <button
-                        className="text-button"
-                        onClick={() => selectRevision('')}
-                        disabled={revision === null}
+
+                            {revision !== null ? (
+                                <Button size="small" type="link" onClick={() => selectRevision('')}>
+                                    恢复最新版
+                                </Button>
+                            ) : null}
+                        </Space>
+                    </Card>
+
+                    {/* 素材单元概览卡片 */}
+                    <Card
+                        title={
+                            <div
+                                style={{
+                                    display: 'flex',
+                                    justifyContent: 'space-between',
+                                    alignItems: 'center',
+                                }}
+                            >
+                                <Space size={8}>
+                                    <span style={{ fontWeight: 650, fontSize: 15 }}>
+                                        素材元数据
+                                    </span>
+                                    <Tag color={statusTagColor[item.status] || 'default'}>
+                                        {statusNames[item.status] || item.status}
+                                    </Tag>
+                                </Space>
+                                <span className="mono" style={{ fontSize: 11, color: '#64748b' }}>
+                                    UID: {item.material_unit_id}
+                                </span>
+                            </div>
+                        }
+                        style={{ marginBottom: 20 }}
                     >
-                        最新{latest.data ? ` · ${latest.data.revision}` : ''}
-                    </button>
-                </div>
-            </section>
-            <ErrorNotice
-                error={
-                    !valid ? new Error('版本号必须为 1 到 2147483647 之间的整数。') : result.error
-                }
-            />
-            {revision && latest.error ? (
-                <Notice>
-                    最新版本信息暂不可用，当前仅展示指定版本。版本导航不会猜测不存在的历史。
-                </Notice>
-            ) : null}
-            {valid && result.isPending ? (
-                <Loading />
-            ) : item && !result.error ? (
-                <DetailContent
-                    key={`${item.material_unit_id}:${item.revision}`}
-                    item={item}
-                    selectedId={params.get('observation')}
-                    select={(value) => {
-                        const next = new URLSearchParams(params);
-                        next.set('observation', value);
-                        setParams(next, { replace: true });
-                    }}
-                />
+                        <Descriptions bordered size="small" column={{ xs: 1, sm: 2, md: 4 }}>
+                            <Descriptions.Item label="来源流 ID">
+                                <span className="mono">{item.stream_id}</span>
+                            </Descriptions.Item>
+                            <Descriptions.Item label="时序对齐区间">
+                                <Space size={4} style={{ color: '#059669' }}>
+                                    <ClockCircleOutlined />
+                                    <span className="mono">
+                                        {formatTime(item.time_range?.start_ms)} ~{' '}
+                                        {formatTime(item.time_range?.end_ms)}
+                                    </span>
+                                </Space>
+                            </Descriptions.Item>
+                            <Descriptions.Item label="流水线版本">
+                                <Text strong style={{ color: '#1668dc' }}>
+                                    {item.pipeline_version || 'v1.0'}
+                                </Text>
+                            </Descriptions.Item>
+                            <Descriptions.Item label="观测记录数">
+                                <Text strong>{item.observations.length} 条多模态切片</Text>
+                            </Descriptions.Item>
+                        </Descriptions>
+
+                        {item.tags.length ? (
+                            <div style={{ marginTop: 14 }}>
+                                <Space size={6} wrap>
+                                    <Text type="secondary" style={{ fontSize: 12 }}>
+                                        标签:
+                                    </Text>
+                                    {item.tags.map((tag) => (
+                                        <Tag key={tag} color="blue">
+                                            #{tag}
+                                        </Tag>
+                                    ))}
+                                </Space>
+                            </div>
+                        ) : null}
+                    </Card>
+
+                    {/* 核心双栏：左侧播放器与来源，右侧观测记录与证据 */}
+                    <Row gutter={[20, 20]} style={{ marginBottom: 20 }}>
+                        <Col xs={24} lg={12}>
+                            <MaterialPlayer
+                                material={item}
+                                observation={selectedObservation}
+                                seekSequence={seekSeq}
+                            />
+
+                            <Card
+                                title={
+                                    <Space size={8}>
+                                        <BranchesOutlined style={{ color: '#1668dc' }} />
+                                        <span style={{ fontWeight: 650, fontSize: 14 }}>
+                                            关联原始视频源
+                                        </span>
+                                        <Tag style={{ margin: 0 }}>
+                                            {item.source_refs.length} 个引用
+                                        </Tag>
+                                    </Space>
+                                }
+                                bodyStyle={{ padding: 0 }}
+                            >
+                                {item.source_refs.length ? (
+                                    <Table
+                                        columns={sourceColumns}
+                                        dataSource={item.source_refs}
+                                        rowKey={(r, i) => `${r.asset_id}:${i}`}
+                                        pagination={false}
+                                        size="small"
+                                    />
+                                ) : (
+                                    <div
+                                        style={{
+                                            padding: 24,
+                                            textAlign: 'center',
+                                            color: '#94a3b8',
+                                        }}
+                                    >
+                                        当前版本无原始视频来源引用，无法进行画面回看。
+                                    </div>
+                                )}
+                            </Card>
+                        </Col>
+
+                        <Col xs={24} lg={12}>
+                            <Card
+                                title={
+                                    <div
+                                        style={{
+                                            display: 'flex',
+                                            justifyContent: 'space-between',
+                                            alignItems: 'center',
+                                        }}
+                                    >
+                                        <Space size={8}>
+                                            <FileTextOutlined style={{ color: '#1668dc' }} />
+                                            <span style={{ fontWeight: 650, fontSize: 15 }}>
+                                                多模态观测列表 (Observations)
+                                            </span>
+                                        </Space>
+                                        <Text type="secondary" style={{ fontSize: 12 }}>
+                                            点击观测项同步定位时间轴
+                                        </Text>
+                                    </div>
+                                }
+                                style={{ marginBottom: 20 }}
+                                bodyStyle={{ padding: 12 }}
+                            >
+                                <div
+                                    style={{
+                                        display: 'flex',
+                                        flexDirection: 'column',
+                                        gap: 8,
+                                        maxHeight: 400,
+                                        overflowY: 'auto',
+                                    }}
+                                >
+                                    {item.observations.map((obs) => {
+                                        const isSelected =
+                                            selectedObservation?.observation_id ===
+                                            obs.observation_id;
+                                        return (
+                                            <div
+                                                key={obs.observation_id}
+                                                onClick={() => {
+                                                    const next = new URLSearchParams(params);
+                                                    next.set('observation', obs.observation_id);
+                                                    setParams(next);
+                                                    setSeekSeq((s) => s + 1);
+                                                }}
+                                                style={{
+                                                    padding: '12px 14px',
+                                                    borderRadius: 8,
+                                                    border: `1px solid ${isSelected ? '#1668dc' : '#e2e8f0'}`,
+                                                    background: isSelected ? '#eff6ff' : '#ffffff',
+                                                    cursor: 'pointer',
+                                                    transition: 'all 0.15s ease',
+                                                    boxShadow: isSelected
+                                                        ? '0 1px 4px rgba(22, 104, 220, 0.15)'
+                                                        : 'none',
+                                                }}
+                                            >
+                                                <div
+                                                    style={{
+                                                        display: 'flex',
+                                                        justifyContent: 'space-between',
+                                                        alignItems: 'center',
+                                                        marginBottom: 6,
+                                                    }}
+                                                >
+                                                    <Space size={6}>
+                                                        <Tag
+                                                            color="cyan"
+                                                            style={{ margin: 0, fontWeight: 500 }}
+                                                        >
+                                                            {modalityNames[obs.modality] ||
+                                                                obs.modality}
+                                                        </Tag>
+                                                        <Tag
+                                                            color={
+                                                                statusTagColor[obs.quality_state] ||
+                                                                'default'
+                                                            }
+                                                            style={{ margin: 0, fontSize: 11 }}
+                                                        >
+                                                            {statusNames[obs.quality_state] ||
+                                                                obs.quality_state}
+                                                        </Tag>
+                                                    </Space>
+                                                    <span
+                                                        className="mono"
+                                                        style={{ fontSize: 11, color: '#059669' }}
+                                                    >
+                                                        {formatTime(obs.time_range?.start_ms)} ~{' '}
+                                                        {formatTime(obs.time_range?.end_ms)}
+                                                    </span>
+                                                </div>
+
+                                                <div
+                                                    style={{
+                                                        fontSize: 13,
+                                                        color: isSelected ? '#0f172a' : '#334155',
+                                                        lineHeight: 1.5,
+                                                        display: '-webkit-box',
+                                                        WebkitLineClamp: 2,
+                                                        WebkitBoxOrient: 'vertical',
+                                                        overflow: 'hidden',
+                                                    }}
+                                                >
+                                                    {payloadText(obs.payload) ||
+                                                        '（无文字负载内容）'}
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            </Card>
+
+                            {selectedObservation ? (
+                                <ObservationDetail observation={selectedObservation} />
+                            ) : null}
+                        </Col>
+                    </Row>
+                </>
+            ) : result.isPending ? (
+                <Loading tip="正在载入素材详情与时序观测…" />
             ) : null}
         </div>
     );
 }
 
-function DetailContent({
-    item,
-    selectedId,
-    select,
-}: {
-    item: MaterialUnit;
-    selectedId: string | null;
-    select: (id: string) => void;
-}) {
-    const observations = [...item.observations].sort((a, b) => {
-        const start = (o: Observation) =>
-            /^\d+$/.test(o.time_range?.start_ms || '') ? BigInt(o.time_range!.start_ms) : 0n;
-        return start(a) < start(b)
-            ? -1
-            : start(a) > start(b)
-              ? 1
-              : a.observation_id.localeCompare(b.observation_id);
-    });
-    const selected =
-        observations.find((o) => o.observation_id === selectedId) ||
-        (selectedId ? undefined : observations[0]);
-    const [seekSequence, setSeekSequence] = useState(0);
-    return (
-        <>
-            <section className="card material-overview">
-                <div>
-                    <span className={`badge material-state-${item.status}`}>
-                        {statusNames[item.status] || item.status}
-                    </span>
-                    {item.superseded ? <span className="badge muted">只读历史版本</span> : null}
-                    <h2 className="mono">{item.material_unit_id}</h2>
-                </div>
-                <dl>
-                    <div>
-                        <dt>来源流</dt>
-                        <dd className="mono">{item.stream_id}</dd>
-                    </div>
-                    <div>
-                        <dt>素材区间</dt>
-                        <dd>
-                            {formatTime(item.time_range?.start_ms)} —{' '}
-                            {formatTime(item.time_range?.end_ms)}
-                        </dd>
-                    </div>
-                    <div>
-                        <dt>处理方案</dt>
-                        <dd>{item.pipeline_version || '未知'}</dd>
-                    </div>
-                    <div>
-                        <dt>生成时间</dt>
-                        <dd>
-                            {Number.isFinite(Number(item.created_at_unix_ms)) &&
-                            Number(item.created_at_unix_ms) > 0
-                                ? new Date(Number(item.created_at_unix_ms)).toLocaleString(
-                                      'zh-CN',
-                                      { hour12: false },
-                                  )
-                                : '未知'}
-                        </dd>
-                    </div>
-                </dl>
-                {item.tags.length ? (
-                    <div className="tags">
-                        {item.tags.map((tag) => (
-                            <span key={tag}>{tag}</span>
-                        ))}
-                    </div>
-                ) : null}
-                {item.pending_enrichments.length ? (
-                    <p className="material-pending">
-                        待补全：
-                        {item.pending_enrichments.map((m) => modalityNames[m] || m).join('、')}
-                    </p>
-                ) : null}
-            </section>
-            {selectedId && !selected ? (
-                <Notice>当前版本中没有指定的观测。请选择下方时间轴中的观测。</Notice>
-            ) : null}
-            <div className="material-review-layout">
-                <div className="material-viewer-column">
-                    <MaterialPlayer
-                        material={item}
-                        observation={selected}
-                        seekSequence={seekSequence}
-                    />
-                    <section className="card material-timeline">
-                        <div className="section-heading">
-                            <h2>观测时间轴</h2>
-                            <span className="subtle">{observations.length} 条 · 按起点排序</span>
-                        </div>
-                        {observations.length ? (
-                            <div className="material-observation-list">
-                                {observations.map((obs) => (
-                                    <button
-                                        key={obs.observation_id}
-                                        className={`material-observation-button ${obs.observation_id === selected?.observation_id ? 'selected' : ''}`}
-                                        aria-pressed={
-                                            obs.observation_id === selected?.observation_id
-                                        }
-                                        onClick={() => {
-                                            select(obs.observation_id);
-                                            setSeekSequence((n) => n + 1);
-                                        }}
-                                    >
-                                        <span className="material-observation-time">
-                                            {formatTime(obs.time_range?.start_ms)}
-                                            <small>{formatTime(obs.time_range?.end_ms)}</small>
-                                        </span>
-                                        <span>
-                                            <strong>
-                                                {modalityNames[obs.modality] || obs.modality}
-                                            </strong>
-                                            <span className="material-observation-excerpt">
-                                                {payloadText(obs.payload, 160) || '查看结构化观测'}
-                                            </span>
-                                        </span>
-                                        <span
-                                            className={`badge material-state-${obs.quality_state}`}
-                                        >
-                                            {statusNames[obs.quality_state] || obs.quality_state}
-                                        </span>
-                                    </button>
-                                ))}
-                            </div>
-                        ) : (
-                            <p className="material-padding subtle">当前版本没有观测数据。</p>
-                        )}
-                    </section>
-                </div>
-                <section className="card material-evidence" aria-label="观测详情">
-                    {selected ? (
-                        <ObservationDetail observation={selected} />
-                    ) : (
-                        <p className="subtle">选择一条观测查看内容与血缘。</p>
-                    )}
-                </section>
-            </div>
-            <section className="card material-sources">
-                <div className="section-heading">
-                    <h2>原始来源引用</h2>
-                    <span className="subtle">{item.source_refs.length} 条</span>
-                </div>
-                {item.source_refs.length ? (
-                    item.source_refs.map((ref, index) => (
-                        <div
-                            className="material-source-row"
-                            key={`${ref.asset_id}:${ref.time_range?.start_ms}:${ref.time_range?.end_ms}:${index}`}
-                        >
-                            <strong className="mono">{ref.asset_id}</strong>
-                            <span>
-                                {formatTime(ref.time_range?.start_ms)} —{' '}
-                                {formatTime(ref.time_range?.end_ms)}
-                            </span>
-                            <code>{ref.content_hash || '摘要未知'}</code>
-                        </div>
-                    ))
-                ) : (
-                    <p className="material-padding subtle">
-                        当前版本没有原始来源引用，暂时无法回看。
-                    </p>
-                )}
-            </section>
-        </>
-    );
-}
-
 function ObservationDetail({ observation: obs }: { observation: Observation }) {
     const p = obs.provenance;
+
     return (
-        <>
-            <span className="eyebrow">OBSERVATION</span>
-            <h2>{modalityNames[obs.modality] || obs.modality}</h2>
-            <div className="material-observation-body">
-                {payloadText(obs.payload) || '该观测没有可展示的文字，请查看结构化数据。'}
-            </div>
-            <dl className="details">
-                <dt>质量状态</dt>
-                <dd>
-                    <span className={`badge material-state-${obs.quality_state}`}>
-                        {statusNames[obs.quality_state] || obs.quality_state}
+        <Card
+            title={
+                <Space size={8}>
+                    <CheckCircleOutlined style={{ color: '#10b981' }} />
+                    <span style={{ fontWeight: 650, fontSize: 14 }}>
+                        选中观测详情 · {modalityNames[obs.modality] || obs.modality}
                     </span>
-                </dd>
-                <dt>模型置信度</dt>
-                <dd>
-                    {obs.confidence == null ? '未知' : String(obs.confidence)}
-                    {obs.confidence == null ? (
-                        <small>{obs.confidence_unavailable_reason || '未提供原因'}</small>
+                </Space>
+            }
+        >
+            <div
+                style={{
+                    fontSize: 14,
+                    lineHeight: 1.7,
+                    padding: '12px 16px',
+                    background: '#f8fafc',
+                    borderRadius: 8,
+                    marginBottom: 16,
+                    border: '1px solid #e2e8f0',
+                    color: '#0f172a',
+                    whiteSpace: 'pre-wrap',
+                }}
+            >
+                {payloadText(obs.payload) || '该观测没有文字预览，请在下方查看结构化 JSON 数据。'}
+            </div>
+
+            <Descriptions
+                bordered
+                size="small"
+                column={{ xs: 1, sm: 2 }}
+                style={{ marginBottom: 16 }}
+            >
+                <Descriptions.Item label="质量评估状态">
+                    <Tag color="green">{statusNames[obs.quality_state] || obs.quality_state}</Tag>
+                </Descriptions.Item>
+                <Descriptions.Item label="模型置信度">
+                    <Text strong style={{ color: '#1668dc' }}>
+                        {obs.confidence == null ? '未知' : String(obs.confidence)}
+                    </Text>
+                </Descriptions.Item>
+                <Descriptions.Item label="观测时序">
+                    <span className="mono" style={{ color: '#059669' }}>
+                        {formatTime(obs.time_range?.start_ms)} ~{' '}
+                        {formatTime(obs.time_range?.end_ms)}
+                    </span>
+                </Descriptions.Item>
+                <Descriptions.Item label="时序来源">
+                    <Text>{obs.timing_source || '未知'}</Text>
+                    {obs.timing_confidence != null ? (
+                        <div style={{ fontSize: 11, color: '#94a3b8' }}>
+                            时序置信度: {String(obs.timing_confidence)}
+                        </div>
                     ) : null}
-                </dd>
-                <dt>时间区间</dt>
-                <dd>
-                    {formatTime(obs.time_range?.start_ms)} — {formatTime(obs.time_range?.end_ms)}
-                </dd>
-                <dt>时序来源</dt>
-                <dd>
-                    {obs.timing_source || '未知'}
-                    <small>
-                        时序置信度：
-                        {obs.timing_confidence == null ? '未知' : String(obs.timing_confidence)}
-                    </small>
-                </dd>
-                {obs.quality_reasons.length ? (
-                    <>
-                        <dt>质量说明</dt>
-                        <dd>{obs.quality_reasons.join('、')}</dd>
-                    </>
-                ) : null}
-            </dl>
-            <details className="material-lineage" open>
-                <summary>模型与来源血缘</summary>
-                <dl className="details">
-                    <dt>观测 ID</dt>
-                    <dd className="mono">{obs.observation_id}</dd>
-                    <dt>来源条目</dt>
-                    <dd className="mono">{obs.source_item_id}</dd>
-                    <dt>来源 ID</dt>
-                    <dd className="mono">{obs.source_id}</dd>
-                    <dt>输入内容摘要</dt>
-                    <dd className="mono">{obs.content_hash}</dd>
-                    <dt>模型</dt>
-                    <dd>
-                        {p?.model_id || '未知'} · {p?.model_version || '未知'}
-                    </dd>
-                    <dt>模型发布 ID</dt>
-                    <dd className="mono">{p?.model_release_id || '未知'}</dd>
-                    <dt>执行后端</dt>
-                    <dd>{p?.execution_backend || '未知'}</dd>
-                    <dt>插件</dt>
-                    <dd>
-                        {p?.plugin || '未知'} · {p?.plugin_version || '未知'}
-                    </dd>
-                    <dt>插件摘要</dt>
-                    <dd className="mono">{p?.artifact_digest || '未知'}</dd>
-                    <dt>模型摘要</dt>
-                    <dd className="mono">{p?.model_artifact_digest || '未知'}</dd>
-                    <dt>配置摘要</dt>
-                    <dd className="mono">{p?.config_hash || '未知'}</dd>
-                </dl>
-            </details>
-            <details className="material-lineage">
-                <summary>结构化观测数据</summary>
-                <pre>{JSON.stringify(obs.payload || {}, null, 2)}</pre>
-            </details>
-        </>
+                </Descriptions.Item>
+            </Descriptions>
+
+            <Collapse
+                size="small"
+                defaultActiveKey={['lineage']}
+                items={[
+                    {
+                        key: 'lineage',
+                        label: <span style={{ fontWeight: 600 }}>模型与来源血缘链路</span>,
+                        children: (
+                            <Descriptions
+                                bordered
+                                size="small"
+                                column={1}
+                                labelStyle={{ width: 140 }}
+                            >
+                                <Descriptions.Item label="观测 ID">
+                                    <span className="mono">{obs.observation_id}</span>
+                                </Descriptions.Item>
+                                <Descriptions.Item label="模型信息">
+                                    {p?.model_id || '未知'} · {p?.model_version || '未知'} (后端:{' '}
+                                    {p?.execution_backend || '默认'})
+                                </Descriptions.Item>
+                                <Descriptions.Item label="插件来源">
+                                    {p?.plugin || '未知'} · {p?.plugin_version || '未知'}
+                                </Descriptions.Item>
+                                <Descriptions.Item label="输入内容摘要">
+                                    <span className="mono">{obs.content_hash || '未知'}</span>
+                                </Descriptions.Item>
+                                <Descriptions.Item label="模型产物摘要">
+                                    <span className="mono">
+                                        {p?.model_artifact_digest || '未知'}
+                                    </span>
+                                </Descriptions.Item>
+                            </Descriptions>
+                        ),
+                    },
+                    {
+                        key: 'payload',
+                        label: (
+                            <span style={{ fontWeight: 600 }}>结构化原始数据 (Payload JSON)</span>
+                        ),
+                        children: (
+                            <pre
+                                style={{
+                                    margin: 0,
+                                    padding: 12,
+                                    borderRadius: 6,
+                                    background: '#0f172a',
+                                    color: '#e2e8f0',
+                                    fontSize: 11,
+                                    maxHeight: 260,
+                                    overflow: 'auto',
+                                }}
+                            >
+                                {JSON.stringify(obs.payload || {}, null, 2)}
+                            </pre>
+                        ),
+                    },
+                ]}
+            />
+        </Card>
     );
 }
