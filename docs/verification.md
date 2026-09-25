@@ -2799,9 +2799,32 @@ JetStream、真实 Node Agent 生命周期或 `Process` 调用。`pipeline_publi
 | 9. 状态脚本 | `./deploy/status.sh` | `OK docs http://127.0.0.1:5174/ -> 200`（`docs` 未运行时打印 `SKIP` 而不是 `FAIL`） |
 | 10. 渲染确认 | Playwright/Chromium 访问 `/`、`/zh/`、`/zh/guide/quickstart`、`/reference/status` | 首页、中文页、侧边栏、本页目录与语言切换器均正常渲染，控制台无报错 |
 
+**公网发布补测（GitHub Pages 项目页，2026-09-26）**：
+
+发布形态是**子路径项目页**，与本地根路径托管是两套约束（尤其尾斜杠与 sitemap），因此单独记录：
+
+- 发布事实：仓库 `jaytu211/SensoryPlex`（私有，组织 Team 计划）已启用 Pages，来源 `GitHub Actions`，
+  站点 URL `https://jaytu211.github.io/SensoryPlex/`；Pages 返回 `public: true`——**私有仓库的 Pages 站点是公开可读的**。
+- 发布入口：`.github/workflows/docs-pages.yml`，按仓库既有约定**仅手动派发**
+  （`gh workflow run docs-pages.yml --ref master`）。构建 + `check-docs.mjs` 通过后才
+  `upload-pages-artifact` / `deploy-pages`；没有任何产物被推到分支。
+
+| 验证场景 | 动作与验证项 | 实测结果 |
+| --- | --- | --- |
+| 11. 远端发布运行 | `gh workflow run docs-pages.yml --ref master` + `gh run watch` | run `36168259693`（提交 `3a7f786`）**success**，1m50s；`npm ci` / 构建 / `check-docs.mjs` / `configure-pages` / `upload-pages-artifact` / `deploy-pages` 全部 ✓ |
+| 12. 线上路由 | 对 `https://jaytu211.github.io/SensoryPlex` 逐条 `curl -o /dev/null -w '%{http_code}'` | `/`、`/zh/`、`/guide/quickstart`、`/reference/status`、`/zh/reference/status`、`/logo.svg`、`/sitemap.xml` 均 **200**；`/nonexistent-route` **404**；`/zh` **301**（跳 `/zh/`） |
+| 13. 线上尾斜杠语义（**与本地不同**） | 同上 | `/zh/reference/status/`、`/reference/status/` 在 Pages 上是 **404**，而本机 nginx 是 200——Pages 对页级尾斜杠不做 `.html` 回退 |
+| 14. sitemap 基路径修正 | `make docs-check DOCS_BASE=/SensoryPlex/ DOCS_SITE_URL=https://jaytu211.github.io` | 修正**前** `<loc>` 为 `https://jaytu211.github.io/architecture/contracts`（丢掉 `/SensoryPlex/`，线上每条都指向 404）；`config.mts` 的 `sitemap.transformItems` 补回 base 后为 `.../SensoryPlex/architecture/contracts`，138/138 条 URL 落在基础路径下 |
+| 15. 校验器有牙齿（sitemap 负例） | 手工篡改产物 `sitemap.xml` 的 3 条 URL 后跑 `node scripts/check-docs.mjs` | 按预期 `FAIL sitemap.xml 有 3 条 URL 不合格`（exit 1） |
+| 16. 校验器有牙齿（尾斜杠负例） | 往产物 `zh/index.html` 注入 `<a href="/SensoryPlex/guide/quickstart/">` 后跑校验 | 按预期 `FAIL … 尾斜杠链接没有目录索引（GitHub Pages 上会是 404）`（exit 1）；当前产物实测无此类链接（0 条） |
+
 **未验收边界（不得表述为已完成）**：
-- **未发布到公网**：`DOCS_SITE_URL` 留空，因此没有线上 URL，也没有产出 sitemap；站点"可托管"是产物能力，不是已上线状态。
-- **子路径托管未实测**：只验证了产物的链接前缀与校验器行为，**没有**在真实子路径 nginx / GitHub Pages 上托管过。
-- **本机服务只按根路径托管**：`127.0.0.1:5174` 上跑的始终是根路径产物。
-- **未接入远端 CI**：`.github/workflows/ci.yml` 未增加文档站 job，`make docs-check` 只在本地门禁覆盖。
+- **本机服务只按根路径托管**：`127.0.0.1:5174` 上跑的始终是根路径产物；子路径只用于公网发布。
+- **线上与本地在尾斜杠上语义不同**：本地 nginx 让 `/guide/x/` 落到 `guide/x.html`，GitHub Pages 不做该回退。
+  `check-docs.mjs` 已按更严的 Pages 语义卡（尾斜杠链接必须有目录索引），但两套托管实现仍是两套行为。
+- **发布不自动跟随 master**：`docs-pages.yml` 手动触发，线上最新程度取决于最后一次成功运行。
+- **站点内指向仓库的链接对未授权访问者是 404**：仓库仍私有，而文档站里的仓库入口 / `editLink` / ADR 索引
+  指向 `github.com/ZhiPenTu/SensoryPlex`（重定向到私有的 `jaytu211/SensoryPlex`）；链接未改写，未做"私有仓库 +
+  公开站点"的链接策略。
+- **未验证自定义域名与证书链**：只用默认 `*.github.io` 地址（仓库 Pages 配置为 `https_enforced=true`）。
 - **只有两种语言**：日/韩等更多语言是"加语言目录 + 一份 `locales` 配置"的动作，当前未做。

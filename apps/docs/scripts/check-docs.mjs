@@ -106,8 +106,19 @@ if (!existsSync(distDir)) {
         errors.push(`${toPosix(file)} → 绝对链接不在站点基础路径 ${siteBase} 下：${url}`)
         continue
       }
-      if (!candidatesFor(target).some((candidate) => existsSync(candidate))) {
-        errors.push(`${toPosix(file)} → 链接目标不存在：${url}`)
+      // 尾斜杠链接必须命中**目录索引**本身，不能只靠 `.html` 兜底：本机 nginx 会把 `/guide/x/`
+      // 落到 `guide/x.html`，而 GitHub Pages 不做这个回退（实测 `/zh/reference/status/` 是 404、
+      // `/zh/reference/status` 是 200）。产物要同时能在两种形态下托管，所以按更严的那种卡。
+      const candidates = candidatesFor(target)
+      const targetExists = url.endsWith('/')
+        ? candidates.some((candidate) => candidate.endsWith('index.html') && existsSync(candidate))
+        : candidates.some((candidate) => existsSync(candidate))
+      if (!targetExists) {
+        errors.push(
+          url.endsWith('/')
+            ? `${toPosix(file)} → 尾斜杠链接没有目录索引（GitHub Pages 上会是 404）：${url}`
+            : `${toPosix(file)} → 链接目标不存在：${url}`
+        )
       }
     }
   }
