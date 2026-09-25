@@ -39,10 +39,10 @@ window 吸收重发、stream 漂移只报不改、NATS 不可达显式失败而�
 `material.upserted` 也带不了可编码文本——该判断已由 ADR-025 改写）；RRF/混合检索与相关性校准未做；服务端 Milvus 形态（本机 Docker Hub 不可达，未验收）；ASR 的 Linux 后端（`mlx` 是 Apple Silicon 专属）；插件**未签名**（`local_native` 形态，签名/SBOM 只有结构预检）；旋转的采集与应用（v1 未实现） |
 | 工程 | uv/Cargo 锁文件、Docker、检查命令、CI（`check`/`check-console` + **Apple Silicon** `check-apple-silicon`，远端 `macos-15-arm64` 已真实通过）、macOS `launchd` 常驻形态与统一内存分级（`tools/macos_resident.py`，见 ADR-015） | 真视频 Golden Path、Linux NVIDIA 侧 CI、压测、监控仪表盘 |
 
-## 可编排插件执行核心（ADR-029）：P0 编译内核与 P1 持久执行编排闭环已落地
+## 可编排插件执行核心（ADR-029）：P0 编译内核、P1 持久执行与 P2 受控多节点集群编排已闭环落地
 
 不可变 Pipeline revision → DAG 编译 → `PipelineRun` / `PipelineTask` 状态机 → 基于数据本地性与资源上限的
-单主调度 → 事务对账与租约恢复已在 P1 完整闭环落地：
+多节点集群调度 → 跨节点任务认领与可审计故障转移（Failover）已在 P1/P2 完整闭环落地：
 
 1. **不可变 Revision 与持久化模型**：
    - 追加数据库迁移 `0008_orchestration_run_task.sql`，落 `pipeline_definition`、`pipeline_revision`、`pipeline_run`、`pipeline_task`、`pipeline_task_edge` 与 `scheduler_assignment`；
@@ -59,7 +59,13 @@ window 吸收重发、stream 漂移只报不改、NATS 不可达显式失败而�
    - API 提供 `/v1/orchestration/pipelines[:validate]`、`/v1/orchestration/runs[/:id/cancel]`、`/v1/orchestration/scheduler:step`、`/v1/orchestration/tasks/:id:result`，受 `pipelines:manage`、`jobs:write`、`jobs:read` 保护；
    - 验收命令 `make orchestration-p1-check`（7 大核心场景）与 `pytest tests/integration/test_orchestration_api.py` 全部在真实 PostgreSQL 上通过。
 
-P2（受控多节点 Agent 生命周期与跨节点策略）与 P3（场景产品包、Console/API 和真实端到端闭环）仍是后续进阶门禁。
+P2 已闭环交付：
+1. **多节点算力感知与数据本地性硬过滤**：同机节点（`is_co_located=True`）独占消费 raw BufferDescriptor；远程 GPU / Edge 节点仅处理 observation / object reference；跨机 raw buffer 边在解析期与调度期均被双重硬拦截（`data_locality_violation`）；
+2. **节点排空与离线安全阻断**：节点处于 draining / offline 状态时，预检与任务认领均被 409 拒绝，严禁静默降级或任意改派；
+3. **可审计故障转移（Failover）**：当节点失联或租约超时，恢复器原子检测并回收任务，重新派发至备用算力节点，在持久账目中完整保留第一任与第二任两次 assignment 历史记录；
+4. **多节点验收工具**：`make orchestration-p2-check` 全量通过 6 大核心分布式编排场景。
+
+P3（场景产品包、Console/API 运维与真实媒体业务闭环）现为下一阶段门禁。
 
 下一里程碑：**本地文件 → GStreamer → PTS 正确的 frame/audio descriptor**，先完成
 真实样本回放、lease 生命周期和断流测试，再引入实际模型。真实媒体、lease 生命周期、断流测试

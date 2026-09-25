@@ -42,6 +42,10 @@
   状态：**已完成**（2026-09-25 经 `make orchestration-p1-check` 7 个场景全量验证）。  
   范围：追加数据库迁移落地 immutable Pipeline revision、Run、Task、Edge 与 assignment 租约；实现事务 CAS/幂等提交、取消传播、有界重试（`retry_wait` / `retry_exhausted`）、崩溃恢复（租约过期自动回收）与数据本地性拒绝（`data_locality_violation`）。
 
+- [x] **OP-04 受控多节点集群编排（ADR-029 P2）**  
+  状态：**已完成**（2026-09-25 经 `make orchestration-p2-check` 6 个场景全量验证）。  
+  范围：基于多节点注册画像的候选调度、数据本地性过滤（raw buffer 仅限同机，observation 跨机分发至 GPU/Edge 节点）、节点排空/离线硬阻断、双向任务认领（`tasks:claim`）与可审计故障转移（Failover：第一任过期记录保留，第二任备用节点成功接手）。
+
 - [ ] **GP-02 Timeline 语义冲突识别与 revision 策略**  
   状态：**未开始**；依赖 `GP-01`。  
   完成条件：定义可解释的跨模态冲突输入与状态机；旧 revision 不覆盖；至少覆盖冲突、低置信度、模型缺失和重放幂等四种场景。

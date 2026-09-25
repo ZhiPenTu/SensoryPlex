@@ -2708,3 +2708,46 @@ JetStream、真实 Node Agent 生命周期或 `Process` 调用。`pipeline_publi
 **实测验证**：
 - `make node-check`：6 大场景全通过，新增覆盖插件卸载物理目录销毁、状态同步与节点反注册断言；
 - `pytest tests/integration/test_node_topology_api.py`：6 个独立集成测试全部通过，含 `test_plugin_clean_uninstall_and_directory_removal` 与 `test_node_agent_deregister_and_cleanup`。
+
+---
+
+## 受控多节点集群编排闭环（ADR-029 P2，2026-09-25）
+
+**背景与解决问题**：
+在 ADR-029 P1 完成单节点持久执行编排的基础上，P2 解决**跨异构算力节点（同机数据面 Mac mini、局域网 Linux GPU 3090Ti、边缘 CPU 盒子）的受控分布式调度与故障转移**。坚决贯彻数据本地性硬边界：原始 BufferDescriptor 严格 host-local，跨节点仅允许已结构化的 Observation 或受控对象引用。
+
+**关键落地链路**：
+1. **跨节点任务认领与控制面通道**：
+   - `services/api/src/sensoryplex_api/interfaces/orchestration.py` 暴露 `POST /v1/orchestration/tasks:claim`；
+   - 自动核验认领节点的就绪状态（`console_node.status == 'ready'`）与 `is_co_located` 标识；
+   - 调度器结合节点能力画像、已安装就绪插件（`console_plugin_instance`）以及并发上限派发任务并签发租约。
+2. **数据本地性与跨机分发硬过滤**：
+   - 管道声明 `data_plane_local` 任务（如解码与 OCR）只能由同机节点执行；远程节点尝试认领显式记录 `data_locality_violation` 拒绝；
+   - 管道声明 `object_ref_allowed` 任务（如基于文字块的向量计算）可安全分发至远程 GPU 节点或边缘节点，跨机传输仅包含 Observation 引用与文本内容；
+   - 编译器在解析期拒绝任何试图跨机传递 raw buffer 的 `same_item` 边（`same_item_requires_data_plane_local`）。
+3. **节点排空与离线安全阻断**：
+   - 处于 `draining` 或 `offline` 的节点在预检与任务认领时均被 409 显式拒绝，绝不静默将任务派发至不可用节点或自动降级为未受控后端。
+4. **可审计故障转移机制（Audited Failover）**：
+   - 调度恢复器扫描过期租约或节点掉线状态；
+   - 第一任失败节点的 assignment 被标记为 `lease_expired` 或 `node_offline` 并持久归档；
+   - 任务重置回 `ready`（`reason_code='failover_pending'`），由备用节点成功接手执行（attempt=2）；
+   - `scheduler_assignment` 中完整保留两次派发的历史记录，形成端到端可审计证据链。
+
+**验收证据（make orchestration-p2-check）**：
+
+| 验证场景 | 动作与验证项 | 实测结果 |
+| --- | --- | --- |
+| 1. 多节点画像 | 注册同机数据面 Mac mini、远程 GPU 节点与边缘 CPU 节点，核验集群清单 | `PASS (3 nodes registered & active)` |
+| 2. 插件按节点对账 | 在同机部署 OCR，在远程 GPU/Edge 节点部署 BGE 向量插件，验证实例 ready | `PASS (instances ready on designated nodes)` |
+| 3. 数据本地性分发 | 远程节点尝试认领 raw buffer 任务被拒；同机节点完成 source/ocr，远程 GPU 节点成功认领并完成 embedding | `PASS (locality violation blocked, observation distributed to GPU)` |
+| 4. 节点排空阻断 | 节点置为 draining 后，预检与任务认领被 409 显式拒绝，严禁隐式降级 | `PASS (preflight & claim blocked on draining node)` |
+| 5. 可审计故障转移 | GPU 节点失联租约过期，恢复器标记第一任过期，任务成功 failover 改派至 Edge 备用节点并顺利完成，两次 assignment 均完整留存 | `PASS (failover detected, reassigned attempt=2, audit trail verified)` |
+| 6. 跨机 Descriptor 拒绝 | 编译器解析期拦截跨机 raw buffer 边，拒绝非法拓扑发布 | `PASS (compiler rejected same_item cross-node edge)` |
+
+**回归验证**：
+- `make orchestration-p2-check`：6 大多节点场景全部通过（`exit 0`）；
+- `make orchestration-p1-check`：7 大单机编排核心场景全部通过（`exit 0`）；
+- `make node-check`：6 大拓扑管理与干净卸载场景全部通过（`exit 0`）；
+- `make test-py`：463 个测试全绿（385 contracts + 78 integration）；
+- `make format && make lint-ruff`：全库 184 个 Python 源码文件格式与静态检查 0 错误 0 告警；
+- `cargo check --workspace` & `cargo test --workspace`：Rust 模块全部通过（172 tests passed）。
