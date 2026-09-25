@@ -54,6 +54,17 @@ make media-check   # 带 gstreamer feature 的 clippy 编译门（需要 GStream
 CI 使用临时 PostgreSQL；集成测试必须显式通过，不能把跳过等同于验收。
 本地 DB 连接默认来自 `.env`，CI 可设置 `SENSORYPLEX_TEST_DATABASE_URL`。
 
+## GitHub Actions 额度策略
+
+目标为 `master` 的 PR 执行 Linux 基础检查与 Console 构建；同一提交的分支 `push` 不重复启动一套
+工作流，合并到 `master` 后才自动运行完整的 Apple Silicon 基线。仅修改 Markdown、`docs/` 或
+Issue 模板时不运行 CI，因为这些路径不生成可执行工件。
+
+`check-apple-silicon` 使用 `macos-15`，其分钟数按 GitHub 的 macOS 倍率计入额度。涉及 Rust 媒体、
+macOS、GStreamer、CoreML/Metal 或原生常驻部署的 PR，必须在合并前使用 Actions 的 **Run workflow**，
+勾选 `run_apple_silicon` 来获得这项证据；未选择时 job 是刻意跳过，不得称为 macOS 已验收。工作流以
+PR 编号或分支名分组，后续提交会取消同组已过时的运行。
+
 事件链路的两个常驻服务（`relay` / `index`）在 compose 的 `events` profile 里，不在默认栈中：
 `./deploy/up-events.sh` 起、`./deploy/down-events.sh [--volumes]` 停（见
 [ADR-027](../adr/ADR-027-事件链路分级背压与容器化常驻.md)）。检索面 `index:50077` **只**在 compose

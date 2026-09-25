@@ -43,9 +43,15 @@ SRT 实时接入（M4）同样可用：`ingest` 在有限窗口内拉流、解�
 
 开发验证默认在容器内执行（`EXEC_MODE=container`，见 Makefile 顶部）。没有本机 compose
 栈的环境可以用 `EXEC_MODE=host` 把同一组命令退回主机（`uv run --frozen python` + 主机
-`cargo`），例如 `make check EXEC_MODE=host`；远端 CI 的三个 job 都是这样跑的。
+`cargo`），例如 `make check EXEC_MODE=host`；远端 CI 的各 job 都是这样跑的。
 没有 PostgreSQL 的主机（如 macOS runner）改跑 `make lint-ruff test-contracts`，
 集成测试只由带数据库的 job 覆盖。
+
+GitHub Actions 对目标为 `master` 的 PR 执行 Linux 的基础检查与 Console 构建，合并到 `master`
+后再执行 Apple Silicon 基线检查；分支 `push` 不再与 PR 同一提交重复执行，纯 Markdown/文档改动
+也不会启动工作流。对改动 Rust 媒体、macOS、GStreamer、CoreML/Metal 或原生部署路径的 PR，合并前在
+Actions 的 **Run workflow** 中勾选 `run_apple_silicon` 主动执行完整 macOS 检查；不能把未运行的
+macOS 检查表述为已通过。新提交会取消同一 PR/分支中已过时的运行。
 
 ```sh
 make setup

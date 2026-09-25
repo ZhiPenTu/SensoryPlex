@@ -11,7 +11,7 @@
 #   host               —— 同一组命令退回主机（`uv run --frozen python` + 主机 cargo）。
 # host 只服务于没有 Docker 的环境，目前只有远端 CI：ubuntu runner 上没有本项目的
 # compose 栈，macOS runner 上干脆没有 Docker，而 ADR-008 要求 macOS 必须是一等
-# 验证目标（见 .github/workflows/ci.yml，三个 job 都显式 EXEC_MODE=host）。
+# 验证目标（见 .github/workflows/ci.yml，所有远端 job 都显式 EXEC_MODE=host）。
 # 两种模式的**步骤集合必须一致**，差别只有"在哪执行"：host 不允许少跑任何一步。
 EXEC_MODE     ?= container
 
