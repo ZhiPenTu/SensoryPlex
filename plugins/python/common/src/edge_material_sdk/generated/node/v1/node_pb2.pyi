@@ -335,3 +335,25 @@ class TaskAssignment(_message.Message):
     deadline_unix_ms: int
     created_at: str
     def __init__(self, assignment_id: _Optional[str] = ..., job_id: _Optional[str] = ..., target_node_id: _Optional[str] = ..., actual_node_id: _Optional[str] = ..., state: _Optional[str] = ..., reassignment_reason: _Optional[str] = ..., data_locality_checked: bool = ..., deadline_unix_ms: _Optional[int] = ..., created_at: _Optional[str] = ...) -> None: ...
+
+class DeregisterNodeRequest(_message.Message):
+    __slots__ = ("node_id", "session_token", "reason")
+    NODE_ID_FIELD_NUMBER: _ClassVar[int]
+    SESSION_TOKEN_FIELD_NUMBER: _ClassVar[int]
+    REASON_FIELD_NUMBER: _ClassVar[int]
+    node_id: str
+    session_token: str
+    reason: str
+    def __init__(self, node_id: _Optional[str] = ..., session_token: _Optional[str] = ..., reason: _Optional[str] = ...) -> None: ...
+
+class DeregisterNodeResponse(_message.Message):
+    __slots__ = ("success", "node_id", "status", "message")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    NODE_ID_FIELD_NUMBER: _ClassVar[int]
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    MESSAGE_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    node_id: str
+    status: NodeStatus
+    message: str
+    def __init__(self, success: bool = ..., node_id: _Optional[str] = ..., status: _Optional[_Union[NodeStatus, str]] = ..., message: _Optional[str] = ...) -> None: ...

@@ -340,3 +340,170 @@ def test_node_drain_and_revoke_flow(client):
     assert "node.enroll.success" in actions
     assert "node.drain" in actions
     assert "node.revoke" in actions
+
+
+class _MockAgentClient:
+    def __init__(self, test_client, node_id, session_token):
+        self.client = test_client
+        self.node_id = node_id
+        self.session_token = session_token
+
+    def report_deployment(
+        self, intent_id, instance_id, action, success, actual_state, error_code="", error_detail=""
+    ):
+        payload = {
+            "intent_id": intent_id,
+            "instance_id": instance_id,
+            "node_id": self.node_id,
+            "action": action,
+            "success": success,
+            "actual_state": actual_state,
+            "error_code": error_code,
+            "error_detail": error_detail,
+        }
+        res = self.client.post(
+            "/v1/agent/report",
+            json=payload,
+            headers={"Authorization": f"Bearer {self.session_token}"},
+        )
+        return res.json()
+
+
+def test_plugin_clean_uninstall_and_directory_removal(client, tmp_path):
+    import json
+
+    from tools.node_agent import execute_intent
+
+    # 1. 注册节点
+    node_id = "clean-uninstall-node-" + uuid.uuid4().hex[:6]
+    token_res = client.post(
+        "/admin/v1/nodes/enrollment-tokens",
+        json={"node_id": node_id, "expires_in_minutes": 30},
+    ).json()
+    enroll = client.post(
+        "/v1/agent/enroll",
+        json={
+            "enrollment_token": token_res["token"],
+            "node_id": node_id,
+            "display_name": "Clean Test Node",
+            "is_co_located": True,
+            "capabilities": {
+                "platform": "macos",
+                "arch": "aarch64",
+                "cpu_cores": 8,
+                "memory_bytes": "17179869184",
+                "unified_memory_bytes": "17179869184",
+                "supported_artifacts": ["local_native"],
+            },
+        },
+    ).json()
+    assert enroll["success"] is True
+    session_token = enroll["session_token"]
+    agent_client = _MockAgentClient(client, node_id, session_token)
+    state_file = tmp_path / f"{node_id}.json"
+    state_file.write_text(
+        json.dumps({"session_token": session_token, "main_url": "http://testserver"})
+    )
+
+    # 2. 部署插件
+    plugin_id = "org.sensoryplex.ocr-rapidocr"
+    deploy_res = client.post(
+        f"/admin/v1/nodes/{node_id}/plugins/{plugin_id}:deploy", json={}
+    ).json()
+    assert deploy_res["actual_state"] == "installing"
+
+    # Agent 心跳认领 install 意图
+    hb1 = client.post(
+        "/v1/agent/heartbeat",
+        json={
+            "node_id": node_id,
+            "session_token": session_token,
+            "timestamp_unix_ms": 1727164800000,
+        },
+    ).json()
+    intents = hb1.get("pending_intents", [])
+    assert len(intents) >= 1
+    intent = intents[0]
+    assert intent["action"] == "DEPLOYMENT_ACTION_INSTALL"
+
+    # 物理执行安装
+    ok = execute_intent(intent, agent_client, state_file=str(state_file))
+    assert ok is True
+
+    # 验证插件版本化独立目录存在
+    digest_clean = intent["artifact_digest"].replace("sha256:", "")
+    instance_dir = tmp_path / "plugins" / plugin_id / digest_clean
+    assert instance_dir.is_dir()
+    assert (instance_dir / "instance.json").is_file()
+
+    # 3. 触发卸载
+    uninst_res = client.post(f"/admin/v1/nodes/{node_id}/plugins/{plugin_id}:uninstall")
+    assert uninst_res.status_code == 200
+    assert uninst_res.json()["desired_state"] == "uninstalled"
+
+    # Agent 心跳认领 uninstall 意图
+    hb2 = client.post(
+        "/v1/agent/heartbeat",
+        json={
+            "node_id": node_id,
+            "session_token": session_token,
+            "timestamp_unix_ms": 1727164800000,
+        },
+    ).json()
+    uninst_intents = hb2.get("pending_intents", [])
+    assert len(uninst_intents) >= 1
+    u_intent = next(i for i in uninst_intents if i["action"] == "DEPLOYMENT_ACTION_UNINSTALL")
+
+    # 物理执行卸载
+    ok_uninst = execute_intent(u_intent, agent_client, state_file=str(state_file))
+    assert ok_uninst is True
+
+    # 断言：物理目录必须彻底删除，零残留！
+    assert not instance_dir.exists()
+    assert not (tmp_path / "plugins" / plugin_id).exists()
+
+    # 验证 API 状态为 uninstalled
+    node_info = client.get(f"/admin/v1/nodes/{node_id}").json()
+    inst = next(x for x in node_info.get("instances", []) if x["plugin_id"] == plugin_id)
+    assert inst["actual_state"] == "uninstalled"
+
+
+def test_node_agent_deregister_and_cleanup(client, tmp_path):
+    node_id = "dereg-node-" + uuid.uuid4().hex[:6]
+    token_res = client.post(
+        "/admin/v1/nodes/enrollment-tokens",
+        json={"node_id": node_id, "expires_in_minutes": 30},
+    ).json()
+    enroll = client.post(
+        "/v1/agent/enroll",
+        json={
+            "enrollment_token": token_res["token"],
+            "node_id": node_id,
+            "display_name": "Dereg Node",
+            "capabilities": {
+                "platform": "macos",
+                "arch": "aarch64",
+                "cpu_cores": 8,
+                "memory_bytes": "17179869184",
+                "unified_memory_bytes": "17179869184",
+                "supported_artifacts": ["local_native"],
+            },
+        },
+    ).json()
+    session_token = enroll["session_token"]
+
+    # 部署插件
+    client.post(f"/admin/v1/nodes/{node_id}/plugins/org.sensoryplex.ocr-rapidocr:deploy", json={})
+
+    # Agent 调用反注册
+    dereg_res = client.post(
+        "/v1/agent/deregister",
+        json={"node_id": node_id, "session_token": session_token},
+    ).json()
+    assert dereg_res["status"] == "NODE_STATUS_REVOKED"
+
+    # 校验节点状态已撤销，插件全被标记卸载
+    node_info = client.get(f"/admin/v1/nodes/{node_id}").json()
+    assert node_info["status"] == "NODE_STATUS_REVOKED"
+    for inst in node_info["instances"]:
+        assert inst["actual_state"] == "uninstalled"

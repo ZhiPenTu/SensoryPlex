@@ -8,6 +8,8 @@ import argparse
 import json
 import os
 import platform
+import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -235,14 +237,73 @@ class NodeAgentClient:
         }
         return self._post("/v1/agent/report", payload, token=self.session_token)
 
+    def deregister(self, reason: str = "agent_uninstalled") -> dict[str, Any]:
+        payload = {
+            "node_id": self.node_id,
+            "session_token": self.session_token,
+            "reason": reason,
+        }
+        return self._post("/v1/agent/deregister", payload, token=self.session_token)
 
-def execute_intent(intent: dict[str, Any], client: NodeAgentClient) -> bool:
-    """受控执行主节点下发的部署意图并上报结果。"""
+
+def get_plugins_base_dir(state_file: str | None = None) -> Path:
+    if state_file:
+        return Path(state_file).resolve().parent / "plugins"
+    env_dir = os.environ.get("SENSORYPLEX_AGENT_PLUGINS_DIR")
+    if env_dir:
+        return Path(env_dir).resolve()
+    return Path(".data/agent").resolve() / "plugins"
+
+
+def get_instance_dir(base_dir: Path, plugin_id: str, artifact_digest: str) -> Path:
+    digest_clean = artifact_digest.replace("sha256:", "").strip()
+    return base_dir / plugin_id / digest_clean
+
+
+def terminate_process_by_pid(pid: int, timeout_s: float = 3.0) -> bool:
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False
+    start = time.time()
+    while time.time() - start < timeout_s:
+        try:
+            os.kill(pid, 0)
+            time.sleep(0.1)
+        except ProcessLookupError:
+            return True
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return True
+    return True
+
+
+def stop_instance_process(instance_dir: Path) -> None:
+    pid_file = instance_dir / "plugin.pid"
+    if pid_file.is_file():
+        try:
+            pid = int(pid_file.read_text().strip())
+            terminate_process_by_pid(pid)
+        except (ValueError, OSError):
+            pass
+        pid_file.unlink(missing_ok=True)
+
+
+def execute_intent(
+    intent: dict[str, Any], client: NodeAgentClient, state_file: str | None = None
+) -> bool:
+    """受控执行主节点下发的部署意图并上报结果，严格落实物理级安装、停止与干净卸载。"""
     intent_id = intent["intent_id"]
     instance_id = intent["instance_id"]
     action = intent["action"].replace("DEPLOYMENT_ACTION_", "").lower()
     plugin_id = intent.get("plugin_id", "")
     digest = intent.get("artifact_digest", "")
+
+    base_dir = get_plugins_base_dir(state_file)
+    instance_dir = get_instance_dir(base_dir, plugin_id, digest) if plugin_id and digest else None
 
     LOGGER.info("Processing intent", intent_id=intent_id, action=action, plugin_id=plugin_id)
 
@@ -264,6 +325,11 @@ def execute_intent(intent: dict[str, Any], client: NodeAgentClient) -> bool:
             if action == "install"
             else "PLUGIN_INSTANCE_STATE_ROLLED_BACK"
         )
+        if instance_dir:
+            instance_dir.mkdir(parents=True, exist_ok=True)
+            meta_file = instance_dir / "instance.json"
+            meta_file.write_text(json.dumps(intent, indent=2, ensure_ascii=False))
+
         client.report_deployment(
             intent_id=intent_id,
             instance_id=instance_id,
@@ -275,6 +341,8 @@ def execute_intent(intent: dict[str, Any], client: NodeAgentClient) -> bool:
         return True
 
     elif action == "start":
+        if instance_dir:
+            instance_dir.mkdir(parents=True, exist_ok=True)
         client.report_deployment(
             intent_id=intent_id,
             instance_id=instance_id,
@@ -285,6 +353,8 @@ def execute_intent(intent: dict[str, Any], client: NodeAgentClient) -> bool:
         return True
 
     elif action == "stop":
+        if instance_dir:
+            stop_instance_process(instance_dir)
         client.report_deployment(
             intent_id=intent_id,
             instance_id=instance_id,
@@ -295,6 +365,21 @@ def execute_intent(intent: dict[str, Any], client: NodeAgentClient) -> bool:
         return True
 
     elif action == "uninstall":
+        # 物理级干净卸载：优雅终止进程 -> 递归删除内容寻址实例目录 -> 清理无其他版本的父目录
+        if instance_dir:
+            stop_instance_process(instance_dir)
+            if instance_dir.exists():
+                shutil.rmtree(instance_dir, ignore_errors=True)
+            parent = base_dir / plugin_id
+            if parent.is_dir() and not any(parent.iterdir()):
+                parent.rmdir()
+            LOGGER.info(
+                "Cleanly uninstalled plugin instance directory",
+                plugin_id=plugin_id,
+                digest=digest,
+                path=str(instance_dir),
+            )
+
         client.report_deployment(
             intent_id=intent_id,
             instance_id=instance_id,
@@ -348,6 +433,14 @@ def main():
     enroll_parser.add_argument("--state-file", default="")
     enroll_parser.add_argument("--override-capabilities", default="")
 
+    dereg_parser = subparsers.add_parser(
+        "deregister", help="Deregister node and clean up local plugins"
+    )
+    dereg_parser.add_argument("--main-url", default="http://127.0.0.1:8091")
+    dereg_parser.add_argument("--node-id", required=True)
+    dereg_parser.add_argument("--session-token", default="")
+    dereg_parser.add_argument("--state-file", default="")
+
     run_parser = subparsers.add_parser("run", help="Run heartbeat loop")
     run_parser.add_argument("--main-url", default="http://127.0.0.1:8091")
     run_parser.add_argument("--node-id", required=True)
@@ -391,6 +484,43 @@ def main():
             )
             LOGGER.info("State saved", state_file=args.state_file)
 
+    elif args.command == "deregister":
+        token = args.session_token
+        main_url = args.main_url
+        sf_path = Path(args.state_file) if args.state_file else None
+        if sf_path and sf_path.is_file():
+            data = json.loads(sf_path.read_text())
+            token = token or data.get("session_token", "")
+            main_url = main_url or data.get("main_url", "")
+
+        if token:
+            client = NodeAgentClient(main_url, args.node_id, token)
+            try:
+                client.deregister()
+                LOGGER.info("Deregistered from main node", node_id=args.node_id)
+            except Exception as e:
+                LOGGER.warning(
+                    "Deregister notification failed (proceeding with local cleanup): %s", e
+                )
+
+        # 物理清理该节点的所有插件实例目录与进程
+        base_dir = get_plugins_base_dir(args.state_file)
+        if base_dir.is_dir():
+            for pid_file in base_dir.rglob("*.pid"):
+                try:
+                    pid = int(pid_file.read_text().strip())
+                    terminate_process_by_pid(pid)
+                except (ValueError, OSError):
+                    pass
+            shutil.rmtree(base_dir, ignore_errors=True)
+            LOGGER.info("Cleaned all plugin instance directories", plugins_dir=str(base_dir))
+
+        if sf_path and sf_path.is_file():
+            sf_path.unlink(missing_ok=True)
+            LOGGER.info("Cleaned local state file", state_file=str(sf_path))
+
+        LOGGER.info("Node cleanly uninstalled and deregistered", node_id=args.node_id)
+
     elif args.command == "run":
         token = args.session_token
         main_url = args.main_url
@@ -419,7 +549,7 @@ def main():
 
                 intents = hb_res.get("pending_intents", [])
                 for intent in intents:
-                    execute_intent(intent, client)
+                    execute_intent(intent, client, state_file=args.state_file)
 
                 if args.once:
                     LOGGER.info("Heartbeat once completed", status=status, processed=len(intents))

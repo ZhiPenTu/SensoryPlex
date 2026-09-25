@@ -560,3 +560,14 @@ export interface TaskAssignment {
   deadline_unix_ms: string;
   created_at: string;
 }
+export interface DeregisterNodeRequest {
+  node_id: string;
+  session_token: string;
+  reason: string;
+}
+export interface DeregisterNodeResponse {
+  success: boolean;
+  node_id: string;
+  status: NodeStatus;
+  message: string;
+}

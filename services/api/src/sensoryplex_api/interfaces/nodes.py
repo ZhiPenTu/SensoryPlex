@@ -826,6 +826,51 @@ def register(app, pool, auth, settings):
 
         return {"status": "recorded"}
 
+    @app.post("/v1/agent/deregister")
+    def agent_deregister(
+        body: Annotated[dict, Body()] = ...,
+        authorization: Annotated[str | None, Header()] = None,
+    ):
+        """子节点主动反注册并下线：撤销会话令牌，标记为 revoked，并清理所有插件实例。"""
+        node_id = body.get("node_id", "")
+        token = body.get("session_token", "")
+        if not token and authorization:
+            token = authorization.replace("Bearer ", "").strip()
+        if not node_id or not token:
+            fail(401, "invalid_credentials")
+        thash = hash_token(token)
+        with pool.connection() as conn:
+            node = one(
+                conn,
+                "SELECT * FROM console_node WHERE node_id=%s AND session_token_hash=%s",
+                (node_id, thash),
+            )
+            if not node:
+                fail(401, "node_not_found_or_invalid_token")
+            conn.execute(
+                """
+                UPDATE console_node
+                SET status='revoked', status_reason='agent_deregistered',
+                    session_token_hash=NULL, updated_at=now()
+                WHERE node_id=%s
+                """,
+                (node_id,),
+            )
+            conn.execute(
+                """
+                UPDATE console_plugin_instance
+                SET desired_state='uninstalled', actual_state='uninstalled', updated_at=now()
+                WHERE node_id=%s
+                """,
+                (node_id,),
+            )
+            audit(conn, f"agent:{node_id}", "node.agent.deregister", node_id)
+        return {
+            "node_id": node_id,
+            "status": "NODE_STATUS_REVOKED",
+            "message": "Node successfully deregistered",
+        }
+
     register_install_endpoints(app, pool, settings)
     register_lifecycle_convenience_endpoints(app, pool, auth, settings)
 
