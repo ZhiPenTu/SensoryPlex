@@ -482,6 +482,10 @@ def schedule_ready_tasks(
         ORDER BY is_co_located DESC, node_id ASC
         """,
     )
+    if candidate_node_id is None and not available_nodes:
+        # 当集群尚无独立算力节点注册时，回退到本机默认调度（兼容单机/测试模式）
+        candidate_node_id = "local-node"
+        is_co_located = True if is_co_located is None else bool(is_co_located)
     deployed_plugins = rows(
         conn,
         "SELECT node_id, plugin_id FROM console_plugin_instance WHERE actual_state = 'ready'",
