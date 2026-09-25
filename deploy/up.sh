@@ -41,4 +41,26 @@ echo "  curl -fsS http://127.0.0.1:${GATEWAY_PORT}/v1/health"
 
 echo
 echo "[up] 自动纳管并拉起本机同机计算节点 (ADR-026)..."
-"${ROOT}/tools/install_agent.sh" --local --install-service || true
+# 按 AGENTS.md：底座相关验证一律容器内执行。node_agent.py 依赖 edge_material_sdk，
+# 主机 Python 不再维护底座 SDK，因此同机自纳管必须跑在 api 容器里，由容器内
+# 已就绪的 uv venv + env 中的 SENSORYPLEX_API_TOKEN 完成。
+# 这是"把本机声明为同机数据面节点"的一次性注册；节点身份由主节点 Registry 持有，
+# 不在主机起常驻 daemon。需要 daemon 化请独立在主机执行
+#   ./tools/install_agent.sh --local --install-service
+# （那一步会引导用户在桌面主机上把 Node Agent 注册为 launchd 服务）。
+HOSTNAME_LABEL="$(hostname -s 2>/dev/null || uname -n || echo local)"
+if ! docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" \
+        ps --services --status running 2>/dev/null | grep -qx "api"; then
+    echo "[up] api 容器未运行，跳过本机同机节点自纳管" >&2
+elif docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" \
+        exec -T api /app/.venv/bin/python /workspace/tools/node_agent.py enroll \
+            --main-url "http://127.0.0.1:${API_PORT}" \
+            --node-id "local-host" \
+            --display-name "本机数据面 (${HOSTNAME_LABEL})" \
+            --co-located \
+            --local \
+            --state-file /workspace/.data/agent/local-host.json; then
+    echo "[up] 本机同机节点 local-host 已纳管 (co-located, ADR-026)。"
+else
+    echo "[up] 本机同机节点自纳管失败，可手动在 api 容器内重试或独立在主机执行 tools/install_agent.sh --local" >&2
+fi
