@@ -43,7 +43,9 @@ export default function Jobs() {
             ]);
             return {
                 assets: assets.items.filter((x) => x.state === 'awaiting_admission'),
-                pipelines: pipelines.items.filter((x) => x.state === 'draft' || x.state === 'published'),
+                pipelines: pipelines.items.filter(
+                    (x) => x.state === 'draft' || x.state === 'published',
+                ),
             };
         },
     });
@@ -93,7 +95,8 @@ export default function Jobs() {
                 }
             />
             <Notice>
-                点击【开始处理】后，控制面会校验数据本地性并派发给同机节点。当前未接入受控 Runtime 执行器时，任务会明确失败并显示原因，不会持续显示“处理中”。
+                点击【开始处理】后，控制面会校验数据本地性并派发给同机节点。当前未接入受控 Runtime
+                执行器时，任务会明确失败并显示原因，不会持续显示“处理中”。
             </Notice>
             <ErrorNotice error={query.error || archive.error || dispatchMutation.error} />
             <section className="card">
@@ -121,7 +124,9 @@ export default function Jobs() {
                                             <strong>{item.name}</strong>
                                             <small className="mono">{item.id.slice(0, 20)}</small>
                                             {item.reason ? (
-                                                <small style={{ color: '#f87171' }}>{item.reason}</small>
+                                                <small style={{ color: '#f87171' }}>
+                                                    {item.reason}
+                                                </small>
                                             ) : null}
                                         </td>
                                         <td>
@@ -130,11 +135,15 @@ export default function Jobs() {
                                         <td>{date(item.created_at)}</td>
                                         <td>
                                             <div className="row-actions">
-                                                {canWrite && (item.state === 'draft' || item.state === 'failed') ? (
+                                                {canWrite &&
+                                                (item.state === 'draft' ||
+                                                    item.state === 'failed') ? (
                                                     <button
                                                         className="primary"
                                                         disabled={dispatchMutation.isPending}
-                                                        onClick={() => dispatchMutation.mutate(item.id)}
+                                                        onClick={() =>
+                                                            dispatchMutation.mutate(item.id)
+                                                        }
                                                         title="下发任务至节点执行"
                                                     >
                                                         <Play size={14} />
@@ -142,18 +151,38 @@ export default function Jobs() {
                                                     </button>
                                                 ) : null}
                                                 {item.state === 'processing' ? (
-                                                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '0.82rem', color: '#60a5fa' }}>
+                                                    <span
+                                                        style={{
+                                                            display: 'inline-flex',
+                                                            alignItems: 'center',
+                                                            gap: '6px',
+                                                            fontSize: '0.82rem',
+                                                            color: '#60a5fa',
+                                                        }}
+                                                    >
                                                         <LoaderCircle size={14} className="spin" />
                                                         正在分析中…
                                                     </span>
                                                 ) : null}
                                                 {item.state === 'completed' ? (
-                                                    <Link to="/materials" className="button" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '0.82rem' }}>
+                                                    <Link
+                                                        to="/materials"
+                                                        className="button"
+                                                        style={{
+                                                            display: 'inline-flex',
+                                                            alignItems: 'center',
+                                                            gap: '4px',
+                                                            fontSize: '0.82rem',
+                                                        }}
+                                                    >
                                                         查看素材
                                                         <ArrowRight size={14} />
                                                     </Link>
                                                 ) : null}
-                                                {canWrite && (item.state === 'draft' || item.state === 'completed' || item.state === 'failed') ? (
+                                                {canWrite &&
+                                                (item.state === 'draft' ||
+                                                    item.state === 'completed' ||
+                                                    item.state === 'failed') ? (
                                                     <button
                                                         disabled={archive.isPending}
                                                         onClick={() => archive.mutate(item.id)}
