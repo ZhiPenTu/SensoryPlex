@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 启动本地 POC 容器栈：postgres + nats + migrate + gateway + api + console。
+# 启动本地 POC 容器栈：postgres + nats + migrate + gateway + api + console + docs。
 # - 端口、密钥由仓库根目录 .env 控制；若 .env 不存在请先运行 `make configure`。
 # - 默认只在本机（127.0.0.1）暴露端口；不依赖外网访问。
 # - 调用：`./deploy/up.sh [额外 docker compose 参数]`。
@@ -21,6 +21,7 @@ echo "[up] 容器状态："
 docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" ps
 
 CONSOLE_PORT="${CONSOLE_PORT:-5173}"
+DOCS_PORT="${DOCS_PORT:-5174}"
 API_PORT="${API_PORT:-8091}"
 GATEWAY_PORT="${GATEWAY_PORT:-8090}"
 POSTGRES_PORT="${POSTGRES_PORT:-25432}"
@@ -29,12 +30,14 @@ NATS_PORT="${NATS_PORT:-24222}"
 echo
 echo "[up] 本机访问入口："
 echo "  前端 (console)    http://127.0.0.1:${CONSOLE_PORT}"
+echo "  文档 (docs)       http://127.0.0.1:${DOCS_PORT}"
 echo "  API   (api)       http://127.0.0.1:${API_PORT}"
 echo "  网关 (gateway)    http://127.0.0.1:${GATEWAY_PORT}"
 echo "  PostgreSQL        127.0.0.1:${POSTGRES_PORT}"
 echo "  NATS              127.0.0.1:${NATS_PORT} / 监控 127.0.0.1:28222"
 echo
 echo "[up] 健康检查示例："
+echo "  curl -fsS http://127.0.0.1:${DOCS_PORT}/"
 echo "  curl -fsS http://127.0.0.1:${API_PORT}/livez"
 echo "  curl -fsS http://127.0.0.1:${API_PORT}/v1/health"
 echo "  curl -fsS http://127.0.0.1:${GATEWAY_PORT}/v1/health"

@@ -63,6 +63,19 @@ make up
 本地源码开发、端口、测试、迁移和回滚见 [开发手册](docs/runbooks/development.md)。
 OBS 本机推流可执行 `make stream-up`，配置与接流地址见 [OBS 推流手册](docs/runbooks/obs-streaming.md)。
 
+作为开源框架的使用文档是**静态文档站** `apps/docs`（VitePress，英文在 `/`、简体中文在 `/zh/`），
+由 `./deploy/up.sh` 一并拉起，访问 <http://127.0.0.1:5174>。它是纯静态产物，可托管到任何静态服务器：
+
+```sh
+make docs-install     # 一次性在 docs 容器内装依赖（唯一需要 npm registry 的步骤）
+make docs-check       # 构建 + 语言树对等 + 产物内部链接/资源校验（提交前门禁）
+make docs-dev         # 带热更新的本地预览（http://127.0.0.1:5175）
+make docs-build       # 产出可托管产物到 apps/docs/.vitepress/dist
+```
+
+文档站的能力描述只包含已验证结论，三态标签（已验证 / 未验收 / 未实现）与证据命令见
+[能力实现状态](apps/docs/reference/status.md)。
+
 ```sh
 make check
 make integration
@@ -218,6 +231,7 @@ proto/                  common / material / runtime / gateway 的版本化契约
 crates/                 runtime、media、timeline、storage、execution、sdk
 plugins/python/common/  edge_material_sdk 与生成的 Python 消息
 apps/console/           React + TypeScript + Vite 素材工作台
+apps/docs/              开源框架使用文档站（VitePress，多语言静态产物）
 services/api/           模块化 Business / Admin / Identity API
 services/gateway/       旧 Gateway 导入与启动兼容入口
 services/outbox-relay/ 事务性 outbox → NATS JetStream 的 relay（ADR-024）
@@ -233,6 +247,7 @@ tools/                  配置、代码生成、迁移、测试与真实媒体�
 ## 设计依据与状态
 
 - [技术选型 ADR 与 V1 实施蓝图](技术选型ADR与V1实施蓝图.md)
+- [开源文档站源码（VitePress，多语言）](apps/docs/index.md)
 - [开放式插件开发文档](开放式插件开发文档.md)
 - [素材工作台 MVP 工程设计稿（应用准备流程已实现）](docs/design/console-mvp.md)
 - [ADR-021：模型 worker 按分级并发上限限流（准入、重试与账目）](docs/adr/ADR-021-模型worker按分级并发上限限流.md)

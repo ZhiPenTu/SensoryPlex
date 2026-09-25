@@ -11,7 +11,7 @@
   - 代码规范与静态检查：`make lint-ruff`、`make format`（Python 与 Web 前端部分）；
   - 契约与 Proto 生成：`make proto`（`tools/generate_proto.py` + `tools/generate_console_types.py`）；
   - 数据库迁移：`make migrate`（`tools/migrate.py`，依赖严格的版本校验和事务锁）；
-  - 控制面服务：`api`（8091，FastAPI 业务/管理/认证）、`gateway`（8090，兼容入口）、`console`（5173，Web 控制台静态构建与反代）；
+  - 控制面服务：`api`（8091，FastAPI 业务/管理/认证）、`gateway`（8090，兼容入口）、`console`（5173，Web 控制台静态构建与反代）、`docs`（5174，开源使用文档站，纯静态 VitePress 构建与托管）；
   - 消息与索引基础设施：`postgres`（25432）、`nats`（24222）、`relay`（outbox 投递）、`index`（向量检索服务）；
   - 单元与集成测试：`make test-py`、`make test-integration`、`make node-check`、`make orchestration-p1-check`、`make golden-path-check` 等底座编排与 API 验证。
 - **目的**：确保底座运行环境纯洁、隔离、不依赖宿主机局部 Python/Node 环境，消除“在本地能跑但在生产容器无法启动”的依赖与配置漂移。
@@ -64,6 +64,7 @@
 | 服务       | 端口（127.0.0.1）  | 镜像/构建                  | 用途 |
 | ---------- | ------------------ | -------------------------- | ---- |
 | console    | `CONSOLE_PORT=5173` | `apps/console/Dockerfile`  | 前端 web 容器（Nginx 静态托管 + 反代 `/v1 /auth /admin` 到 `api:8091`；容器内保留 node/npm 提供 `console-build` / `console-dev`） |
+| docs       | `DOCS_PORT=5174`（dev/preview 用 `DOCS_DEV_PORT=5175`） | `apps/docs/Dockerfile` | 开源使用文档站（纯静态 VitePress：不反代、不持凭据、无 `depends_on`，可 `./deploy/up.sh docs` 单独起；容器内保留 node/npm 提供 `docs-install` / `docs-build` / `docs-check` / `docs-dev` / `docs-serve`） |
 | api        | `API_PORT=8091`    | `services/api/Dockerfile`  | 业务/管理/认证 FastAPI；dev 镜像含 ruff/pytest/proto 工具链 + gateway/vlm-moondream wheels |
 | gateway    | `GATEWAY_PORT=8090` | `services/gateway/Dockerfile` | 旧查询入口，迁移兼容层；smoke 验证在容器内执行 |
 | postgres   | `POSTGRES_PORT=25432` | `postgres:16-alpine`      | 元数据存储；integration 测试 schema `sensoryplex_test` 在 compose 启动后手工创建一次 |
@@ -76,7 +77,7 @@
 
 | source | target | 说明 |
 | ------ | ------ | ---- |
-| `${REPO_ROOT}` | `/workspace`（api/gateway/console） | 把仓库根目录 bind 进容器，让 `make check` / `make test` / `make integration` 等开发验证在容器内看到本机源码。 |
+| `${REPO_ROOT}` | `/workspace`（api/gateway/console/docs） | 把仓库根目录 bind 进容器，让 `make check` / `make test` / `make integration` 等开发验证在容器内看到本机源码；`docs` 服务借此把 `apps/docs/.vitepress/dist` 写到主机可见的位置。 |
 | `${MEDIA_DIR:-/tmp}` | `/host-media`（api） | 把授权样本目录以只读方式挂入容器；Makefile 把 `MEDIA=...` 重写为 `/host-media/$(notdir $(MEDIA))`。 |
 
 `REPO_ROOT` 默认 `../../`，与 compose 同目录的相对路径对应仓库根；`.env` 里已写
@@ -94,6 +95,19 @@
 - SPA history fallback：所有未匹配的非 `/v1|/auth|/admin` 请求回退到 `index.html`。
 - 健康检查：`wget -q -O- http://127.0.0.1:5173/`。
 
+## 文档站容器（docs）
+
+- 多阶段构建：`node:20-alpine` 跑 `npm ci && npm run build`（VitePress），再把
+  `apps/docs/.vitepress/dist` 拷进 `nginx:1.27-alpine`，同样保留 `node`/`npm`，让
+  `make docs-install` / `docs-build` / `docs-check` / `docs-dev` / `docs-serve` 在容器内执行。
+- 纯静态：**不**反代任何后端、不持有凭据、没有 `depends_on`；5174 托管构建产物，5175 只在开发期
+  给 VitePress dev/preview 用（两者互斥）。
+- cleanUrls：`/guide/quickstart` 与 `/guide/quickstart/` 都命中 `guide/quickstart.html`；未命中一律
+  404（交给站点自带 `404.html`），不用 200 兜底。多语言靠目录前缀（`/zh/...`）。
+- 站点静态资源放 `apps/docs/public/`（**不是** `.vitepress/public/`，VitePress 解析的是 `srcDir/public`）；
+  `DOCS_BASE` / `DOCS_SITE_URL` 是构建期变量，只改变产物内容，本机服务始终按根路径托管。
+- 健康检查：`wget -q -O- http://127.0.0.1:5174/`。
+
 ## 脚本使用说明
 
 所有脚本在仓库根目录执行；脚本内部 `cd` 到仓库根再调用 `docker compose`，
@@ -101,12 +115,13 @@
 
 ### `./deploy/up.sh [额外参数]`
 
-- 构建并启动整个 POC 容器栈；`docker compose up -d --build --wait`。
+- 构建并启动整个 POC 容器栈（含文档站 `docs`）；`docker compose up -d --build --wait`。
 - 等待每个服务的 `healthcheck` 通过；任一未通过即非零退出。
-- 结束后打印本机访问入口与健康检查示例。
+- 结束后打印本机访问入口（console / docs / api / gateway / PostgreSQL / NATS）与健康检查示例。
 - 用法：
   - `./deploy/up.sh`                # 启动全部服务
   - `./deploy/up.sh api console`    # 只重建并启动指定服务
+  - `./deploy/up.sh docs`           # 只重建并启动文档站（改了站点常量或 nginx 配置后走这条）
 
 ### `./deploy/down.sh [--volumes] [额外参数]`
 
@@ -118,8 +133,9 @@
 
 ### `./deploy/status.sh`
 
-- 打印 `docker compose ps` 状态，再独立探测 console / api / gateway 的 HTTP 端点：
+- 打印 `docker compose ps` 状态，再独立探测 console / docs / api / gateway 的 HTTP 端点：
   - `http://127.0.0.1:${CONSOLE_PORT}/`
+  - `http://127.0.0.1:${DOCS_PORT}/`（`docs` 服务未运行时打印 `SKIP` 而不是 `FAIL`）
   - `http://127.0.0.1:${API_PORT}/livez`
   - `http://127.0.0.1:${API_PORT}/v1/health`
   - `http://127.0.0.1:${GATEWAY_PORT}/v1/health`
@@ -177,6 +193,8 @@ make demo-seed
 | `make test-py` / `test-integration` | api 容器 | pytest + compose 内 postgres；传 `SENSORYPLEX_TEST_DATABASE_URL` |
 | `make plugin-artifact` / `plugin-artifact-check` | api 容器 | SDK 与 VLM 产物；ASR 仅做结构验证 |
 | `make console-build` / `console-dev` / `console-prepare` | console 容器 | node/npm 已保留 |
+| `make docs-install` / `docs-build` / `docs-check` | docs 容器 | 文档站依赖安装（唯一联网步骤）/ 构建产物 / 构建 + 语言树对等 + 内部链接校验 |
+| `make docs-dev` / `docs-serve` | docs 容器 | 文档站开发预览（热更新 / 预览产物），监听 `DOCS_DEV_PORT=5175` |
 | `make console-check` | api 容器 | `tools/verify_console.py` 读 `/host-media/<file>` |
 | `make gateway-smoke` | gateway 容器 | `BASE=http://127.0.0.1:8090` 即容器自身 |
 | `make runtime-smoke` / `integration` | api 容器 | 调 `tools/smoke_*.py` |

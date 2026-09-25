@@ -2751,3 +2751,57 @@ JetStream、真实 Node Agent 生命周期或 `Process` 调用。`pipeline_publi
 - `make test-py`：463 个测试全绿（385 contracts + 78 integration）；
 - `make format && make lint-ruff`：全库 184 个 Python 源码文件格式与静态检查 0 错误 0 告警；
 - `cargo check --workspace` & `cargo test --workspace`：Rust 模块全部通过（172 tests passed）。
+
+## 开源使用文档站（apps/docs，2026-09-26）
+
+**背景与解决问题**：
+底座需要一个面向开源使用者的**静态文档站**，可"便携"托管到任何静态服务器，并支持多国语言。此前所有设计资料散落在
+`docs/adr/`、`docs/runbooks/`、根目录需求文档与代码注释里，读者必须先有仓库和开发环境才能读到；对外部使用者
+没有单一入口，也没有英文版本。本项新增 `apps/docs`（VitePress 1.6.4）：英文默认在 `/`、简体中文在 `/zh/`，
+两种语言**逐页对等**（23 页 × 2），由 compose 的 `docs` 服务（`127.0.0.1:5174`）托管。
+
+编辑纪律与工程约束一致：站点上的能力描述只写**已验证**结论，每项带三态标签（已验证 / 未验收 / 未实现）与证据命令，
+`ReplayReport.golden_path_verified=false` 等未验收边界原样保留，中文页不得比英文页更乐观。
+
+**关键落地链路**：
+1. **契约与语言树对等**：`.vitepress/config.mts` 同时定义 `EN_SIDEBAR` 与 `ZH_SIDEBAR`；`scripts/check-docs.mjs`
+   逐页比对两棵语言树，缺页即非零退出（VitePress 不做跨语言回退，缺文件就是 404 而不是未翻译文本），
+   并逐条校验**构建产物**里的内部 `href`/`src` 是否真有对应文件或目录索引。
+2. **容器内构建（AGENTS.md 底座约束）**：`apps/docs/Dockerfile` 在 `node:20-alpine` 内 `npm ci && npm run build`，
+   产物拷进 `nginx:1.27-alpine`，同时保留 `node`/`npm`；`make docs-install` / `docs-build` / `docs-check` /
+   `docs-dev` / `docs-serve` 全部在 `docs` 容器内执行，宿主机不需要 Node 工具链。
+3. **依赖安装与构建分离**：只有 `make docs-install` 需要 npm registry，其余目标跑已装好的 `node_modules`。
+   理由来自实测：一次 `npm ci` 因 `ECONNRESET` 失败时**已经删空** `node_modules`，把"网络抖动"放大成"文档站不可构建"。
+   镜像构建期的 `npm ci` 与 `apk add libstdc++` 各自加了有限重试（只加传输层重试，不换 registry、不换镜像源）。
+4. **cleanUrls 的托管语义**：`deploy/compose/docs.nginx.conf` 让 `/guide/quickstart` 与 `/guide/quickstart/`
+   都命中 `guide/quickstart.html`；未命中一律 `=404`（交给站点自带 `404.html`），**不用 200 兜底**，否则死链在
+   监控与爬虫眼里都成了"存在"。多语言靠目录前缀，nginx 不做任何语言协商。
+5. **站点常量是构建期开关**：`DOCS_BASE` / `DOCS_SITE_URL` 由命令行传入（`make docs-build DOCS_BASE=...`）。
+   本机服务始终按根路径托管，因此子路径产物只落在 `apps/docs/.vitepress/dist`，**跳过**覆盖容器内 html 并明确打印原因
+   （否则产物里带前缀的绝对链接会让 `http://127.0.0.1:5174/` 全 404）。`DOCS_SITE_URL` 留空表示"尚未发布"——不产出
+   sitemap、不编造域名。
+6. **静态资源位置修正**：`logo.svg` / `favicon.svg` 起初放在 `.vitepress/public/`，实测两个请求都是 404——VitePress
+   解析的 public 目录是 `srcDir/public`（体现在源码里的 `path.resolve(config.srcDir, "public")`），已移到 `apps/docs/public/`
+   并写进贡献指南，避免后来者踩同一个坑。
+
+**验收证据（容器内 / 本机回环）**：
+
+| 验证场景 | 动作与验证项 | 实测结果 |
+| --- | --- | --- |
+| 1. 依赖安装 | `make docs-install`（docs 容器内 `npm ci`） | `added 126 packages in 4s` |
+| 2. 构建 + 语言树对等 + 链接校验 | `make docs-check` | 构建 3.4s；`zh: 23 页 / 默认语言 23 页`；`47 个 HTML 文件`；`OK 语言对等与内部链接检查通过`（exit 0） |
+| 3. 子路径产物 | `make docs-check DOCS_BASE=/sensoryplex/` | 通过；产物绝对链接前缀实测为 `/sensoryplex/assets/style.<hash>.css`、`/sensoryplex/logo.svg` |
+| 4. 校验器有牙齿（负例） | 子路径产物配根路径 base 跑 `node scripts/check-docs.mjs` | 按预期报错：`链接目标不存在：/sensoryplex/assets/style.<hash>.css`（exit 非 0） |
+| 5. sitemap 开关 | `make docs-build DOCS_SITE_URL=https://docs.example.com` | 产出 `sitemap.xml`，含 `hreflang="en-US"` / `hreflang="zh-CN"` 成对交替；未设置时产物里**没有** sitemap.xml |
+| 6. 容器托管 | `./deploy/up.sh docs` | `Container sensoryplex-docs-1 Healthy`（healthcheck `wget http://127.0.0.1:5174/`） |
+| 7. 路由与 404 语义 | `curl` 逐条探测 | `/`、`/zh/`、`/zh`、`/guide/quickstart`、`/guide/quickstart/`、`/zh/reference/status/`、`/logo.svg`、`/favicon.svg`、`/vp-icons.css` 均 **200**；`/nonexistent`、`/zh/nope`、`/zh/nope/`、`/assets/` 均 **404** |
+| 8. 缓存与安全头 | `curl -D-` | html：`Cache-Control: public, max-age=0, must-revalidate`；`/assets/*`：`Cache-Control: public, max-age=2592000, immutable`；`X-Content-Type-Options: nosniff`、`X-Frame-Options: SAMEORIGIN`、`Referrer-Policy: same-origin` |
+| 9. 状态脚本 | `./deploy/status.sh` | `OK docs http://127.0.0.1:5174/ -> 200`（`docs` 未运行时打印 `SKIP` 而不是 `FAIL`） |
+| 10. 渲染确认 | Playwright/Chromium 访问 `/`、`/zh/`、`/zh/guide/quickstart`、`/reference/status` | 首页、中文页、侧边栏、本页目录与语言切换器均正常渲染，控制台无报错 |
+
+**未验收边界（不得表述为已完成）**：
+- **未发布到公网**：`DOCS_SITE_URL` 留空，因此没有线上 URL，也没有产出 sitemap；站点"可托管"是产物能力，不是已上线状态。
+- **子路径托管未实测**：只验证了产物的链接前缀与校验器行为，**没有**在真实子路径 nginx / GitHub Pages 上托管过。
+- **本机服务只按根路径托管**：`127.0.0.1:5174` 上跑的始终是根路径产物。
+- **未接入远端 CI**：`.github/workflows/ci.yml` 未增加文档站 job，`make docs-check` 只在本地门禁覆盖。
+- **只有两种语言**：日/韩等更多语言是"加语言目录 + 一份 `locales` 配置"的动作，当前未做。

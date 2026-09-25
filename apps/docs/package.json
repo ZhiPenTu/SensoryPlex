@@ -1,0 +1,17 @@
+{
+  "name": "@sensoryplex/docs",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "SensoryPlex 开源文档静态站（VitePress，多语言）",
+  "scripts": {
+    "dev": "vitepress dev",
+    "build": "vitepress build",
+    "preview": "vitepress preview",
+    "check:links": "node scripts/check-docs.mjs",
+    "check": "npm run build && npm run check:links"
+  },
+  "devDependencies": {
+    "vitepress": "1.6.4"
+  }
+}

@@ -22,6 +22,11 @@ EXEC_API      = $(COMPOSE) exec -T api
 EXEC_GATEWAY  = $(COMPOSE) exec -T gateway
 EXEC_CONSOLE  = $(COMPOSE) exec -T console
 EXEC_MIGRATE  = $(COMPOSE) run --rm -T migrate
+# 文档站（docs 服务）的容器入口。DOCS_BASE / DOCS_SITE_URL 是构建期站点常量，用 compose
+# exec 的 `-e` 注入容器进程环境，让同一条 shell 里的 npm 与校验脚本都读得到；两者都不设时
+# 展开为空，等价于普通 exec。`-e` 必须写在 SERVICE 之前（见上方 EXEC_TEST 的说明）。
+DOCS_ENV_FLAGS = $(if $(DOCS_BASE),-e DOCS_BASE=$(DOCS_BASE)) $(if $(DOCS_SITE_URL),-e DOCS_SITE_URL=$(DOCS_SITE_URL))
+DOCS_EXEC      = $(COMPOSE) exec -T $(DOCS_ENV_FLAGS) docs
 # 集成测试的库/总线地址：容器模式用 compose exec -e 从调用者环境注入；`-e` 必须写在 SERVICE
 # **之前**（`docker compose exec [OPTIONS] SERVICE COMMAND`），所以这里不复用 EXEC_API。
 # `SENSORYPLEX_TEST_NATS_URL` 给了容器内可达的默认值（`TEST_NATS_URL`），让真 JetStream 的
@@ -39,6 +44,7 @@ EXEC_API      =
 EXEC_GATEWAY  =
 EXEC_CONSOLE  =
 EXEC_MIGRATE  =
+DOCS_EXEC     =
 EXEC_TEST     =
 PY_API        = uv run --frozen python
 PY_GATEWAY    = uv run --frozen python
@@ -66,6 +72,7 @@ TEST_NATS_URL ?= $(if $(filter container,$(EXEC_MODE)),nats://nats:4222,nats://1
 .PHONY: media-test resident-probe resident-install resident-uninstall resident-status
 .PHONY: lint-ruff test-py test-contracts test-integration proto-generate plugin-artifact-check
 .PHONY: timeline-check timeline-resident-check
+.PHONY: docs-install docs-build docs-check docs-dev docs-serve
 
 # ── 项目引导 ────────────────────────────────────────────────────────────────
 
@@ -367,6 +374,62 @@ console-prepare:
 
 console-api:
 	@echo "console-api 由 compose \`api\` 服务提供，使用 ./deploy/up.sh 启动。"
+
+# ── 文档站（apps/docs，VitePress，纯静态） ──────────────────────────────────
+# 与 console 同一约定：node/npm 只存在于镜像里，因此安装、构建与校验一律在 docs 容器内
+# 执行，宿主机不需要 node 工具链。
+#
+# 依赖安装与构建**分开**：只有 docs-install 需要 npm 网络，其余目标都跑本地已装好的
+# node_modules。这样一次网络抖动不会变成"文档构建失败"，也不会有 `npm ci` 先删掉
+# node_modules、失败后连已装好的依赖一起丢掉的副作用。缺依赖时显式失败并提示下一步。
+DOCS_DEPS = [ -d node_modules/vitepress ] || { echo "文档站依赖未安装：先运行 make docs-install" >&2; exit 1; }
+
+DOCS_CONTAINER_ONLY = test "$(EXEC_MODE)" = container || { echo "$@ 只能在容器内执行：/workspace 与镜像自带的 node 只存在于 docs 镜像里" >&2; exit 1; }
+
+# 站点基础路径是否等于根路径：决定"产物能否直接覆盖本机 nginx 的 html"。
+DOCS_BASE_IS_ROOT = $(if $(DOCS_BASE),$(filter /,$(DOCS_BASE)),/)
+
+# docs-install：唯一的联网步骤（npm ci）。镜像构建期执行同一件事（apps/docs/Dockerfile）。
+# 传输层重试参数与 Dockerfile 保持一致：不换 registry、不改依赖来源，只让抖动可恢复。
+NPM_CI_FLAGS = --no-audit --no-fund --fetch-retries=5 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=60000 --fetch-timeout=300000
+
+docs-install:
+	@$(DOCS_CONTAINER_ONLY)
+	$(DOCS_EXEC) sh -lc 'cd /workspace/apps/docs && npm ci $(NPM_CI_FLAGS)'
+
+# docs-build：把静态产物写到 apps/docs/.vitepress/dist（bind mount，主机可见，可托管到任何
+# 静态服务器）。站点常量从这里进：
+#   make docs-build                                        # 本机形态（根路径）
+#   make docs-build DOCS_BASE=/sensoryplex/                # 子路径托管的产物（如 GitHub Pages 项目页）
+#   make docs-build DOCS_SITE_URL=https://docs.example.com # 同时产出 sitemap/绝对地址
+# 只有根路径产物才能覆盖本机 nginx 的 html——子路径产物里的绝对链接都带前缀，覆盖上去会让
+# `http://127.0.0.1:5174/` 全 404，所以这种情况跳过覆盖并**明确说明原因**（不静默）。
+docs-build:
+	@$(DOCS_CONTAINER_ONLY)
+	$(DOCS_EXEC) sh -lc 'cd /workspace/apps/docs && ( $(DOCS_DEPS) ) && npm run build'
+ifeq ($(DOCS_BASE_IS_ROOT),)
+	@echo "[docs] DOCS_BASE=$(DOCS_BASE)：这是子路径托管的产物，已跳过覆盖本机 docs 服务（它按根路径托管）。产物在 apps/docs/.vitepress/dist"
+else
+	$(DOCS_EXEC) sh -lc 'cp -rf /workspace/apps/docs/.vitepress/dist/* /usr/share/nginx/html/'
+endif
+
+# docs-check = 构建 + 结构校验（语言树对等 + 产物内部链接/资源）。这是文档站的准入门槛：
+# 少一个语言页面、或页面上挂了一个不存在的内部链接，都会让本目标非零退出。
+# 校验脚本同样读 DOCS_BASE，因此子路径产物也走同一套检查。
+docs-check:
+	@$(DOCS_CONTAINER_ONLY)
+	$(DOCS_EXEC) sh -lc 'cd /workspace/apps/docs && ( $(DOCS_DEPS) ) && npm run build && node scripts/check-docs.mjs'
+
+# docs-dev（VitePress dev，带热更新）：读 bind mount 进来的主机源文件，改完立即生效。
+docs-dev:
+	@$(DOCS_CONTAINER_ONLY)
+	$(DOCS_EXEC) sh -lc 'cd /workspace/apps/docs && ( $(DOCS_DEPS) ) && npm run dev -- --host 0.0.0.0 --port 5175'
+
+# docs-serve（VitePress preview）：预览已构建的产物本身，用于确认 dist 的效果。
+# 与 docs-dev 共用同一个宿主端口（compose 的 DOCS_DEV_PORT），两者不能同时运行。
+docs-serve:
+	@$(DOCS_CONTAINER_ONLY)
+	$(DOCS_EXEC) sh -lc 'cd /workspace/apps/docs && ( $(DOCS_DEPS) ) && npm run preview -- --host 0.0.0.0 --port 5175'
 
 # ── macOS 常驻形态（必须在本机执行） ──────────────────────────────────────
 

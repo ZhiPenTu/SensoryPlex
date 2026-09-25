@@ -1,0 +1,67 @@
+name: docs-pages
+
+# 把开源使用文档站（apps/docs，VitePress）发布到 GitHub Pages 项目页：
+#   https://jaytu211.github.io/SensoryPlex/
+# 与 ci.yml 同一约定：**仅手动触发**，不在 push/PR 上自动消耗托管 runner 额度。
+# 派发方式（本机仓库根目录执行）：
+#   gh workflow run docs-pages.yml --ref master
+# 或在 GitHub → Actions → docs-pages → Run workflow。
+on:
+  workflow_dispatch:
+
+# 默认最小权限；发布所需的 pages/id-token 只给 build job（见下）。
+permissions:
+  contents: read
+
+concurrency:
+  # 发布不能并发：同时跑两次会让 Pages 的部署互相覆盖。这里不取消进行中的构建
+  # （cancel-in-progress: false），避免把一次部署停在半截状态。
+  group: docs-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    env:
+      # 项目页托管在子路径上，产物里所有绝对链接都必须带这个前缀，否则整站 404。
+      # DOCS_SITE_URL 只写站点域名：sitemap 的基路径由 config.mts 的 transformItems 补回
+      # （VitePress 自身会用相对路径覆盖掉 hostname 里的子路径，不能靠在域名后拼前缀绕过）。
+      DOCS_BASE: /SensoryPlex/
+      DOCS_SITE_URL: https://jaytu211.github.io
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # 与 apps/docs/Dockerfile 的 node:20-alpine 保持一致：远端产物要和
+          # `make docs-check` 在容器里验证过的产物同源，避免"本地通过、线上另一种产物"。
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: apps/docs/package-lock.json
+      - name: 安装文档站依赖
+        working-directory: apps/docs
+        # 与 Dockerfile / Makefile 相同的传输层重试参数：只让抖动可恢复，不换 registry、
+        # 不改依赖来源。
+        run: >-
+          npm ci --no-audit --no-fund
+          --fetch-retries=5 --fetch-retry-mintimeout=10000
+          --fetch-retry-maxtimeout=60000 --fetch-timeout=300000
+      - name: 构建并校验产物（语言树对等 + 内部链接 + sitemap 基路径）
+        working-directory: apps/docs
+        # 校验脚本读同一个 DOCS_BASE，所以这里校验的就是即将上传的产物本身；校验失败即
+        # 不发布——宁可站点停在上一版，也不上线一棵链接不一致的产物。
+        run: |
+          npm run build
+          node scripts/check-docs.mjs
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: apps/docs/.vitepress/dist
+      - id: deploy
+        uses: actions/deploy-pages@v4

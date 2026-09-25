@@ -14,6 +14,8 @@ htmlcov/
 target/
 dist/
 build/
+# VitePress 文档站缓存（apps/docs/.vitepress/cache）：构建/开发期产物，不入库
+apps/docs/.vitepress/cache/
 .data/
 node_modules/
 playwright-report/

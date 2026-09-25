@@ -1,0 +1,32 @@
+/* SensoryPlex 文档站品牌色与少量版式微调。
+   只覆盖 CSS 变量与少数选择器，不重写默认主题结构，避免跟随上游升级时失效。 */
+:root {
+  --vp-c-brand-1: #4f46e5;
+  --vp-c-brand-2: #6366f1;
+  --vp-c-brand-3: #818cf8;
+  --vp-c-brand-soft: rgba(99, 102, 241, 0.14);
+
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: linear-gradient(120deg, #4f46e5 20%, #06b6d4 80%);
+  --vp-home-hero-image-background-image: linear-gradient(-45deg, #6366f1 40%, #22d3ee 60%);
+  --vp-home-hero-image-filter: blur(48px);
+}
+
+.dark {
+  --vp-c-brand-1: #a5b4fc;
+  --vp-c-brand-2: #818cf8;
+  --vp-c-brand-3: #6366f1;
+  --vp-c-brand-soft: rgba(129, 140, 248, 0.16);
+}
+
+/* 能力状态表：项目约定用「已验证 / 未验收 / 未实现」三态表述，
+   这里让表格在窄屏可横向滚动，避免状态列被压成一列。 */
+.vp-doc table {
+  display: block;
+  overflow-x: auto;
+}
+
+.vp-doc .custom-block.tip code,
+.vp-doc .custom-block.warning code {
+  white-space: nowrap;
+}

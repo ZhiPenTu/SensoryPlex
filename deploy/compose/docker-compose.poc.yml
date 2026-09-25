@@ -158,6 +158,50 @@ services:
       retries: 6
     restart: unless-stopped
 
+  # 文档站（纯静态，VitePress）：与 console 一样自带 nginx 与 node/npm，但没有反向代理、
+  # 不持有任何凭据，也不依赖 api/migrate——所以它没有 depends_on，可以单独起：
+  #   ./deploy/up.sh docs
+  # 5174 由容器内 nginx 托管构建产物；5175 只在开发期给 `make docs-dev` / `make docs-serve`
+  # 的 VitePress dev/preview 用（两者互斥，不能同时占用）。
+  docs:
+    build:
+      context: ../..
+      dockerfile: apps/docs/Dockerfile
+      # 站点常量在构建期注入。这里**只**注入 DOCS_SITE_URL（设置后产物才带 sitemap 与绝对
+      # 地址，留空表示“尚未发布”）；DOCS_BASE 刻意不注入：本机 docs 服务始终按根路径托管，
+      # 而 DOCS_BASE 是"产物要被托管在子路径下"的构建期开关，注入它只会让本机站点全 404。
+      # 要产出子路径产物请用 `make docs-build DOCS_BASE=/your-prefix/`（见 docs-build 注释）。
+      args:
+        DOCS_SITE_URL: ${DOCS_SITE_URL:-}
+    image: sensoryplex-docs:0.1.0
+    working_dir: /workspace/apps/docs
+    volumes:
+      - type: bind
+        source: ${REPO_ROOT:-../../}
+        target: /workspace
+    ports:
+      - "127.0.0.1:${DOCS_PORT:-5174}:5174"
+      - "127.0.0.1:${DOCS_DEV_PORT:-5175}:5175"
+    # 与 console 同因：nginx master 需要 chown 临时目录到 nginx 用户 (uid=101)，保留 CAP_CHOWN，
+    # 其余 cap 卸掉，降低被滥用面。
+    cap_drop:
+      - NET_RAW
+      - SYS_ADMIN
+      - SYS_PTRACE
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETUID
+      - SETGID
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:5174/"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    restart: unless-stopped
+
   # ── 事件链路常驻（ADR-024 / ADR-025 / ADR-027）：outbox → JetStream → 消费 → 向量 → 检索面 ──
   # 归在 `events` profile：`./deploy/up.sh` 与 `make up` **不会**拉起它们（默认栈保持轻量），
   # 由 `./deploy/up-events.sh` 显式开启。两个服务与 api 共用同一份镜像与仓库 bind mount：
