@@ -712,6 +712,7 @@ def register(app, pool, auth, settings):
                         "uninstall": "DEPLOYMENT_ACTION_UNINSTALL",
                         "rollback": "DEPLOYMENT_ACTION_ROLLBACK",
                         "drain": "DEPLOYMENT_ACTION_DRAIN",
+                        "task_process": "DEPLOYMENT_ACTION_TASK_PROCESS",
                     }.get(pr["action"], "DEPLOYMENT_ACTION_UNSPECIFIED")
 
                     pending_intents.append(
@@ -756,15 +757,51 @@ def register(app, pool, auth, settings):
             if not intent:
                 fail(404, "deployment_intent_not_found")
 
-            intent_state = "completed" if req.success else "failed"
+            is_task_process = intent["action"] == "task_process"
+            # 当前 Agent 还没有受控 Runtime 的 Start/Process/Cancel 回执协议。即使某个
+            # Agent 错报 success，也不能在没有可核验执行事实时把业务任务写成完成。
+            task_error_code = req.error_code or "runtime_task_service_not_attached"
+            task_error_detail = req.error_detail or "runtime_task_service_not_attached"
+            if is_task_process and req.success:
+                task_error_code = "task_execution_receipt_required"
+                task_error_detail = "task execution success requires a verified runtime receipt"
+
+            intent_success = req.success and not is_task_process
+            intent_state = "completed" if intent_success else "failed"
             conn.execute(
                 """
                 UPDATE console_deployment_intent
                 SET state=%s, error_code=%s, error_detail=%s, completed_at=now()
                 WHERE id=%s
                 """,
-                (intent_state, req.error_code or None, req.error_detail or None, req.intent_id),
+                (
+                    intent_state,
+                    None
+                    if intent_success
+                    else (task_error_code if is_task_process else req.error_code or None),
+                    None
+                    if intent_success
+                    else (task_error_detail if is_task_process else req.error_detail or None),
+                    req.intent_id,
+                ),
             )
+
+            if is_task_process:
+                conn.execute(
+                    """
+                    UPDATE console_job_draft
+                    SET state='failed', error_code=%s, error_detail=%s, completed_at=now()
+                    WHERE id=%s AND state='processing'
+                    """,
+                    (task_error_code, task_error_detail, intent["job_id"]),
+                )
+                audit(
+                    conn,
+                    req.node_id,
+                    "job.task.failed",
+                    f"{req.node_id}:{intent['job_id']}:{task_error_code}",
+                )
+                return {"status": "recorded"}
 
             actual = req.actual_state.lower().replace("plugin_instance_state_", "")
             if not actual:
@@ -779,7 +816,7 @@ def register(app, pool, auth, settings):
                 (actual, req.error_code or None, req.error_detail or None, req.instance_id),
             )
 
-            action = "plugin.instance.ready" if req.success else "plugin.instance.failed"
+            action = "plugin.instance.ready" if intent_success else "plugin.instance.failed"
             audit(
                 conn,
                 req.node_id,

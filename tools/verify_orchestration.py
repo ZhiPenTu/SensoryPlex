@@ -109,12 +109,15 @@ class OrchestrationVerifier:
 
         self.login()
 
-        # 0. 验证健康检查报告 schema_version 为 0008
+        # 0. 验证健康检查报告最新 schema_version；0008 是编排迁移，0009 是后续任务回填迁移。
         status, health = self._http("GET", "/v1/health")
         self.log(
             "00-health",
             f"API Schema version: {health.get('schema_version')}",
-            ok=(status == 200 and health.get("schema_version") == "0008_orchestration_run_task"),
+            ok=(
+                status == 200
+                and health.get("schema_version") == "0009_task_dispatch_failure_reconciliation"
+            ),
         )
 
         pipeline_id = f"test-pipe-{self.test_id}"

@@ -180,7 +180,7 @@ export default function Jobs() {
             align: 'right' as const,
             render: (_: unknown, item: (typeof items)[0]) => (
                 <Space size={8}>
-                    {canWrite && item.state === 'draft' ? (
+                    {canWrite && (item.state === 'draft' || item.state === 'failed') ? (
                         <Button
                             size="small"
                             type="primary"
@@ -237,7 +237,7 @@ export default function Jobs() {
             <Heading
                 eyebrow="Task Processing"
                 title="处理任务"
-                description="向分布式算力节点调度下发视频分析任务，自动化串联模型推理、特征抽取与时间轴融合。"
+                description="向计算节点提交视频分析任务，并展示可核验的执行状态。"
                 action={
                     canWrite ? (
                         <Button
@@ -290,8 +290,8 @@ export default function Jobs() {
             </Row>
 
             <Notice>
-                分布式调度已接通算力节点拓扑：点击【开始处理】后，控制面将自动校验数据本地性并派发任务至同机数据面节点，执行高效解码、模型推理、Timeline
-                融合与向量落库。
+                点击【开始处理】后，控制面会校验数据本地性并派发给同机节点。当前未接入受控 Runtime
+                执行器时，任务会明确失败并显示原因，不会持续显示“处理中”。
             </Notice>
 
             <ErrorNotice error={query.error || archive.error || dispatchMutation.error} />
