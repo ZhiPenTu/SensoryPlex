@@ -54,6 +54,10 @@ while [[ $# -gt 0 ]]; do
             ACTION="stop"
             shift
             ;;
+        --uninstall)
+            ACTION="uninstall"
+            shift
+            ;;
         --status)
             ACTION="status"
             shift
@@ -64,6 +68,7 @@ while [[ $# -gt 0 ]]; do
             echo "  同机快速自纳管:       ./tools/install_agent.sh --local [--daemon]"
             echo "  远程节点一键入网:     ./tools/install_agent.sh --token <TOKEN> --main-url <URL> [--daemon]"
             echo "  停止后台 Agent:       ./tools/install_agent.sh --stop [--node-id <NODE_ID>]"
+            echo "  干净卸载 Agent:       ./tools/install_agent.sh --uninstall [--node-id <NODE_ID>]"
             echo "  检查 Agent 状态:      ./tools/install_agent.sh --status [--node-id <NODE_ID>]"
             exit 0
             ;;
@@ -139,6 +144,52 @@ if [[ "${ACTION}" == "stop" ]]; then
         echo "[agent-installer] Agent 未在运行 (node_id: ${NODE_ID})"
     fi
     rm -f "${PID_FILE}"
+    exit 0
+fi
+
+# 干净卸载动作
+if [[ "${ACTION}" == "uninstall" ]]; then
+    echo "======================================================================"
+    echo " SensoryPlex Node Agent 干净卸载 (Clean Uninstall)"
+    echo " 节点标识: ${NODE_ID}"
+    echo "======================================================================"
+
+    # 1. 停止系统常驻服务并删除 plist / systemd 配置
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        PLIST_FILE="${HOME}/Library/LaunchAgents/org.sensoryplex.agent.${NODE_ID}.plist"
+        if [[ -f "${PLIST_FILE}" ]]; then
+            echo "[agent-installer] 正在卸载 macOS launchd 守护服务..."
+            launchctl unload "${PLIST_FILE}" 2>/dev/null || true
+            rm -f "${PLIST_FILE}"
+        fi
+    elif [[ -f "/etc/systemd/system/sensoryplex-agent-${NODE_ID}.service" ]]; then
+        echo "[agent-installer] 正在卸载 Linux systemd 守护服务..."
+        systemctl stop "sensoryplex-agent-${NODE_ID}" 2>/dev/null || true
+        systemctl disable "sensoryplex-agent-${NODE_ID}" 2>/dev/null || true
+        rm -f "/etc/systemd/system/sensoryplex-agent-${NODE_ID}.service"
+    fi
+
+    # 2. 终止本地 Agent 进程
+    PIDS="$(pgrep -f "node_agent.py run --node-id ${NODE_ID}" || true)"
+    if [[ -n "${PIDS}" ]]; then
+        echo "[agent-installer] 正在终止 Agent 进程 (${PIDS})..."
+        kill ${PIDS} 2>/dev/null || true
+        sleep 0.5
+        kill -9 ${PIDS} 2>/dev/null || true
+    fi
+
+    # 3. 驱动 Python 反注册并清理该节点所有插件实例目录
+    if [[ -f "${AGENT_SCRIPT}" ]]; then
+        echo "[agent-installer] 正在向主节点注销并清理本地插件环境..."
+        "${PYTHON_BIN}" "${AGENT_SCRIPT}" deregister \
+            --node-id "${NODE_ID}" \
+            --state-file "${STATE_FILE}" \
+            --main-url "${MAIN_URL}" || true
+    fi
+
+    # 4. 清理本地 PID、状态与日志文件
+    rm -f "${PID_FILE}" "${STATE_FILE}" "${LOG_FILE}"
+    echo "[agent-installer] ✅ 节点 ${NODE_ID} 已彻底干净卸载（系统服务已删除、进程已终止、所有插件与本地状态已清除）"
     exit 0
 fi
 

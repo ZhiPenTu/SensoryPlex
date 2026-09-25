@@ -2688,3 +2688,23 @@ JetStream、真实 Node Agent 生命周期或 `Process` 调用。`pipeline_publi
 - `make test-py`：459 个测试全绿（384 contract + 75 integration）；
 - `make lint-ruff`：全库 182 个 Python 源码文件格式与静态检查无 warning 无 error；
 - `cargo check --workspace` & `cargo test --workspace`：Rust 模块全部通过（172 tests passed）。
+
+---
+
+## 局域网节点与插件物理级干净卸载闭环（ADR-026 增强，2026-09-25）
+
+**背景与解决问题**：
+在此前 ADR-026 节点拓扑中，插件卸载与节点注销停留在逻辑状态机汇报层面。本轮彻底落地**物理级干净卸载（Clean Physical Uninstall）**：
+1. **插件级防残留卸载**：
+   - 采用基于内容寻址的版本化目录隔离（`~/.sensoryplex/plugins/<plugin_id>/<artifact_digest>/`）；
+   - 收到 `uninstall` 部署意图时：先读取 `.pid` 发送 SIGTERM / SIGKILL 终止正在监听端口的插件 Worker 进程，再递归删除该实例目录，父目录无其他版本时级联清理，彻底杜绝孤儿进程、端口冲突与旧版本 Python 字节码残留；
+   - 升级时新版本部署在独立 digest 目录，与旧版本物理解耦。
+2. **节点 Agent 一键彻底卸载**：
+   - `tools/install_agent.sh` 新增 `--uninstall [--node-id <NODE_ID>]`；
+   - 自动卸载 macOS launchd plist / Linux systemd 守护服务；
+   - 调用 `POST /v1/agent/deregister` 主动注销节点，吊销服务端会话令牌并将所辖插件标记为 uninstalled；
+   - 清除所有本地插件实例目录，抹除 `<node_id>.json`、`<node_id>.pid`、`<node_id>.log` 等状态文件。
+
+**实测验证**：
+- `make node-check`：6 大场景全通过，新增覆盖插件卸载物理目录销毁、状态同步与节点反注册断言；
+- `pytest tests/integration/test_node_topology_api.py`：6 个独立集成测试全部通过，含 `test_plugin_clean_uninstall_and_directory_removal` 与 `test_node_agent_deregister_and_cleanup`。

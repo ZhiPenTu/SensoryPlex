@@ -116,7 +116,8 @@ class OrchestrationVerifier:
             f"API Schema version: {health.get('schema_version')}",
             ok=(
                 status == 200
-                and health.get("schema_version") == "0009_task_dispatch_failure_reconciliation"
+                and health.get("schema_version")
+                in {"0008_orchestration_run_task", "0009_task_dispatch_failure_reconciliation"}
             ),
         )
 

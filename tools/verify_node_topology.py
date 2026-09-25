@@ -446,6 +446,50 @@ class TopologyVerifier:
             ok=(status == 200 and rb_ok.get("actual_state") == "rolled_back"),
         )
 
+        # 干净卸载插件：验证物理目录彻底销毁与状态标记
+        status, uninst_res = self._http(
+            "POST", f"/admin/v1/nodes/{node_id}/plugins/{plugin_id}:uninstall"
+        )
+        self.log(
+            "06-deploy",
+            f"Requested plugin uninstall: desired_state={uninst_res.get('desired_state')}",
+            ok=(status == 200 and uninst_res.get("desired_state") == "uninstalled"),
+        )
+        hb_uninst = client_a.heartbeat()
+        uninst_intents = [
+            i
+            for i in hb_uninst.get("pending_intents", [])
+            if i["action"] == "DEPLOYMENT_ACTION_UNINSTALL"
+        ]
+        self.log(
+            "06-deploy",
+            f"Agent claimed uninstall intent: count={len(uninst_intents)}",
+            ok=(len(uninst_intents) >= 1),
+        )
+        exec_uninst_ok = execute_intent(uninst_intents[0], client_a)
+        self.log("06-deploy", "Agent executed clean uninstall", ok=exec_uninst_ok)
+
+        # 验证服务端状态已是 uninstalled
+        status, node_info_after = self._http("GET", f"/admin/v1/nodes/{node_id}")
+        inst_after = next(
+            (x for x in node_info_after.get("instances", []) if x["plugin_id"] == plugin_id),
+            None,
+        )
+        self.log(
+            "06-deploy",
+            f"Plugin final uninstalled state: "
+            f"{inst_after.get('actual_state') if inst_after else None}",
+            ok=(inst_after is not None and inst_after.get("actual_state") == "uninstalled"),
+        )
+
+        # 节点主动反注册下线 (Deregister)
+        dereg_res = client_a.deregister()
+        self.log(
+            "06-deploy",
+            f"Agent deregistered: status={dereg_res.get('status')}",
+            ok=(dereg_res.get("status") == "NODE_STATUS_REVOKED"),
+        )
+
     def verify_scenario_6_audit_trail(self):
         """场景 6：全生命周期审计事件对账。"""
         status, audit_data = self._http("GET", "/admin/v1/audit-events?limit=100")
@@ -458,8 +502,10 @@ class TopologyVerifier:
             "node.preflight.reject",
             "node.drain",
             "node.revoke",
+            "node.agent.deregister",
             "plugin.instance.deploy",
             "plugin.instance.ready",
+            "plugin.instance.uninstall",
         }
         self.log(
             "07-audit",

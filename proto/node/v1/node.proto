@@ -191,3 +191,16 @@ message TaskAssignment {
   int64 deadline_unix_ms = 8;
   string created_at = 9;
 }
+
+message DeregisterNodeRequest {
+  string node_id = 1;
+  string session_token = 2;
+  string reason = 3;
+}
+
+message DeregisterNodeResponse {
+  bool success = 1;
+  string node_id = 2;
+  NodeStatus status = 3;
+  string message = 4;
+}
