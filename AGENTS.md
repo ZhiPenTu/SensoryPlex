@@ -1,28 +1,40 @@
 # 务必按照高性能框架底层级项目规范进行开发
 
-# 开发验证一律使用容器
+# 开发期验证环境规范：底座强制容器，子节点插件允许宿主原生
 
-- 任何开发期验证（lint / test / integration / proto / plugin artifact / console build
-  / gateway smoke / media 验证）都必须通过 `docker compose exec -T <service> ...` 在容器
-  内执行；本机不再安装、也不再直接调用 `uv` / `python` / `node` / `npm`。
-- 唯一例外是 Rust/Cargo 工具链：现有 api / gateway / console / postgres / nats 镜像均
-  不携带 `rustc` / `cargo`，主机 `cargo` 暂时承担 Rust 编译与测试；该边界由 Makefile
-  顶部与 README 注明，等批准专门的工具链容器后再统一收回。
-- `make configure` 仍由主机执行：容器 bind mount 把仓库根以只读视图挂入容器，
-  随机凭据写入 `.env` 必须落到主机；这一步是项目自带约束。
+根据工程规范与架构边界，开发期验证严格区分**核心底座（Base Platform / Control Plane）**与**子节点插件（Sub-node Plugins / Workers）**两层执行环境：
+
+## 1. 核心底座开发验证：一律强制走容器
+
+所有与核心底座相关的构建、代码检查、数据库迁移与集成验证，都必须通过 `docker compose exec -T <service> ...` 在容器内执行；宿主机不再安装、也不再直接调用底座相关的 `uv` / `python` / `node` / `npm` 工具链：
+- **覆盖范围**：
+  - 代码规范与静态检查：`make lint-ruff`、`make format`（Python 与 Web 前端部分）；
+  - 契约与 Proto 生成：`make proto`（`tools/generate_proto.py` + `tools/generate_console_types.py`）；
+  - 数据库迁移：`make migrate`（`tools/migrate.py`，依赖严格的版本校验和事务锁）；
+  - 控制面服务：`api`（8091，FastAPI 业务/管理/认证）、`gateway`（8090，兼容入口）、`console`（5173，Web 控制台静态构建与反代）；
+  - 消息与索引基础设施：`postgres`（25432）、`nats`（24222）、`relay`（outbox 投递）、`index`（向量检索服务）；
+  - 单元与集成测试：`make test-py`、`make test-integration`、`make node-check`、`make orchestration-p1-check`、`make golden-path-check` 等底座编排与 API 验证。
+- **目的**：确保底座运行环境纯洁、隔离、不依赖宿主机局部 Python/Node 环境，消除“在本地能跑但在生产容器无法启动”的依赖与配置漂移。
+- **底座仅有的宿主例外**：
+  - Rust/Cargo 工具链：现有 api / gateway / console / postgres / nats 镜像均不携带 `rustc` / `cargo`，宿主机 `cargo` 暂时承担 Rust 编译与测试（`cargo check`、`cargo test`、`make orchestration-check`）；待批准专用 Rust 工具链容器后再统一收回。
+  - `make configure`：容器 bind mount 将仓库根以只读视图挂入容器，随机安全凭据写入宿主 `.env` 必须在宿主机执行。
+
+## 2. 子节点插件：可以不需要走容器（允许宿主原生运行）
+
+运行在各算力节点上的多模态模型处理器与 Worker（如 `ocr-rapidocr`、`vlm-moondream`、`asr-whisper-mlx`、`embed-bge-onnx` 及各类第三方算法插件），**可以不需要走容器**，直接在宿主机（Host）原生环境（Python / 虚拟环境）下运行与调试：
+- **硬件加速器访问**：端侧模型强依赖宿主专属物理硬件与加速后端（例如 Apple Silicon 的 Metal / MLX / CoreML，以及特定 GPU / NPU 驱动与统一内存），开发期轻量 Linux 容器通常无法直接挂载或编译此类原生驱动（如 Apple Silicon 无法在 Linux 容器中编译 `mlx-metal`）；
+- **进程与控制面隔离**：根据 ADR-001/010/012/026，节点插件设计为跨进程独立的受控 Worker，生命周期由 Node Agent / 外部进程直接拉起；插件通过标准 gRPC（`runtime.v1.ProcessorPluginService`）或跨进程共享内存租约（`LeaseBufferReader`）领料，内部不得依赖 services 内部模块，也不持有数据库凭据；
+- **开发调试灵活**：插件开发者在本地开发机或局域网独立节点机（如 Mac mini、边缘设备）上进行算法调优、模型加载与推理验证（如 `make model-check`、`make asr-check`、`make ocr-check`、`make embed-check`）时，允许直接使用宿主虚拟环境（`uv run` / 本机 Python）运行，无需强行打包进容器；
+- **协同方式**：宿主原生运行的插件通过宿主机暴露的网络端口（`127.0.0.1:8091`、`24222`、`25432` 等）与容器内的底座互通；底座调度器根据节点注册的端点通过 gRPC 派发任务。
+
+## 3. 容器服务与绑定说明
+
 - 容器服务与绑定：
-  - `api`（8091）：执行 ruff/pytest/proto/integration/plugin-artifact/smoke_gateway
-    类 Python 验证；PYTHONPATH=/workspace + uv sync --group dev 装好的 ruff/pytest
-    + vlm-moondream + numpy/scipy；mlx-whisper 以 `--no-deps` 注入，避免在 Linux
-    容器里编译 Apple Silicon only 的 mlx-metal。
+  - `api`（8091）：执行 ruff/pytest/proto/integration/plugin-artifact/smoke_gateway 类 Python 验证；PYTHONPATH=/workspace + uv sync --group dev 装好的 ruff/pytest + vlm-moondream + numpy/scipy；mlx-whisper 以 `--no-deps` 注入，避免在 Linux 容器里编译 Apple Silicon only 的 mlx-metal。
   - `gateway`（8090）：执行依赖 `sensoryplex_gateway` 的 smoke / 测试；同 bind mount。
-  - `console`（5173）：nginx 静态托管 + 反代 /v1|/auth|/admin → api:8091；保留 node
-    + npm 让 `make console-build` / `make console-dev` 在容器内执行；apk add libstdc++
-    提供 node 所需的 C++ ABI。
+  - `console`（5173）：nginx 静态托管 + 反代 /v1|/auth|/admin → api:8091；保留 node + npm 让 `make console-build` / `make console-dev` 在容器内执行；apk add libstdc++ 提供 node 所需的 C++ ABI。
   - `postgres` / `nats`：基础设施，验证脚本通过 service name 连接。
-- 授权样本通过 `MEDIA_DIR`（默认 `~/Movies`）以只读 bind 挂到 `/host-media`，
-  Makefile 把用户传入的 `MEDIA=...` 重写为 `/host-media/$(notdir $(MEDIA))`，
-  容器内脚本用绝对路径读取。
+- 授权样本通过 `MEDIA_DIR`（默认 `~/Movies`）以只读 bind 挂到 `/host-media`，Makefile 把用户传入的 `MEDIA=...` 重写为 `/host-media/$(notdir $(MEDIA))`，容器内脚本用绝对路径读取。
 
 # SensoryPlex 工程约定
 
@@ -169,6 +181,8 @@ make demo-seed
 | `make gateway-smoke` | gateway 容器 | `BASE=http://127.0.0.1:8090` 即容器自身 |
 | `make runtime-smoke` / `integration` | api 容器 | 调 `tools/smoke_*.py` |
 | `make outbox-check` / `outbox-run` | api 容器 | ADR-024：真 PostgreSQL + 真 NATS JetStream 的"发布这一跳"（`--nats-url` 容器内是 `nats://nats:4222`）；**NATS → sink 的消费循环未接线**，通过不等于向量已被事件驱动写入 |
+| `make orchestration-p1-check` | api 容器 | ADR-029 P1：真实执行编排闭环验收（DAG、幂等、本地性、级联解锁、取消、重试、崩溃恢复） |
+| `make golden-path-check` | api/host 协调 | GP-01：真实视频上传 -> 方案发布 -> 任务分发 -> 融合入库 -> 向量索引 -> 语义检索 -> 原片回看 |
 | `make check` / `test` / `format`（rust 部分） / `runtime` / `pipeline-check` / `media-check` / `media-replay` / `live-check` / `backpressure-check` / `capability-check` / `handoff-check` / `model-check` / `asr-check` | **host** | 调用主机 `cargo`；待批准工具链容器后再切回 |
 | `make stream-up` / `stream-down` / `stream-status` / `stream-logs` | host | 媒体流独立 compose |
 

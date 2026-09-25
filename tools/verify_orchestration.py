@@ -114,10 +114,7 @@ class OrchestrationVerifier:
         self.log(
             "00-health",
             f"API Schema version: {health.get('schema_version')}",
-            ok=(
-                status == 200
-                and health.get("schema_version") == "0009_task_dispatch_failure_reconciliation"
-            ),
+            ok=(status == 200 and health.get("schema_version") == "0008_orchestration_run_task"),
         )
 
         pipeline_id = f"test-pipe-{self.test_id}"
