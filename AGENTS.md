@@ -183,10 +183,43 @@ make demo-seed
 | `make outbox-check` / `outbox-run` | api 容器 | ADR-024：真 PostgreSQL + 真 NATS JetStream 的"发布这一跳"（`--nats-url` 容器内是 `nats://nats:4222`）；**NATS → sink 的消费循环未接线**，通过不等于向量已被事件驱动写入 |
 | `make orchestration-p1-check` | api 容器 | ADR-029 P1：真实执行编排闭环验收（DAG、幂等、本地性、级联解锁、取消、重试、崩溃恢复） |
 | `make golden-path-check` | api/host 协调 | GP-01：真实视频上传 -> 方案发布 -> 任务分发 -> 融合入库 -> 向量索引 -> 语义检索 -> 原片回看 |
+| `make task-worker` | host | 宿主任务执行工作器：监听控制台任务，调度宿主 GStreamer + OCR + Timeline 融合 |
 | `make check` / `test` / `format`（rust 部分） / `runtime` / `pipeline-check` / `media-check` / `media-replay` / `live-check` / `backpressure-check` / `capability-check` / `handoff-check` / `model-check` / `asr-check` | **host** | 调用主机 `cargo`；待批准工具链容器后再切回 |
 | `make stream-up` / `stream-down` / `stream-status` / `stream-logs` | host | 媒体流独立 compose |
 
 执行任何 `make <target>` 前确保 `./deploy/up.sh` 已经启动容器栈。
+
+
+## 全链路闭环与维护备忘
+
+当需要利用本机资源跑通从「Web 控制台上传视频」到「最终拿到素材结果」的完整业务闭环时，执行以下维护流程：
+
+1. **启动容器底座与常驻索引**：
+   ```bash
+   ./deploy/up.sh && ./deploy/up-events.sh
+   ```
+   启动基础容器栈：`console`（5173）、`api`（8091）、`postgres`（25432）、`nats`（24222），以及 ADR-027 常驻事件中继 `relay` 与向量索引检索面 `index`（Milvus Lite）。
+
+2. **启动宿主机任务执行工作器（常驻守护）**：
+   ```bash
+   make task-worker-daemon    # 一键后台常驻运行（double-fork 脱离终端，SIGHUP 安全）
+   make task-worker-status    # 查看工作器运行状态
+   make task-worker-stop      # 停止后台工作器
+   # 如需前台调试：make task-worker
+   ```
+   工作器负责保持同机节点 `local-host` 在线心跳（避免 503 节点离线），持续监听 Web 控制台派发的 `task_process` 任务意图，调度宿主 GStreamer 解码、RapidOCR 文本观测提取与 Timeline 融合，并将事实事务性追加入库；完成后标记 `completed`，触发底层自动向量化与检索面就绪。
+
+3. **Web 控制台全流程操作**：
+   - 访问 `http://127.0.0.1:5173`，使用演示账号登录（点击底部「填入演示账号」按钮）；
+   - 在【视频库】（`/assets`）点击「导入视频」上传 `.mp4` 或 `.webm` 视频，完成后状态显示为待准入；
+   - 在【处理任务】（`/jobs`）新建任务，关联上传的视频与已发布方案（如内置 OCR 方案），点击「开始处理」；
+   - 宿主工作器处理完毕后，页面状态流转为「查看素材」，进入【素材检索】（`/materials`）浏览按时间轴对齐的多模态切片、查看文字观测并进行原片 Range 流式切片回放。
+
+4. **全链路回归验收**：
+   ```bash
+   make golden-path-check
+   ```
+   自动化验证包含鉴权、节点就绪、视频上传、方案发布、任务分发、端侧计算、向量落库、语义检索与原片回看全部 9 个场景。
 
 ## 端口调整
 

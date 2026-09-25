@@ -74,7 +74,8 @@ def run_video_task(config: dict, database_url: str = "") -> dict:
             "timeout_s": 1800.0,
         },
         label="ocr",
-        max_frames=12,
+        max_frames=int(config.get("max_frames", 30)),
+        exact_frame_count=False,
     )
     passes.append(ocr_pass)
 
@@ -89,8 +90,9 @@ def run_video_task(config: dict, database_url: str = "") -> dict:
                 report_name="replay-vlm.pb",
                 worker_report_name="ai-worker-vlm.json",
                 label="vlm",
-                max_frames=12,
+                max_frames=int(config.get("max_frames", 30)),
                 allow_frame_failures=True,
+                exact_frame_count=False,
             )
             passes.append(vlm_pass)
         except Exception as e:

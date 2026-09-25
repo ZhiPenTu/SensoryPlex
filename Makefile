@@ -60,7 +60,7 @@ TEST_NATS_URL ?= $(if $(filter container,$(EXEC_MODE)),nats://nats:4222,nats://1
 .PHONY: setup configure proto check test integration format infra up down migrate gateway runtime pipeline-check orchestration-check orchestration-p1-check orchestration-p2-check runtime-smoke gateway-smoke media-replay media-check handoff-check backpressure-check
 .PHONY: stream-up stream-down stream-status stream-logs live-check model-check asr-check ocr-check embed-check index-check semantic-check parallelism-check plugin-artifact capability-check accelerator-check
 .PHONY: outbox-check outbox-run
-.PHONY: node-check golden-path-check
+.PHONY: node-check golden-path-check task-worker task-worker-daemon task-worker-stop task-worker-status
 .PHONY: consume-check
 .PHONY: event-pipeline-check events-up events-down events-logs
 .PHONY: media-test resident-probe resident-install resident-uninstall resident-status
@@ -441,6 +441,19 @@ node-check:
 golden-path-check:
 	$(CARGO_HOST) build --locked --release -p sensoryplex-runtime --features "$(MEDIA_FEATURES)"
 	$(PY_HOST) tools/verify_golden_path.py --base-url http://127.0.0.1:8091
+
+# 宿主任务执行工作器：持续监听 Web 控制台派发的处理任务，调用宿主 GStreamer + OCR + Timeline 融合
+task-worker:
+	$(PY_HOST) tools/task_worker.py
+
+task-worker-daemon:
+	$(PY_HOST) tools/task_worker.py --daemon
+
+task-worker-stop:
+	$(PY_HOST) tools/task_worker.py --stop
+
+task-worker-status:
+	$(PY_HOST) tools/task_worker.py --status
 
 outbox-check:
 	$(EXEC_API) $(PY_API) tools/verify_outbox_relay.py --nats-url "$(OUTBOX_NATS)"

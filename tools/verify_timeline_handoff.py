@@ -152,6 +152,7 @@ def replay_pass(
     label: str = "vlm",
     max_frames: int = MAX_FRAMES,
     allow_frame_failures: bool = False,
+    exact_frame_count: bool = True,
 ) -> dict:
     """一遍真实回放：Runtime 生产者（真解码 + 描述符账本）→ 插件消费者 → worker。
 
@@ -268,12 +269,19 @@ def replay_pass(
         failures,
     )
     frames = document.get("frames", [])
-    check(
-        len(frames) == max_frames,
-        f"[{label}] worker observed {len(frames)} of {max_frames} frames; "
-        f"producer tail={producer.lines[-3:]}",
-        failures,
-    )
+    if exact_frame_count:
+        check(
+            len(frames) == max_frames,
+            f"[{label}] worker observed {len(frames)} of {max_frames} frames; "
+            f"producer tail={producer.lines[-3:]}",
+            failures,
+        )
+    else:
+        check(
+            len(frames) > 0,
+            f"[{label}] worker observed no frames; producer tail={producer.lines[-3:]}",
+            failures,
+        )
     failed = [frame for frame in frames if "error" in frame]
     processed = [frame for frame in frames if "error" not in frame]
     if failed and not allow_frame_failures:
