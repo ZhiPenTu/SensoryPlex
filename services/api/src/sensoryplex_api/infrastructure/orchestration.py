@@ -451,11 +451,12 @@ def cancel_pipeline_run(
 
 def schedule_ready_tasks(
     conn,
-    candidate_node_id: str = "local-node",
-    is_co_located: bool = True,
+    candidate_node_id: str | None = None,
+    is_co_located: bool | None = None,
+    supported_plugins: list[str] | None = None,
     max_tasks: int = 10,
 ) -> list[dict[str, Any]]:
-    """调度扫描：基于数据本地性与资源上限派发就绪任务，签发租约。"""
+    """调度扫描：基于数据本地性、节点能力画像、插件制品与并发上限派发就绪任务，签发租约。"""
     ready_tasks = rows(
         conn,
         """
@@ -469,6 +470,29 @@ def schedule_ready_tasks(
         """,
         (max_tasks,),
     )
+
+    # 预加载局域网所有健康节点及其已部署就绪的插件
+    available_nodes = rows(
+        conn,
+        """
+        SELECT node_id, is_co_located, status, cpu_cores
+        FROM console_node
+        WHERE status = 'ready'
+          AND (last_heartbeat_at IS NULL OR last_heartbeat_at > now() - interval '90 seconds')
+        ORDER BY is_co_located DESC, node_id ASC
+        """,
+    )
+    if candidate_node_id is None and not available_nodes:
+        # 当集群尚无独立算力节点注册时，回退到本机默认调度（兼容单机/测试模式）
+        candidate_node_id = "local-node"
+        is_co_located = True if is_co_located is None else bool(is_co_located)
+    deployed_plugins = rows(
+        conn,
+        "SELECT node_id, plugin_id FROM console_plugin_instance WHERE actual_state = 'ready'",
+    )
+    plugins_by_node = defaultdict(set)
+    for row in deployed_plugins:
+        plugins_by_node[row["node_id"]].add(row["plugin_id"])
 
     assigned: list[dict[str, Any]] = []
     for task in ready_tasks:
@@ -487,29 +511,122 @@ def schedule_ready_tasks(
 
         placement = node_spec.get("placement", "data_plane_local")
         deadline_ms = int(node_spec.get("deadline_ms", 30000))
+        target_plugin = node_spec["plugin_id"]
 
-        # 数据本地性硬约束：若为 raw buffer (data_plane_local) 但候选节点非同机，显式拒绝派发
-        if placement == "data_plane_local" and not is_co_located:
-            asgn_id = identifier("asgn_rej")
-            conn.execute(
-                """
-                INSERT INTO scheduler_assignment (
-                    assignment_id, task_id, run_id, attempt, requested_node_id,
-                    actual_node_id, data_plane_node_id, decision, reason_code
-                ) VALUES (
-                    %s, %s, %s, %s, %s, NULL,
-                    'local-data-plane', 'rejected', 'data_locality_violation'
-                )
-                """,
-                (
-                    asgn_id,
-                    task["task_id"],
-                    task["run_id"],
-                    task["attempt"] + 1,
-                    candidate_node_id,
-                ),
+        chosen_node_id: str | None = None
+        chosen_is_co_located: bool = True
+
+        if candidate_node_id is not None:
+            # 针对特定节点的认领或定向派发
+            c_row = one(
+                conn,
+                "SELECT is_co_located, status FROM console_node WHERE node_id=%s",
+                (candidate_node_id,),
             )
-            continue
+            if c_row:
+                c_co_located = bool(c_row["is_co_located"])
+                c_status = c_row["status"]
+            else:
+                c_co_located = True if is_co_located is None else bool(is_co_located)
+                c_status = "ready"
+
+            if c_status not in ("ready", "candidate"):
+                conn.execute(
+                    """
+                    INSERT INTO scheduler_assignment (
+                        assignment_id, task_id, run_id, attempt, requested_node_id,
+                        actual_node_id, data_plane_node_id, decision, reason_code
+                    ) VALUES (%s, %s, %s, %s, %s, NULL, 'local-data-plane', 'rejected', %s)
+                    """,
+                    (
+                        identifier("asgn_rej"),
+                        task["task_id"],
+                        task["run_id"],
+                        task["attempt"] + 1,
+                        candidate_node_id,
+                        f"node_not_ready:{c_status}",
+                    ),
+                )
+                continue
+
+            if supported_plugins is not None and target_plugin not in supported_plugins:
+                continue
+
+            if placement == "data_plane_local" and not c_co_located:
+                conn.execute(
+                    """
+                    INSERT INTO scheduler_assignment (
+                        assignment_id, task_id, run_id, attempt, requested_node_id,
+                        actual_node_id, data_plane_node_id, decision, reason_code
+                    ) VALUES (
+                        %s, %s, %s, %s, %s, NULL,
+                        'local-data-plane', 'rejected', 'data_locality_violation'
+                    )
+                    """,
+                    (
+                        identifier("asgn_rej"),
+                        task["task_id"],
+                        task["run_id"],
+                        task["attempt"] + 1,
+                        candidate_node_id,
+                    ),
+                )
+                continue
+
+            chosen_node_id = candidate_node_id
+            chosen_is_co_located = c_co_located
+        else:
+            # 集群多节点调度器自主选优
+            matched_candidates = []
+            for n in available_nodes:
+                n_id = n["node_id"]
+                n_co = n["is_co_located"]
+                if placement == "data_plane_local" and not n_co:
+                    continue
+                # 若节点已有部署插件表，检查插件是否已安装就绪
+                if (
+                    plugins_by_node
+                    and n_id in plugins_by_node
+                    and target_plugin not in plugins_by_node[n_id]
+                ):
+                    continue
+                matched_candidates.append(n)
+
+            if not matched_candidates:
+                rej_reason = (
+                    "data_locality_violation"
+                    if placement == "data_plane_local"
+                    else "no_eligible_node"
+                )
+                conn.execute(
+                    """
+                    INSERT INTO scheduler_assignment (
+                        assignment_id, task_id, run_id, attempt, requested_node_id,
+                        actual_node_id, data_plane_node_id, decision, reason_code
+                    ) VALUES (%s, %s, %s, %s, NULL, NULL, 'cluster', 'rejected', %s)
+                    """,
+                    (
+                        identifier("asgn_rej"),
+                        task["task_id"],
+                        task["run_id"],
+                        task["attempt"] + 1,
+                        rej_reason,
+                    ),
+                )
+                if placement == "data_plane_local" and not any(
+                    n["is_co_located"] for n in available_nodes
+                ):
+                    conn.execute(
+                        "UPDATE pipeline_task SET state='blocked', "
+                        "reason_code='data_locality_violation', updated_at=now() "
+                        "WHERE task_id=%s",
+                        (task["task_id"],),
+                    )
+                continue
+
+            chosen_node = matched_candidates[0]
+            chosen_node_id = chosen_node["node_id"]
+            chosen_is_co_located = chosen_node["is_co_located"]
 
         asgn_id = identifier("asgn")
         new_attempt = task["attempt"] + 1
@@ -536,9 +653,9 @@ def schedule_ready_tasks(
                 task["task_id"],
                 task["run_id"],
                 new_attempt,
-                candidate_node_id,
-                candidate_node_id,
-                "local-data-plane" if is_co_located else "remote",
+                chosen_node_id,
+                chosen_node_id,
+                "local-data-plane" if chosen_is_co_located else "remote",
                 lease_expires_at,
             ),
         )
@@ -550,7 +667,8 @@ def schedule_ready_tasks(
                 "node_id": task["node_id"],
                 "attempt": new_attempt,
                 "assignment_id": asgn_id,
-                "plugin_id": node_spec["plugin_id"],
+                "actual_node_id": chosen_node_id,
+                "plugin_id": target_plugin,
                 "deadline_ms": deadline_ms,
                 "placement": placement,
             }
@@ -764,16 +882,19 @@ def release_retry_wait_tasks(conn) -> list[str]:
 
 
 def reconcile_and_recover_leases(conn) -> dict[str, Any]:
-    """崩溃恢复器：扫描已过期的调度租约，收敛已确认事实，其余按重试预算回收或失败。"""
+    """崩溃恢复与多节点故障转移：扫描过期租约及离线/排空节点上的任务，安全重派或阻断。"""
     expired_assignments = rows(
         conn,
         """
-        SELECT a.assignment_id, a.task_id, a.run_id, a.attempt,
+        SELECT a.assignment_id, a.task_id, a.run_id, a.attempt, a.actual_node_id,
                t.state AS task_state, t.attempt AS current_attempt,
-               t.max_attempts, t.node_id, t.output_ref
+               t.max_attempts, t.node_id, t.output_ref,
+               n.status AS node_status
         FROM scheduler_assignment a
         JOIN pipeline_task t ON t.task_id = a.task_id
-        WHERE a.decision = 'assigned' AND a.lease_expires_at < now()
+        LEFT JOIN console_node n ON n.node_id = a.actual_node_id
+        WHERE a.decision = 'assigned'
+          AND (a.lease_expires_at < now() OR n.status IN ('offline', 'revoked', 'draining'))
         FOR UPDATE OF a, t
         """,
     )

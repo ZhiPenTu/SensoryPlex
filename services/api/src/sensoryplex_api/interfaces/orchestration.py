@@ -212,14 +212,60 @@ def register(app, pool, auth, settings):
             "cancelled_tasks": [_format_task(t) for t in res["cancelled_tasks"]],
         }
 
+    @app.post("/v1/orchestration/tasks:claim")
+    def claim_tasks(
+        body: Annotated[dict, Body()] = ...,
+        p: Annotated[object, Depends(auth.require("jobs:write"))] = None,
+    ):
+        """节点 Agent 认领就绪任务：结合节点能力、数据本地性与并发预算派发任务并签发租约。"""
+        node_id = text_field(body.get("node_id", ""), 64)
+        supported_plugins = body.get("supported_plugins")
+        max_tasks = int(body.get("max_tasks", 5))
+
+        with pool.connection() as conn:
+            node_rec = one(
+                conn,
+                "SELECT is_co_located, status FROM console_node WHERE node_id=%s",
+                (node_id,),
+            )
+            is_co_located = node_rec["is_co_located"] if node_rec else True
+            if node_rec and node_rec["status"] not in ("ready", "candidate"):
+                fail(409, f"node_not_eligible:{node_rec['status']}")
+
+            assigned = orch.schedule_ready_tasks(
+                conn,
+                candidate_node_id=node_id,
+                is_co_located=is_co_located,
+                supported_plugins=supported_plugins,
+                max_tasks=max_tasks,
+            )
+            tasks = []
+            assignments = []
+            for item in assigned:
+                t = one(conn, "SELECT * FROM pipeline_task WHERE task_id=%s", (item["task_id"],))
+                a = one(
+                    conn,
+                    "SELECT * FROM scheduler_assignment WHERE assignment_id=%s",
+                    (item["assignment_id"],),
+                )
+                if t and a:
+                    tasks.append(_format_task(t))
+                    assignments.append(_format_assignment(a))
+
+        return {
+            "tasks": tasks,
+            "assignments": assignments,
+        }
+
     @app.post("/v1/orchestration/scheduler:step")
     def scheduler_step(
         body: Annotated[dict | None, Body()] = None,
         p: Annotated[object, Depends(auth.require("jobs:write"))] = None,
     ):
         """驱动一次调度循环：回收过期租约、释放等待重试任务、按本地性派发就绪任务。"""
-        node_id = body.get("node_id", "local-node") if isinstance(body, dict) else "local-node"
-        is_co_located = body.get("is_co_located", True) if isinstance(body, dict) else True
+        node_id = body.get("node_id") if isinstance(body, dict) else None
+        is_co_located = body.get("is_co_located") if isinstance(body, dict) else None
+        supported_plugins = body.get("supported_plugins") if isinstance(body, dict) else None
         max_tasks = int(body.get("max_tasks", 10)) if isinstance(body, dict) else 10
 
         with pool.connection() as conn:
@@ -229,6 +275,7 @@ def register(app, pool, auth, settings):
                 conn,
                 candidate_node_id=node_id,
                 is_co_located=is_co_located,
+                supported_plugins=supported_plugins,
                 max_tasks=max_tasks,
             )
         return {

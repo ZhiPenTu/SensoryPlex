@@ -23,10 +23,10 @@
   持久化 immutable Pipeline revision、Run、Task、Edge 与 assignment 租约；实现事务 CAS/幂等提交、
   取消传播、有界重试（`retry_wait` / `retry_exhausted`）、崩溃恢复（租约过期自动回收）与数据本地性拒绝（`data_locality_violation`）；
   经 `make orchestration-p1-check` 7 个场景及 pytest 集成测试全量通过；证据见 `docs/verification.md` 的“ADR-029 P1”节。
-- [ ] **可编排插件执行核心（ADR-029，P2）**：使 Node Agent 执行并回报真实 Plugin 生命周期；以
-  artifact/config、数据本地性、节点能力、资源上限和显式 failover 策略生成持久 assignment lease。跨机仅允许
-  Observation/object reference，descriptor、共享内存和 GPU 句柄必须拒绝跨机。完成前不能宣称局域网 worker
-  已实现跨节点任务编排。
+- [x] **可编排插件执行核心（ADR-029，P2）**：已完成。实现基于集群节点注册与算力画像的多节点候选调度、
+  数据本地性过滤（raw buffer 强制同机数据面，observation 跨机派发至 GPU/Edge 节点）、节点排空/离线硬阻断、
+  不可变 artifact 对账、双向任务认领（`tasks:claim`）与可审计故障转移（Failover：第一任过期记账，第二任接手完成）；
+  经 `make orchestration-p2-check` 6 大场景全量通过；证据见 `docs/verification.md` 的“ADR-029 P2”节。
 - [ ] **可编排插件执行核心（ADR-029，P3）**：把认证插件、不可变 Pipeline revision、配置 schema、RBAC/
   外发策略和升级/回滚说明收敛为可安装的场景产品包；补齐 Console/API 的发布、提交、取消、详情与运行观测，
   在隔离项目内用真实授权输入完成插件 → Timeline/索引 → 鉴权检索/时间回跳。完成前不能将插件目录、YAML
