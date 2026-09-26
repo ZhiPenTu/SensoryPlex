@@ -43,27 +43,33 @@ echo "  curl -fsS http://127.0.0.1:${API_PORT}/v1/health"
 echo "  curl -fsS http://127.0.0.1:${GATEWAY_PORT}/v1/health"
 
 echo
-echo "[up] 自动纳管并拉起本机同机计算节点 (ADR-026)..."
-# 按 AGENTS.md：底座相关验证一律容器内执行。node_agent.py 依赖 edge_material_sdk，
-# 主机 Python 不再维护底座 SDK，因此同机自纳管必须跑在 api 容器里，由容器内
-# 已就绪的 uv venv + env 中的 SENSORYPLEX_API_TOKEN 完成。
-# 这是"把本机声明为同机数据面节点"的一次性注册；节点身份由主节点 Registry 持有，
-# 不在主机起常驻 daemon。需要 daemon 化请独立在主机执行
-#   ./tools/install_agent.sh --local --install-service
-# （那一步会引导用户在桌面主机上把 Node Agent 注册为 launchd 服务）。
+echo "[up] 检查本机同机计算节点登记状态 (ADR-026)..."
+# Node Agent 是宿主原生插件执行器，能力必须由宿主机探测。若从 api 容器探测，
+# 会把 macOS/Metal 主机误登记成 linux，继而破坏 release 平台选择与调度约束。
+# 首次登记后 state file 保存会话；后续重建容器绝不能覆盖已登记的宿主节点身份。
+# 常驻 Agent 由用户显式通过 tools/install_agent.sh 或 node_agent.py run 启动。
+AGENT_STATE_FILE="${ROOT}/.data/agent/local-host.json"
 HOSTNAME_LABEL="$(hostname -s 2>/dev/null || uname -n || echo local)"
 if ! docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" \
         ps --services --status running 2>/dev/null | grep -qx "api"; then
     echo "[up] api 容器未运行，跳过本机同机节点自纳管" >&2
-elif docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" \
-        exec -T api /app/.venv/bin/python /workspace/tools/node_agent.py enroll \
-            --main-url "http://127.0.0.1:${API_PORT}" \
-            --node-id "local-host" \
-            --display-name "本机数据面 (${HOSTNAME_LABEL})" \
-            --co-located \
-            --local \
-            --state-file /workspace/.data/agent/local-host.json; then
-    echo "[up] 本机同机节点 local-host 已纳管 (co-located, ADR-026)。"
+elif [[ -f "${AGENT_STATE_FILE}" ]]; then
+    echo "[up] 保留已登记的宿主节点 local-host；未从容器覆盖其能力。"
+elif (
+    set -a
+    # .env 由 make configure 生成，向首次宿主登记提供 API bootstrap 凭据。
+    # shellcheck disable=SC1090
+    source "${ENV_FILE}"
+    set +a
+    uv run --frozen python tools/node_agent.py enroll \
+        --main-url "http://127.0.0.1:${API_PORT}" \
+        --node-id "local-host" \
+        --display-name "本机数据面 (${HOSTNAME_LABEL})" \
+        --co-located \
+        --local \
+        --state-file "${AGENT_STATE_FILE}"
+); then
+    echo "[up] 本机同机节点 local-host 已按宿主能力纳管 (co-located, ADR-026)。"
 else
-    echo "[up] 本机同机节点自纳管失败，可手动在 api 容器内重试或独立在主机执行 tools/install_agent.sh --local" >&2
+    echo "[up] 宿主节点首次纳管失败，可手动执行 tools/install_agent.sh --local" >&2
 fi

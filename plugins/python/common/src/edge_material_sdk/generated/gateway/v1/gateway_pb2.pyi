@@ -7,7 +7,7 @@ from typing import ClassVar as _ClassVar, Iterable as _Iterable, Mapping as _Map
 DESCRIPTOR: _descriptor.FileDescriptor
 
 class SearchRequest(_message.Message):
-    __slots__ = ("query", "stream_id", "start_ms", "end_ms", "modalities", "tags", "min_confidence", "limit", "mode")
+    __slots__ = ("query", "stream_id", "start_ms", "end_ms", "modalities", "tags", "min_confidence", "limit", "mode", "execution_id")
     QUERY_FIELD_NUMBER: _ClassVar[int]
     STREAM_ID_FIELD_NUMBER: _ClassVar[int]
     START_MS_FIELD_NUMBER: _ClassVar[int]
@@ -17,6 +17,7 @@ class SearchRequest(_message.Message):
     MIN_CONFIDENCE_FIELD_NUMBER: _ClassVar[int]
     LIMIT_FIELD_NUMBER: _ClassVar[int]
     MODE_FIELD_NUMBER: _ClassVar[int]
+    EXECUTION_ID_FIELD_NUMBER: _ClassVar[int]
     query: str
     stream_id: str
     start_ms: int
@@ -26,7 +27,8 @@ class SearchRequest(_message.Message):
     min_confidence: float
     limit: int
     mode: str
-    def __init__(self, query: _Optional[str] = ..., stream_id: _Optional[str] = ..., start_ms: _Optional[int] = ..., end_ms: _Optional[int] = ..., modalities: _Optional[_Iterable[str]] = ..., tags: _Optional[_Iterable[str]] = ..., min_confidence: _Optional[float] = ..., limit: _Optional[int] = ..., mode: _Optional[str] = ...) -> None: ...
+    execution_id: str
+    def __init__(self, query: _Optional[str] = ..., stream_id: _Optional[str] = ..., start_ms: _Optional[int] = ..., end_ms: _Optional[int] = ..., modalities: _Optional[_Iterable[str]] = ..., tags: _Optional[_Iterable[str]] = ..., min_confidence: _Optional[float] = ..., limit: _Optional[int] = ..., mode: _Optional[str] = ..., execution_id: _Optional[str] = ...) -> None: ...
 
 class SearchHit(_message.Message):
     __slots__ = ("material_unit_id", "revision", "distance", "embedding_id", "vector_ref", "observation_id")

@@ -1,3 +1,4 @@
+from google.protobuf import struct_pb2 as _struct_pb2
 from google.protobuf.internal import containers as _containers
 from google.protobuf.internal import enum_type_wrapper as _enum_type_wrapper
 from google.protobuf import descriptor as _descriptor
@@ -63,7 +64,7 @@ class PluginReference(_message.Message):
     def __init__(self, plugin_id: _Optional[str] = ..., version: _Optional[str] = ..., artifact_digest: _Optional[str] = ..., config_hash: _Optional[str] = ...) -> None: ...
 
 class PipelineNode(_message.Message):
-    __slots__ = ("node_id", "plugin", "consumes", "produces", "placement", "deadline_ms", "max_attempts", "priority")
+    __slots__ = ("node_id", "plugin", "consumes", "produces", "placement", "deadline_ms", "max_attempts", "priority", "required")
     NODE_ID_FIELD_NUMBER: _ClassVar[int]
     PLUGIN_FIELD_NUMBER: _ClassVar[int]
     CONSUMES_FIELD_NUMBER: _ClassVar[int]
@@ -72,6 +73,7 @@ class PipelineNode(_message.Message):
     DEADLINE_MS_FIELD_NUMBER: _ClassVar[int]
     MAX_ATTEMPTS_FIELD_NUMBER: _ClassVar[int]
     PRIORITY_FIELD_NUMBER: _ClassVar[int]
+    REQUIRED_FIELD_NUMBER: _ClassVar[int]
     node_id: str
     plugin: PluginReference
     consumes: _containers.RepeatedScalarFieldContainer[str]
@@ -80,7 +82,8 @@ class PipelineNode(_message.Message):
     deadline_ms: int
     max_attempts: int
     priority: int
-    def __init__(self, node_id: _Optional[str] = ..., plugin: _Optional[_Union[PluginReference, _Mapping]] = ..., consumes: _Optional[_Iterable[str]] = ..., produces: _Optional[_Iterable[str]] = ..., placement: _Optional[str] = ..., deadline_ms: _Optional[int] = ..., max_attempts: _Optional[int] = ..., priority: _Optional[int] = ...) -> None: ...
+    required: bool
+    def __init__(self, node_id: _Optional[str] = ..., plugin: _Optional[_Union[PluginReference, _Mapping]] = ..., consumes: _Optional[_Iterable[str]] = ..., produces: _Optional[_Iterable[str]] = ..., placement: _Optional[str] = ..., deadline_ms: _Optional[int] = ..., max_attempts: _Optional[int] = ..., priority: _Optional[int] = ..., required: bool = ...) -> None: ...
 
 class PipelineEdge(_message.Message):
     __slots__ = ("from_node_id", "to_node_id", "modality", "join_policy", "required")
@@ -141,7 +144,7 @@ class PipelineRun(_message.Message):
     def __init__(self, run_id: _Optional[str] = ..., pipeline_id: _Optional[str] = ..., revision: _Optional[int] = ..., input_ref: _Optional[str] = ..., idempotency_key: _Optional[str] = ..., deadline_unix_ms: _Optional[int] = ..., state: _Optional[_Union[PipelineRunState, str]] = ..., owner: _Optional[str] = ..., error_code: _Optional[str] = ..., error_detail: _Optional[str] = ..., created_at_unix_ms: _Optional[int] = ..., updated_at_unix_ms: _Optional[int] = ..., completed_at_unix_ms: _Optional[int] = ...) -> None: ...
 
 class PipelineTask(_message.Message):
-    __slots__ = ("task_id", "run_id", "node_id", "attempt", "idempotency_key", "state", "assignment_id", "reason_code", "max_attempts", "error_detail", "output_ref", "created_at_unix_ms", "updated_at_unix_ms")
+    __slots__ = ("task_id", "run_id", "node_id", "attempt", "idempotency_key", "state", "assignment_id", "reason_code", "max_attempts", "error_detail", "output_ref", "created_at_unix_ms", "updated_at_unix_ms", "required")
     TASK_ID_FIELD_NUMBER: _ClassVar[int]
     RUN_ID_FIELD_NUMBER: _ClassVar[int]
     NODE_ID_FIELD_NUMBER: _ClassVar[int]
@@ -155,6 +158,7 @@ class PipelineTask(_message.Message):
     OUTPUT_REF_FIELD_NUMBER: _ClassVar[int]
     CREATED_AT_UNIX_MS_FIELD_NUMBER: _ClassVar[int]
     UPDATED_AT_UNIX_MS_FIELD_NUMBER: _ClassVar[int]
+    REQUIRED_FIELD_NUMBER: _ClassVar[int]
     task_id: str
     run_id: str
     node_id: str
@@ -168,7 +172,8 @@ class PipelineTask(_message.Message):
     output_ref: str
     created_at_unix_ms: int
     updated_at_unix_ms: int
-    def __init__(self, task_id: _Optional[str] = ..., run_id: _Optional[str] = ..., node_id: _Optional[str] = ..., attempt: _Optional[int] = ..., idempotency_key: _Optional[str] = ..., state: _Optional[_Union[PipelineTaskState, str]] = ..., assignment_id: _Optional[str] = ..., reason_code: _Optional[str] = ..., max_attempts: _Optional[int] = ..., error_detail: _Optional[str] = ..., output_ref: _Optional[str] = ..., created_at_unix_ms: _Optional[int] = ..., updated_at_unix_ms: _Optional[int] = ...) -> None: ...
+    required: bool
+    def __init__(self, task_id: _Optional[str] = ..., run_id: _Optional[str] = ..., node_id: _Optional[str] = ..., attempt: _Optional[int] = ..., idempotency_key: _Optional[str] = ..., state: _Optional[_Union[PipelineTaskState, str]] = ..., assignment_id: _Optional[str] = ..., reason_code: _Optional[str] = ..., max_attempts: _Optional[int] = ..., error_detail: _Optional[str] = ..., output_ref: _Optional[str] = ..., created_at_unix_ms: _Optional[int] = ..., updated_at_unix_ms: _Optional[int] = ..., required: bool = ...) -> None: ...
 
 class SchedulerAssignment(_message.Message):
     __slots__ = ("assignment_id", "task_id", "requested_node_id", "actual_node_id", "data_plane_node_id", "decision", "reason_code", "lease_expires_at_unix_ms", "run_id", "attempt", "created_at_unix_ms")
@@ -195,6 +200,60 @@ class SchedulerAssignment(_message.Message):
     attempt: int
     created_at_unix_ms: int
     def __init__(self, assignment_id: _Optional[str] = ..., task_id: _Optional[str] = ..., requested_node_id: _Optional[str] = ..., actual_node_id: _Optional[str] = ..., data_plane_node_id: _Optional[str] = ..., decision: _Optional[str] = ..., reason_code: _Optional[str] = ..., lease_expires_at_unix_ms: _Optional[int] = ..., run_id: _Optional[str] = ..., attempt: _Optional[int] = ..., created_at_unix_ms: _Optional[int] = ...) -> None: ...
+
+class TaskInputManifest(_message.Message):
+    __slots__ = ("run_id", "task_id", "attempt", "assignment_id", "data_plane_node_id", "descriptor_ref", "observation_refs", "stream_id", "start_ms", "end_ms", "content_hash")
+    RUN_ID_FIELD_NUMBER: _ClassVar[int]
+    TASK_ID_FIELD_NUMBER: _ClassVar[int]
+    ATTEMPT_FIELD_NUMBER: _ClassVar[int]
+    ASSIGNMENT_ID_FIELD_NUMBER: _ClassVar[int]
+    DATA_PLANE_NODE_ID_FIELD_NUMBER: _ClassVar[int]
+    DESCRIPTOR_REF_FIELD_NUMBER: _ClassVar[int]
+    OBSERVATION_REFS_FIELD_NUMBER: _ClassVar[int]
+    STREAM_ID_FIELD_NUMBER: _ClassVar[int]
+    START_MS_FIELD_NUMBER: _ClassVar[int]
+    END_MS_FIELD_NUMBER: _ClassVar[int]
+    CONTENT_HASH_FIELD_NUMBER: _ClassVar[int]
+    run_id: str
+    task_id: str
+    attempt: int
+    assignment_id: str
+    data_plane_node_id: str
+    descriptor_ref: str
+    observation_refs: _containers.RepeatedScalarFieldContainer[str]
+    stream_id: str
+    start_ms: int
+    end_ms: int
+    content_hash: str
+    def __init__(self, run_id: _Optional[str] = ..., task_id: _Optional[str] = ..., attempt: _Optional[int] = ..., assignment_id: _Optional[str] = ..., data_plane_node_id: _Optional[str] = ..., descriptor_ref: _Optional[str] = ..., observation_refs: _Optional[_Iterable[str]] = ..., stream_id: _Optional[str] = ..., start_ms: _Optional[int] = ..., end_ms: _Optional[int] = ..., content_hash: _Optional[str] = ...) -> None: ...
+
+class TaskExecutionReceipt(_message.Message):
+    __slots__ = ("run_id", "task_id", "attempt", "assignment_id", "plugin", "started_at_unix_ms", "completed_at_unix_ms", "input_count", "output_count", "result_manifest_ref", "reason_code", "receipt_digest")
+    RUN_ID_FIELD_NUMBER: _ClassVar[int]
+    TASK_ID_FIELD_NUMBER: _ClassVar[int]
+    ATTEMPT_FIELD_NUMBER: _ClassVar[int]
+    ASSIGNMENT_ID_FIELD_NUMBER: _ClassVar[int]
+    PLUGIN_FIELD_NUMBER: _ClassVar[int]
+    STARTED_AT_UNIX_MS_FIELD_NUMBER: _ClassVar[int]
+    COMPLETED_AT_UNIX_MS_FIELD_NUMBER: _ClassVar[int]
+    INPUT_COUNT_FIELD_NUMBER: _ClassVar[int]
+    OUTPUT_COUNT_FIELD_NUMBER: _ClassVar[int]
+    RESULT_MANIFEST_REF_FIELD_NUMBER: _ClassVar[int]
+    REASON_CODE_FIELD_NUMBER: _ClassVar[int]
+    RECEIPT_DIGEST_FIELD_NUMBER: _ClassVar[int]
+    run_id: str
+    task_id: str
+    attempt: int
+    assignment_id: str
+    plugin: PluginReference
+    started_at_unix_ms: int
+    completed_at_unix_ms: int
+    input_count: int
+    output_count: int
+    result_manifest_ref: str
+    reason_code: str
+    receipt_digest: str
+    def __init__(self, run_id: _Optional[str] = ..., task_id: _Optional[str] = ..., attempt: _Optional[int] = ..., assignment_id: _Optional[str] = ..., plugin: _Optional[_Union[PluginReference, _Mapping]] = ..., started_at_unix_ms: _Optional[int] = ..., completed_at_unix_ms: _Optional[int] = ..., input_count: _Optional[int] = ..., output_count: _Optional[int] = ..., result_manifest_ref: _Optional[str] = ..., reason_code: _Optional[str] = ..., receipt_digest: _Optional[str] = ...) -> None: ...
 
 class ValidatePipelineRevisionRequest(_message.Message):
     __slots__ = ("pipeline_id", "nodes", "edges")
@@ -323,7 +382,7 @@ class ClaimTaskResponse(_message.Message):
     def __init__(self, tasks: _Optional[_Iterable[_Union[PipelineTask, _Mapping]]] = ..., assignments: _Optional[_Iterable[_Union[SchedulerAssignment, _Mapping]]] = ...) -> None: ...
 
 class TaskResult(_message.Message):
-    __slots__ = ("task_id", "run_id", "attempt", "assignment_id", "success", "output_ref", "retryable", "reason_code", "error_detail")
+    __slots__ = ("task_id", "run_id", "attempt", "assignment_id", "success", "output_ref", "retryable", "reason_code", "error_detail", "result_manifest_ref", "receipt", "result_summary")
     TASK_ID_FIELD_NUMBER: _ClassVar[int]
     RUN_ID_FIELD_NUMBER: _ClassVar[int]
     ATTEMPT_FIELD_NUMBER: _ClassVar[int]
@@ -333,6 +392,9 @@ class TaskResult(_message.Message):
     RETRYABLE_FIELD_NUMBER: _ClassVar[int]
     REASON_CODE_FIELD_NUMBER: _ClassVar[int]
     ERROR_DETAIL_FIELD_NUMBER: _ClassVar[int]
+    RESULT_MANIFEST_REF_FIELD_NUMBER: _ClassVar[int]
+    RECEIPT_FIELD_NUMBER: _ClassVar[int]
+    RESULT_SUMMARY_FIELD_NUMBER: _ClassVar[int]
     task_id: str
     run_id: str
     attempt: int
@@ -342,7 +404,10 @@ class TaskResult(_message.Message):
     retryable: bool
     reason_code: str
     error_detail: str
-    def __init__(self, task_id: _Optional[str] = ..., run_id: _Optional[str] = ..., attempt: _Optional[int] = ..., assignment_id: _Optional[str] = ..., success: bool = ..., output_ref: _Optional[str] = ..., retryable: bool = ..., reason_code: _Optional[str] = ..., error_detail: _Optional[str] = ...) -> None: ...
+    result_manifest_ref: str
+    receipt: TaskExecutionReceipt
+    result_summary: _struct_pb2.Struct
+    def __init__(self, task_id: _Optional[str] = ..., run_id: _Optional[str] = ..., attempt: _Optional[int] = ..., assignment_id: _Optional[str] = ..., success: bool = ..., output_ref: _Optional[str] = ..., retryable: bool = ..., reason_code: _Optional[str] = ..., error_detail: _Optional[str] = ..., result_manifest_ref: _Optional[str] = ..., receipt: _Optional[_Union[TaskExecutionReceipt, _Mapping]] = ..., result_summary: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ...) -> None: ...
 
 class ReportTaskResultRequest(_message.Message):
     __slots__ = ("result",)

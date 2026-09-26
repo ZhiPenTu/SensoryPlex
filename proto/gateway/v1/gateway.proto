@@ -13,6 +13,8 @@ message SearchRequest {
   optional double min_confidence = 7;
   uint32 limit = 8; // 0 means 20; maximum 100.
   string mode = 9; // keyword | semantic; both implemented. semantic rejects fact filters (ADR-023).
+  // 限定到一次不可变执行，避免同一视频的历史批次混入当前结果。
+  string execution_id = 10;
 }
 // 语义检索的命中摘要。keyword 模式不做相关性排名，因此 hits 为空——"没有排名"与"排名为 0"不同。
 message SearchHit {

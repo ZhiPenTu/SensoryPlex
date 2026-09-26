@@ -28,7 +28,7 @@ import zipfile
 from dataclasses import dataclass, field
 
 import grpc
-from edge_material_sdk import BufferReadError, PluginError, ProcessorPlugin
+from edge_material_sdk import BufferReadError, PluginError, ProcessorPlugin, read_descriptor
 from edge_material_sdk.generated.common.v1 import common_pb2 as common
 from edge_material_sdk.generated.material.v1 import material_pb2 as material
 from edge_material_sdk.generated.runtime.v1 import runtime_pb2 as runtime
@@ -36,7 +36,7 @@ from edge_material_sdk.generated.runtime.v1 import runtime_pb2 as runtime
 from . import audio
 
 PLUGIN_NAME = "org.sensoryplex.asr-whisper-mlx"
-PLUGIN_VERSION = "0.1.0"
+PLUGIN_VERSION = "0.1.1"
 MODALITY = "asr_segment"
 CONSUMES = "media.audio_segment"
 INPUT_KIND = "audio_segment"
@@ -54,6 +54,7 @@ MODEL_CONFIG_KEYS_IGNORED = ("model_type", "quantization")
 HASH_CHUNK_BYTES = 1 << 20
 
 CONFIG_KEYS = (
+    "data_plane_mode",
     "handoff_endpoint",
     "model",
     "model_revision",
@@ -69,6 +70,7 @@ TASKS = ("transcribe", "translate")
 
 @dataclass
 class AsrConfig:
+    data_plane_mode: str = "static"
     handoff_endpoint: str = ""
     model: str = DEFAULT_MODEL
     model_revision: str = ""
@@ -91,6 +93,7 @@ class AsrConfig:
         """语义配置：`model_dir` 是位置而不是语义（身份由权重摘要承担），
         `handoff_endpoint` 是传输位置，两者都不进配置摘要。"""
         return {
+            "data_plane_mode": self.data_plane_mode,
             "model": self.model,
             "model_revision": self.model_revision,
             "language": self.language,
@@ -139,7 +142,9 @@ def validate_config(config: dict) -> runtime.ValidationResult:
         parsed = AsrConfig.from_mapping(dict(config))
     except (ValueError, TypeError) as error:
         return runtime.ValidationResult(valid=False, field_errors=[str(error)])
-    if not parsed.handoff_endpoint:
+    if parsed.data_plane_mode not in {"static", "per_request"}:
+        errors.append("invalid_data_plane_mode")
+    if parsed.data_plane_mode == "static" and not parsed.handoff_endpoint:
         errors.append("handoff_endpoint_required")
     if not parsed.model and not parsed.model_dir:
         errors.append("model_or_model_dir_required")
@@ -212,7 +217,9 @@ class WhisperAsrPlugin(ProcessorPlugin):
         if not self.artifact_digest:
             raise ValueError("artifact_digest_required")
         parsed = AsrConfig.from_mapping(dict(config))
-        if not parsed.handoff_endpoint:
+        if parsed.data_plane_mode not in {"static", "per_request"}:
+            raise ValueError("invalid_data_plane_mode")
+        if parsed.data_plane_mode == "static" and not parsed.handoff_endpoint:
             raise ValueError("handoff_endpoint_required")
         self._load_backend()
         self.model = self._probe_model(parsed)
@@ -328,7 +335,12 @@ class WhisperAsrPlugin(ProcessorPlugin):
     def _read_segment(self, descriptor):
         """按 lease 读取这一段音频；任何失败都翻译成契约错误码，不吞掉、不降级。"""
         try:
-            return self.buffer_reader.read(descriptor.buffer_id)
+            return read_descriptor(
+                self.buffer_reader,
+                descriptor,
+                ttl_ms=int(self.config.ttl_ms),
+                timeout_s=float(self.config.timeout_s),
+            )
         except BufferReadError as error:
             raise PluginError(error.code, error.reason_code, error.retryable) from None
         except grpc.RpcError as error:

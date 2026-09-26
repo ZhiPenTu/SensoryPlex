@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import mmap
 import os
 from dataclasses import dataclass
@@ -64,12 +65,26 @@ def digest_of(payload: bytes) -> str:
     return "sha256:" + hashlib.sha256(payload).hexdigest()
 
 
+def is_loopback_endpoint(endpoint: str) -> bool:
+    """只接受 Runtime 写入 descriptor 的本机 host:port，拒绝远端数据面。"""
+    host, separator, port = endpoint.rpartition(":")
+    if not separator or not host or not port.isdecimal() or not 1 <= int(port) <= 65535:
+        return False
+    host = host.strip("[]")
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return host == "localhost"
+
+
 class LeaseBufferReader:
     """gRPC `BufferHandoffService` 的只读客户端：Acquire → mmap → 校验 → Release。"""
 
     def __init__(self, endpoint: str, ttl_ms: int = DEFAULT_TTL_MS, timeout_s: float = 30.0):
         if not 50 <= ttl_ms <= 60_000:
             raise ValueError("ttl_ms_out_of_range")
+        if not is_loopback_endpoint(endpoint):
+            raise ValueError("handoff_endpoint_must_be_loopback")
         if _SHM_IMPORT_ERROR is not None:  # pragma: no cover - 非 POSIX 平台
             raise BufferReadError(
                 common.UNSUPPORTED_MEMORY_KIND,
@@ -175,3 +190,23 @@ class LeaseBufferReader:
                 mapping.close()
         finally:
             os.close(fd)
+
+
+def read_descriptor(
+    default_reader: LeaseBufferReader | None,
+    descriptor: common.BufferDescriptor,
+    *,
+    ttl_ms: int,
+    timeout_s: float,
+) -> BufferRead:
+    """读取 Runtime 签发的 descriptor，且只接受固定或 descriptor 绑定的数据面。"""
+    endpoint = descriptor.locator.handoff_endpoint
+    if endpoint:
+        reader = LeaseBufferReader(endpoint, ttl_ms=ttl_ms, timeout_s=timeout_s)
+        try:
+            return reader.read(descriptor.buffer_id)
+        finally:
+            reader.close()
+    if default_reader is None:
+        raise BufferReadError(common.UNSUPPORTED_MEMORY_KIND, "buffer_reader_not_attached")
+    return default_reader.read(descriptor.buffer_id)

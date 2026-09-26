@@ -118,7 +118,12 @@ def metrics_labels(bucket: dict, extra: str = "") -> str:
 
 def config_hash(config: dict) -> str:
     """配置摘要：与配置内容绑定，用于判断"同一配置是否已生效"。"""
-    return "sha256:" + hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
+    return (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(config, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    )
 
 
 def sha256_file(path) -> str:
@@ -250,7 +255,7 @@ def operation_proto(conn, row: dict) -> dict:
     }
 
 
-def intent_proto(row: dict, plugin_id: str, plugin_version: str) -> dict:
+def intent_proto(row: dict, plugin_id: str, plugin_version: str, config_hash: str = "") -> dict:
     """把部署意图行转成下发给 Agent 的契约。意图内不出现 URL、命令、宿主路径或密钥。
 
     `console_deployment_intent` 只存 `instance_id`，插件身份要由调用方从逻辑槽位
@@ -285,6 +290,7 @@ def intent_proto(row: dict, plugin_id: str, plugin_version: str) -> dict:
         "bundle_digest": row["bundle_digest"] or "",
         "runtime_instance_id": row["runtime_instance_id"] or "",
         "grace_period_ms": row["grace_period_ms"] or 0,
+        "config_hash": config_hash,
     }
 
 

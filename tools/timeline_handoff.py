@@ -270,7 +270,14 @@ def register_references(conn, report, description, owner, units, upload_id: str 
 
 
 def handoff(
-    *, report_path, material_dir, owner, trace_id, database_url, upload_id: str = ""
+    *,
+    report_path,
+    material_dir,
+    owner,
+    trace_id,
+    database_url,
+    upload_id: str = "",
+    execution_id: str = "",
 ) -> dict:
     """登记引用事实 + 追加素材；返回可直接序列化的产物。"""
     if not owner:
@@ -314,7 +321,9 @@ def handoff(
                     unit.revision = prev[0] + 1
 
             # 写侧是唯一判官：True=新增，False=完全一致的 replay。这里不做任何"补一次"。
-            appended = api_materials.append_material(conn, unit, trace_id=trace_id)
+            appended = api_materials.append_material(
+                conn, unit, trace_id=trace_id, execution_id=execution_id
+            )
             counters["appended"] += int(appended)
             counters["replayed"] += int(not appended)
             counters["observations"] += len(unit.observations)
@@ -342,6 +351,7 @@ def handoff(
         "database": describe_target(database_url),
         "owner": owner,
         "trace_id": trace_id,
+        "execution_id": execution_id,
         "source": report["source"],
         "pipeline_version": report["pipeline"]["pipeline_version"],
         "references": references,
@@ -359,6 +369,7 @@ def main() -> int:
     parser.add_argument("--owner", required=True, help="授权主体：素材读取权限由它决定")
     parser.add_argument("--trace-id", default="", help="写入 lineage 的追踪号")
     parser.add_argument("--upload-id", default="", help="console_upload 的 id，格式 asset_xxx")
+    parser.add_argument("--execution-id", default="", help="绑定本次素材的不可变执行批次")
     parser.add_argument("--database-url", default="")
     parser.add_argument("--out", type=pathlib.Path, default=None)
     arguments = parser.parse_args()
@@ -373,6 +384,7 @@ def main() -> int:
             trace_id=arguments.trace_id or f"timeline-handoff:{arguments.owner}",
             database_url=database_url,
             upload_id=arguments.upload_id,
+            execution_id=arguments.execution_id,
         )
     except (HandoffError, api_materials.RevisionConflict) as error:
         # 带着稳定原因串失败：调用方据此分支，而不是解析数据库异常文本。

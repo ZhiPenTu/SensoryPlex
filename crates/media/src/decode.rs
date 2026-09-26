@@ -70,6 +70,8 @@ pub struct DecodeRun {
     pub decode: DecodeConfig,
     pub max_samples: usize,
     pub audio_segment_ms: u32,
+    /// 相邻音频段需要保留的真实重叠音频，必须小于 `audio_segment_ms`。
+    pub audio_overlap_ms: u32,
     /// 视频抽帧策略。抽帧始终启用：未抽帧的运行只能在报告里显式说明，
     /// 不能用"全保留"冒充。
     pub sampling: SamplingPolicy,
@@ -1445,6 +1447,7 @@ pub(crate) struct DecodeSession<'a> {
     stream_short: &'a str,
     now_ms: i64,
     segment_ms: u32,
+    audio_overlap_ms: u32,
     arena: Arena,
     leases: LeaseRegistry,
     counters: HandoffCounters,
@@ -1478,6 +1481,7 @@ impl<'a> DecodeSession<'a> {
             stream_short,
             now_ms: crate::now_unix_ms(),
             segment_ms: run.audio_segment_ms,
+            audio_overlap_ms: run.audio_overlap_ms,
             arena: Arena::new(arena_id, DEFAULT_ARENA_CAPACITY_BYTES)?,
             leases: LeaseRegistry::default(),
             counters: HandoffCounters::default(),
@@ -1504,6 +1508,7 @@ impl<'a> DecodeSession<'a> {
             segmenter: None,
             segment_report: media::AudioSegmentReport {
                 segment_ms: run.audio_segment_ms,
+                overlap_ms: run.audio_overlap_ms,
                 listed_limit: MAX_LISTED_SEGMENTS as u32,
                 ..Default::default()
             },
@@ -1738,7 +1743,10 @@ impl<'a> DecodeSession<'a> {
         duration_ms: i64,
     ) -> Result<(), MediaError> {
         if self.segmenter.is_none() {
-            self.segmenter = Some(AudioSegmenter::new(self.segment_ms)?);
+            self.segmenter = Some(AudioSegmenter::with_overlap(
+                self.segment_ms,
+                self.audio_overlap_ms,
+            )?);
         }
         let pending = match self.segmenter.as_mut() {
             Some(segmenter) => segmenter.push(
@@ -2136,6 +2144,7 @@ mod tests {
             decode: DecodeConfig::default(),
             max_samples: 16,
             audio_segment_ms: 5_000,
+            audio_overlap_ms: 0,
             sampling: SamplingPolicy::default(),
             handoff: RetainPolicy::default(),
             backpressure: BackpressurePolicy::default(),

@@ -101,6 +101,10 @@ export interface Pipeline {
   revision: number;
   created_at: string;
   plugin_digest: string;
+  execution_mode: string;
+  orchestration_pipeline_id: string;
+  orchestration_revision: number;
+  graph_digest: string;
 }
 export interface PipelineList {
   items: Pipeline[];
@@ -119,6 +123,13 @@ export interface JobDraft {
   state: string;
   created_at: string;
   reason: string;
+  execution_id: string;
+  run_id: string;
+  execution_mode: string;
+  pipeline_revision: number;
+  graph_digest: string;
+  modality_summary?: JsonObject;
+  execution_state: string;
 }
 export interface JobDraftList {
   items: JobDraft[];
@@ -221,6 +232,7 @@ export interface BufferLocator {
   handle: string;
   offset: string;
   length: string;
+  handoff_endpoint: string;
 }
 export interface BufferFormat {
   pixel_format: string;
@@ -310,6 +322,7 @@ export interface SearchRequest {
   min_confidence?: number;
   limit: number;
   mode: string;
+  execution_id: string;
 }
 export interface SearchHit {
   material_unit_id: string;
@@ -554,6 +567,7 @@ export interface DeploymentIntent {
   bundle_digest: string;
   runtime_instance_id: string;
   grace_period_ms: string;
+  config_hash: string;
 }
 export interface ReportDeploymentRequest {
   intent_id: string;

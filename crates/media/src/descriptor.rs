@@ -104,6 +104,9 @@ pub fn hand_off(
             handle: arena.id().to_string(),
             offset: offset as u64,
             length: bytes.len() as u64,
+            // Arena 构造时尚未绑定 gRPC handoff 服务；需要临时交接时由调用方
+            // 在受控 descriptor 上补入 loopback endpoint，不能猜宿主地址。
+            handoff_endpoint: String::new(),
         }),
         format: Some(spec.format),
         stream_id: spec.stream_id.to_string(),

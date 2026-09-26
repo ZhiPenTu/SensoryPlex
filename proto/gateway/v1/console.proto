@@ -41,12 +41,25 @@ message Pipeline {
   string id = 1; string name = 2; string description = 3; string plugin_id = 4;
   string config_id = 5; string state = 6; uint32 revision = 7; string created_at = 8;
   string plugin_digest = 9;
+  // legacy_ocr_v1 与 orchestrated_v2 是不同执行语义，调用方不得从状态猜测。
+  string execution_mode = 10;
+  string orchestration_pipeline_id = 11;
+  uint32 orchestration_revision = 12;
+  string graph_digest = 13;
 }
 message PipelineList { repeated Pipeline items = 1; uint32 total = 2; }
 message SaveJobDraft { string asset_id = 1; string pipeline_id = 2; string name = 3; }
 message JobDraft {
   string id = 1; string asset_id = 2; string pipeline_id = 3; string name = 4;
   string state = 5; string created_at = 6; string reason = 7;
+  // 最近一次执行快照；空值表示尚未派发或是没有可读取历史的 legacy 草稿。
+  string execution_id = 8;
+  string run_id = 9;
+  string execution_mode = 10;
+  uint32 pipeline_revision = 11;
+  string graph_digest = 12;
+  google.protobuf.Struct modality_summary = 13;
+  string execution_state = 14;
 }
 message JobDraftList { repeated JobDraft items = 1; uint32 total = 2; }
 message CreateToken { string name = 1; repeated string scopes = 2; uint32 expires_in_days = 3; }

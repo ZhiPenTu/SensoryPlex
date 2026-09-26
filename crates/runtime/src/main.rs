@@ -70,6 +70,7 @@ fn decode_pass(
         decode: sensoryplex_media::decode::DecodeConfig::default(),
         max_samples: args.max_points,
         audio_segment_ms: args.audio_segment_ms,
+        audio_overlap_ms: args.audio_overlap_ms,
         sampling: args.sampling,
         handoff,
         backpressure: args.backpressure,
@@ -101,6 +102,9 @@ fn validate_run_args(args: &ResolvedRunArgs) -> Result<(), String> {
     if !(MIN_AUDIO_SEGMENT_MS..=MAX_AUDIO_SEGMENT_MS).contains(&args.audio_segment_ms) {
         return Err("audio_segment_ms out of range".into());
     }
+    if args.audio_overlap_ms >= args.audio_segment_ms {
+        return Err("audio_overlap_ms must be less than audio_segment_ms".into());
+    }
     SamplingPolicy::new(
         args.sampling.min_interval_ms,
         args.sampling.static_hold_ms,
@@ -120,7 +124,7 @@ fn validate_run_args(args: &ResolvedRunArgs) -> Result<(), String> {
     Ok(())
 }
 
-const REPLAY_USAGE: &str = "usage: sensoryplex-runtime replay <pipeline.yaml> <media-path> --report <report.pb> [--max-points N] [--audio-segment-ms N] [--sampling-min-interval-ms N] [--sampling-static-hold-ms N] [--sampling-change-threshold N] [--backpressure-degraded-percent N] [--backpressure-throttle-factor N] [--backpressure-throttle-cap-ms N] [--handoff-listen 127.0.0.1:PORT] [--handoff-arena-bytes N] [--handoff-retained-limit N] [--handoff-ttl-ms N] [--handoff-wait-timeout-ms N] [--handoff-idle-timeout-ms N]";
+const REPLAY_USAGE: &str = "usage: sensoryplex-runtime replay <pipeline.yaml> <media-path> --report <report.pb> [--max-points N] [--audio-segment-ms N] [--audio-overlap-ms N] [--sampling-min-interval-ms N] [--sampling-static-hold-ms N] [--sampling-change-threshold N] [--backpressure-degraded-percent N] [--backpressure-throttle-factor N] [--backpressure-throttle-cap-ms N] [--handoff-listen 127.0.0.1:PORT] [--handoff-arena-bytes N] [--handoff-retained-limit N] [--handoff-ttl-ms N] [--handoff-wait-timeout-ms N] [--handoff-idle-timeout-ms N]";
 
 /// 跨进程交接的服务端配置。只有在显式给出 `--handoff-listen` 时才存在：
 /// 不保留字节的运行仍然是合法运行，但它不算"消费方已验证"。
@@ -157,6 +161,7 @@ struct MediaRunArgs {
     /// 时间轴锚点与解码样本数量的上限；不存在无界模式。
     max_points: usize,
     audio_segment_ms: u32,
+    audio_overlap_ms: u32,
     sampling_min_interval_ms: i64,
     sampling_static_hold_ms: i64,
     sampling_change_threshold: u32,
@@ -176,6 +181,7 @@ struct MediaRunArgs {
 struct ResolvedRunArgs {
     max_points: usize,
     audio_segment_ms: u32,
+    audio_overlap_ms: u32,
     sampling: SamplingPolicy,
     backpressure: BackpressurePolicy,
     handoff: Option<HandoffArgs>,
@@ -205,6 +211,7 @@ impl MediaRunArgs {
         Self {
             max_points: DEFAULT_MAX_POINTS,
             audio_segment_ms: DEFAULT_AUDIO_SEGMENT_MS,
+            audio_overlap_ms: 0,
             sampling_min_interval_ms: sensoryplex_media::sampler::DEFAULT_MIN_INTERVAL_MS,
             sampling_static_hold_ms: sensoryplex_media::sampler::DEFAULT_STATIC_HOLD_MS,
             sampling_change_threshold: sensoryplex_media::sampler::DEFAULT_CHANGE_THRESHOLD,
@@ -230,6 +237,9 @@ impl MediaRunArgs {
             "--max-points" => self.max_points = parse_arg(flag, args.get(index + 1))?,
             "--audio-segment-ms" => {
                 self.audio_segment_ms = parse_arg(flag, args.get(index + 1))?;
+            }
+            "--audio-overlap-ms" => {
+                self.audio_overlap_ms = parse_arg(flag, args.get(index + 1))?;
             }
             "--sampling-min-interval-ms" => {
                 self.sampling_min_interval_ms = parse_arg(flag, args.get(index + 1))?;
@@ -288,6 +298,9 @@ impl MediaRunArgs {
                 "audio-segment-ms must be between {MIN_AUDIO_SEGMENT_MS} and {MAX_AUDIO_SEGMENT_MS}"
             ));
         }
+        if self.audio_overlap_ms >= self.audio_segment_ms {
+            return Err("audio-overlap-ms must be less than audio-segment-ms".into());
+        }
         let sampling = SamplingPolicy::new(
             self.sampling_min_interval_ms,
             self.sampling_static_hold_ms,
@@ -337,6 +350,7 @@ impl MediaRunArgs {
         Ok(ResolvedRunArgs {
             max_points: self.max_points,
             audio_segment_ms: self.audio_segment_ms,
+            audio_overlap_ms: self.audio_overlap_ms,
             sampling,
             backpressure,
             handoff,
@@ -829,6 +843,7 @@ fn live_pass(
         decode: sensoryplex_media::decode::DecodeConfig::default(),
         max_samples: args.max_points,
         audio_segment_ms: args.audio_segment_ms,
+        audio_overlap_ms: args.audio_overlap_ms,
         sampling: args.sampling,
         handoff,
         backpressure: args.backpressure,

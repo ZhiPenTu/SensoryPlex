@@ -2,7 +2,7 @@ apiVersion: edge.material.plugin/v1
 kind: ProcessorPlugin
 metadata:
   name: org.sensoryplex.ocr-rapidocr
-  version: 0.1.0
+  version: 0.1.1
   displayName: 画面文字识别（本机 PP-OCR / ONNX Runtime）
   vendor: SensoryPlex
   license: Apache-2.0
@@ -57,6 +57,6 @@ spec:
   artifacts:
     form: local_native
     image: local:plugins/python/processors/ocr-rapidocr
-    digest: sha256:9862bb82cf1469acdd638e94d402f8d3fa553d724799863dc09435a1684a67d0
+    digest: sha256:5ef1f546e6d34889c3c9302568b19d617302e2e798f84d038e2355cbbf8e280e
     sbom: sbom.cdx.json
     signatureUnavailableReason: local_native_plugin_is_not_signed_in_v1

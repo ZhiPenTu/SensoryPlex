@@ -80,11 +80,14 @@ class PluginServicer(runtime_pb2_grpc.ProcessorPluginServiceServicer):
                 state=self.state, error=_failure(common.TRANSIENT_BACKEND_FAILURE, str(error), True)
             )
         try:
-            if self.plugin.buffer_reader is None:
-                self.plugin.buffer_reader = LeaseBufferReader(
-                    config["handoff_endpoint"], ttl_ms=int(config.get("ttl_ms", 30_000))
-                )
-            self.plugin.buffer_reader.listing()
+            # per_request 的 handoff 由 Runtime 写入每个 descriptor，启动期不存在
+            # 也不能猜一个地址；静态模式仍在 Start 时真实检查固定数据面。
+            if config.get("data_plane_mode", "static") != "per_request":
+                if self.plugin.buffer_reader is None:
+                    self.plugin.buffer_reader = LeaseBufferReader(
+                        config["handoff_endpoint"], ttl_ms=int(config.get("ttl_ms", 30_000))
+                    )
+                self.plugin.buffer_reader.listing()
         except (BufferReadError, KeyError, ValueError, grpc.RpcError) as error:
             self.state = "failed"
             reason = getattr(error, "reason_code", None) or str(error) or "data_plane_unreachable"

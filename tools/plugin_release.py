@@ -27,7 +27,6 @@ import shutil
 import subprocess
 import sys
 import tarfile
-import time
 import tomllib
 
 import yaml
@@ -306,7 +305,9 @@ def build(args) -> int:
 
     bundle_manifest = {
         "format": BUNDLE_FORMAT,
-        "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        # bundle digest 是 release 身份的一部分，不能因为构建时钟变了就改变。
+        # 实际导入时间由控制面 `published_at` 记账；bundle 内只保留稳定内容。
+        "built_at": "1970-01-01T00:00:00Z",
         "plugin": {
             "plugin_id": meta["name"],
             "plugin_version": meta["version"],
@@ -335,11 +336,11 @@ def build(args) -> int:
         / str(meta["version"])
         / f"{platform_name}-{arch}"
     )
-    release_dir.mkdir(parents=True, exist_ok=True)
-    bundle_path = release_dir / "bundle.tar.gz"
-    _write_tar(staging, bundle_path)
+    candidate_bundle = staging.parent / f"{staging.name}.bundle.tar.gz"
+    candidate_bundle.unlink(missing_ok=True)
+    _write_tar(staging, candidate_bundle)
 
-    bundle_digest = "sha256:" + sha256_file(bundle_path)
+    bundle_digest = "sha256:" + sha256_file(candidate_bundle)
     release_id = (
         "rel_"
         + sha256_bytes(
@@ -359,7 +360,7 @@ def build(args) -> int:
         "manifest_digest": manifest_digest,
         "config_schema_digest": schema_digest,
         "sbom_digest": sbom_digest,
-        "bundle_bytes": bundle_path.stat().st_size,
+        "bundle_bytes": candidate_bundle.stat().st_size,
         "entrypoint": entrypoint,
         "runtime_requirements": runtime_requirements,
         "default_deadline_ms": bundle_manifest["default_deadline_ms"],
@@ -370,11 +371,40 @@ def build(args) -> int:
         "authenticated": True,
         "authentication_method": "controlled_artifact_repository",
         "signature_status": spec["artifacts"].get("signatureUnavailableReason", "not_signed"),
-        "bundle_path": bundle_path.relative_to(pathlib.Path(args.out).resolve()).as_posix(),
+        "bundle_path": (
+            pathlib.Path(meta["name"])
+            / str(meta["version"])
+            / f"{platform_name}-{arch}"
+            / "bundle.tar.gz"
+        ).as_posix(),
         "trust_repository": pathlib.Path(args.out).resolve().relative_to(ROOT).as_posix()
         if pathlib.Path(args.out).resolve().is_relative_to(ROOT)
         else str(pathlib.Path(args.out).resolve()),
     }
+    existing_descriptor = release_dir / "release.json"
+    existing_bundle = release_dir / "bundle.tar.gz"
+    if existing_descriptor.exists() or existing_bundle.exists():
+        if not (existing_descriptor.is_file() and existing_bundle.is_file()):
+            raise BuildError("existing_release_incomplete")
+        try:
+            existing = json.loads(existing_descriptor.read_text())
+        except (OSError, json.JSONDecodeError) as error:
+            raise BuildError("existing_release_descriptor_unreadable") from error
+        actual_existing = "sha256:" + sha256_file(existing_bundle)
+        if existing.get("bundle_digest") != actual_existing:
+            raise BuildError("existing_release_bundle_digest_mismatch")
+        if existing.get("bundle_digest") != bundle_digest:
+            raise BuildError("immutable_release_content_conflict")
+        print(json.dumps(existing, indent=2))
+        print(f"\nrelease unchanged: {existing.get('release_id', '')}")
+        print(f"bundle:            {existing_bundle}")
+        candidate_bundle.unlink(missing_ok=True)
+        return 0
+
+    release_dir.mkdir(parents=True, exist_ok=True)
+    bundle_path = release_dir / "bundle.tar.gz"
+    shutil.copyfile(candidate_bundle, bundle_path)
+    candidate_bundle.unlink(missing_ok=True)
     (release_dir / "release.json").write_text(json.dumps(descriptor, indent=2) + "\n")
 
     print(json.dumps(descriptor, indent=2))

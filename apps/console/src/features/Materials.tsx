@@ -354,6 +354,20 @@ export default function Materials() {
                                 <Col xs={24} sm={8}>
                                     <div>
                                         <Text type="secondary" style={{ fontSize: 12 }}>
+                                            执行批次（从任务详情跳转时自动带入）
+                                        </Text>
+                                        <Input
+                                            name="execution"
+                                            placeholder="例如 execution-…"
+                                            defaultValue={params.get('execution') || ''}
+                                            maxLength={128}
+                                            style={{ marginTop: 4 }}
+                                        />
+                                    </div>
+                                </Col>
+                                <Col xs={24} sm={8}>
+                                    <div>
+                                        <Text type="secondary" style={{ fontSize: 12 }}>
                                             包含标签 (逗号分隔)
                                         </Text>
                                         <Input

@@ -348,7 +348,7 @@ class NodeHeartbeatResponse(_message.Message):
     def __init__(self, status: _Optional[_Union[NodeStatus, str]] = ..., heartbeat_interval_ms: _Optional[int] = ..., pending_intents: _Optional[_Iterable[_Union[DeploymentIntent, _Mapping]]] = ..., reconciliation_required: _Optional[_Iterable[str]] = ...) -> None: ...
 
 class DeploymentIntent(_message.Message):
-    __slots__ = ("intent_id", "instance_id", "node_id", "plugin_id", "plugin_version", "action", "artifact_digest", "rollback_digest", "config", "created_at", "deadline_unix_ms", "operation_id", "generation", "release_id", "bundle_digest", "runtime_instance_id", "grace_period_ms")
+    __slots__ = ("intent_id", "instance_id", "node_id", "plugin_id", "plugin_version", "action", "artifact_digest", "rollback_digest", "config", "created_at", "deadline_unix_ms", "operation_id", "generation", "release_id", "bundle_digest", "runtime_instance_id", "grace_period_ms", "config_hash")
     INTENT_ID_FIELD_NUMBER: _ClassVar[int]
     INSTANCE_ID_FIELD_NUMBER: _ClassVar[int]
     NODE_ID_FIELD_NUMBER: _ClassVar[int]
@@ -366,6 +366,7 @@ class DeploymentIntent(_message.Message):
     BUNDLE_DIGEST_FIELD_NUMBER: _ClassVar[int]
     RUNTIME_INSTANCE_ID_FIELD_NUMBER: _ClassVar[int]
     GRACE_PERIOD_MS_FIELD_NUMBER: _ClassVar[int]
+    CONFIG_HASH_FIELD_NUMBER: _ClassVar[int]
     intent_id: str
     instance_id: str
     node_id: str
@@ -383,7 +384,8 @@ class DeploymentIntent(_message.Message):
     bundle_digest: str
     runtime_instance_id: str
     grace_period_ms: int
-    def __init__(self, intent_id: _Optional[str] = ..., instance_id: _Optional[str] = ..., node_id: _Optional[str] = ..., plugin_id: _Optional[str] = ..., plugin_version: _Optional[str] = ..., action: _Optional[_Union[DeploymentAction, str]] = ..., artifact_digest: _Optional[str] = ..., rollback_digest: _Optional[str] = ..., config: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ..., created_at: _Optional[str] = ..., deadline_unix_ms: _Optional[int] = ..., operation_id: _Optional[str] = ..., generation: _Optional[int] = ..., release_id: _Optional[str] = ..., bundle_digest: _Optional[str] = ..., runtime_instance_id: _Optional[str] = ..., grace_period_ms: _Optional[int] = ...) -> None: ...
+    config_hash: str
+    def __init__(self, intent_id: _Optional[str] = ..., instance_id: _Optional[str] = ..., node_id: _Optional[str] = ..., plugin_id: _Optional[str] = ..., plugin_version: _Optional[str] = ..., action: _Optional[_Union[DeploymentAction, str]] = ..., artifact_digest: _Optional[str] = ..., rollback_digest: _Optional[str] = ..., config: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ..., created_at: _Optional[str] = ..., deadline_unix_ms: _Optional[int] = ..., operation_id: _Optional[str] = ..., generation: _Optional[int] = ..., release_id: _Optional[str] = ..., bundle_digest: _Optional[str] = ..., runtime_instance_id: _Optional[str] = ..., grace_period_ms: _Optional[int] = ..., config_hash: _Optional[str] = ...) -> None: ...
 
 class ReportDeploymentRequest(_message.Message):
     __slots__ = ("intent_id", "instance_id", "node_id", "action", "success", "actual_state", "error_code", "error_detail", "operation_id", "generation", "release_id", "runtime_instance_id", "stage", "verified_plugin_id", "verified_artifact_digest", "endpoint", "supervisor_id", "staging_ms", "starting_ms", "validating_ms", "draining_ms")

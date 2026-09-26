@@ -33,11 +33,11 @@
       "properties": [
         {
           "name": "sensoryplex:package_digest",
-          "value": "sha256:a0e4d8416a4a670b62933f7ca045ebf14573f3496310fa4bdce65ff92488b896"
+          "value": "sha256:6b11b8574b3b22c621a215ab2f35c0135ce6f9c40572298b5b70b06a136835f3"
         }
       ],
       "type": "application",
-      "version": "0.1.0"
+      "version": "0.1.1"
     },
     "tools": [
       {

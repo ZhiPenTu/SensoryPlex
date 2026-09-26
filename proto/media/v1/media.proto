@@ -158,6 +158,8 @@ message AudioSegmentReport {
   uint64 dropped_samples = 7;
   uint64 discontinuities = 8;
   repeated string drop_reasons = 9;
+  // 相邻音频段实际重叠的毫秒数。0 表示明确不重叠，不得由读取方猜测。
+  uint32 overlap_ms = 10;
 }
 
 // Adaptive sampling accounting for a video track. Every observed frame is counted exactly

@@ -187,7 +187,7 @@ class SavePipeline(_message.Message):
     def __init__(self, name: _Optional[str] = ..., description: _Optional[str] = ..., plugin_id: _Optional[str] = ..., config_id: _Optional[str] = ...) -> None: ...
 
 class Pipeline(_message.Message):
-    __slots__ = ("id", "name", "description", "plugin_id", "config_id", "state", "revision", "created_at", "plugin_digest")
+    __slots__ = ("id", "name", "description", "plugin_id", "config_id", "state", "revision", "created_at", "plugin_digest", "execution_mode", "orchestration_pipeline_id", "orchestration_revision", "graph_digest")
     ID_FIELD_NUMBER: _ClassVar[int]
     NAME_FIELD_NUMBER: _ClassVar[int]
     DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
@@ -197,6 +197,10 @@ class Pipeline(_message.Message):
     REVISION_FIELD_NUMBER: _ClassVar[int]
     CREATED_AT_FIELD_NUMBER: _ClassVar[int]
     PLUGIN_DIGEST_FIELD_NUMBER: _ClassVar[int]
+    EXECUTION_MODE_FIELD_NUMBER: _ClassVar[int]
+    ORCHESTRATION_PIPELINE_ID_FIELD_NUMBER: _ClassVar[int]
+    ORCHESTRATION_REVISION_FIELD_NUMBER: _ClassVar[int]
+    GRAPH_DIGEST_FIELD_NUMBER: _ClassVar[int]
     id: str
     name: str
     description: str
@@ -206,7 +210,11 @@ class Pipeline(_message.Message):
     revision: int
     created_at: str
     plugin_digest: str
-    def __init__(self, id: _Optional[str] = ..., name: _Optional[str] = ..., description: _Optional[str] = ..., plugin_id: _Optional[str] = ..., config_id: _Optional[str] = ..., state: _Optional[str] = ..., revision: _Optional[int] = ..., created_at: _Optional[str] = ..., plugin_digest: _Optional[str] = ...) -> None: ...
+    execution_mode: str
+    orchestration_pipeline_id: str
+    orchestration_revision: int
+    graph_digest: str
+    def __init__(self, id: _Optional[str] = ..., name: _Optional[str] = ..., description: _Optional[str] = ..., plugin_id: _Optional[str] = ..., config_id: _Optional[str] = ..., state: _Optional[str] = ..., revision: _Optional[int] = ..., created_at: _Optional[str] = ..., plugin_digest: _Optional[str] = ..., execution_mode: _Optional[str] = ..., orchestration_pipeline_id: _Optional[str] = ..., orchestration_revision: _Optional[int] = ..., graph_digest: _Optional[str] = ...) -> None: ...
 
 class PipelineList(_message.Message):
     __slots__ = ("items", "total")
@@ -227,7 +235,7 @@ class SaveJobDraft(_message.Message):
     def __init__(self, asset_id: _Optional[str] = ..., pipeline_id: _Optional[str] = ..., name: _Optional[str] = ...) -> None: ...
 
 class JobDraft(_message.Message):
-    __slots__ = ("id", "asset_id", "pipeline_id", "name", "state", "created_at", "reason")
+    __slots__ = ("id", "asset_id", "pipeline_id", "name", "state", "created_at", "reason", "execution_id", "run_id", "execution_mode", "pipeline_revision", "graph_digest", "modality_summary", "execution_state")
     ID_FIELD_NUMBER: _ClassVar[int]
     ASSET_ID_FIELD_NUMBER: _ClassVar[int]
     PIPELINE_ID_FIELD_NUMBER: _ClassVar[int]
@@ -235,6 +243,13 @@ class JobDraft(_message.Message):
     STATE_FIELD_NUMBER: _ClassVar[int]
     CREATED_AT_FIELD_NUMBER: _ClassVar[int]
     REASON_FIELD_NUMBER: _ClassVar[int]
+    EXECUTION_ID_FIELD_NUMBER: _ClassVar[int]
+    RUN_ID_FIELD_NUMBER: _ClassVar[int]
+    EXECUTION_MODE_FIELD_NUMBER: _ClassVar[int]
+    PIPELINE_REVISION_FIELD_NUMBER: _ClassVar[int]
+    GRAPH_DIGEST_FIELD_NUMBER: _ClassVar[int]
+    MODALITY_SUMMARY_FIELD_NUMBER: _ClassVar[int]
+    EXECUTION_STATE_FIELD_NUMBER: _ClassVar[int]
     id: str
     asset_id: str
     pipeline_id: str
@@ -242,7 +257,14 @@ class JobDraft(_message.Message):
     state: str
     created_at: str
     reason: str
-    def __init__(self, id: _Optional[str] = ..., asset_id: _Optional[str] = ..., pipeline_id: _Optional[str] = ..., name: _Optional[str] = ..., state: _Optional[str] = ..., created_at: _Optional[str] = ..., reason: _Optional[str] = ...) -> None: ...
+    execution_id: str
+    run_id: str
+    execution_mode: str
+    pipeline_revision: int
+    graph_digest: str
+    modality_summary: _struct_pb2.Struct
+    execution_state: str
+    def __init__(self, id: _Optional[str] = ..., asset_id: _Optional[str] = ..., pipeline_id: _Optional[str] = ..., name: _Optional[str] = ..., state: _Optional[str] = ..., created_at: _Optional[str] = ..., reason: _Optional[str] = ..., execution_id: _Optional[str] = ..., run_id: _Optional[str] = ..., execution_mode: _Optional[str] = ..., pipeline_revision: _Optional[int] = ..., graph_digest: _Optional[str] = ..., modality_summary: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ..., execution_state: _Optional[str] = ...) -> None: ...
 
 class JobDraftList(_message.Message):
     __slots__ = ("items", "total")

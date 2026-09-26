@@ -23,7 +23,7 @@ from fastapi import Body, Depends, Query
 from psycopg.types.json import Jsonb
 
 from ..contracts import audit, fail, identifier, one, out, parse, rows, text_field
-from ..infrastructure import materials, semantic
+from ..infrastructure import materials, multimodal, orchestration, semantic
 
 KEYWORD_INDEX_VERSION = "postgres-literal-v1"
 DEFAULT_LIMIT = 20
@@ -32,6 +32,7 @@ DEFAULT_LIMIT = 20
 def _has_semantic_filters(req) -> bool:
     return bool(
         req.stream_id
+        or req.execution_id
         or req.modalities
         or req.tags
         or req.HasField("start_ms")
@@ -104,10 +105,11 @@ def register(app, pool, auth, settings):
     def detail(
         key: str,
         revision: int | None = Query(None, ge=1, le=2147483647),
+        execution_id: str = Query("", max_length=128),
         p: Annotated[object, Depends(auth.require("materials:read"))] = None,
     ):
         with pool.connection() as conn:
-            result = materials.get_material(conn, p.name, key, revision)
+            result = materials.get_material(conn, p.name, key, revision, execution_id)
         if result is None:
             fail(404, "material_not_found")
         return out(result)
@@ -134,6 +136,165 @@ def register(app, pool, auth, settings):
         key: str = "", p: Annotated[object, Depends(auth.require("jobs:write"))] = None
     ):
         fail(501, "media_worker_not_attached")
+
+    def _assert_v2_plugin_instances(conn, *, node_id: str, revision: dict) -> None:
+        """派发前核验每个外部处理器都有同节点、同制品、同配置的 active 实例。"""
+        for node in revision["definition_json"].get("nodes", []):
+            if node["plugin_id"] == multimodal.RUNTIME_TIMELINE_PLUGIN:
+                continue
+            instance = one(
+                conn,
+                """
+                SELECT runtime.runtime_instance_id
+                FROM console_plugin_instance slot
+                JOIN plugin_runtime_instance runtime
+                  ON runtime.runtime_instance_id=slot.active_runtime_instance_id
+                WHERE slot.node_id=%s
+                  AND slot.plugin_id=%s
+                  AND slot.artifact_digest=%s
+                  AND slot.config_hash=%s
+                  AND slot.actual_state='ready'
+                  AND runtime.node_id=%s
+                  AND runtime.plugin_id=%s
+                  AND runtime.artifact_digest=%s
+                  AND runtime.role='active'
+                  AND runtime.state='active'
+                  AND runtime.endpoint <> ''
+                """,
+                (
+                    node_id,
+                    node["plugin_id"],
+                    node["artifact_digest"],
+                    node["config_hash"],
+                    node_id,
+                    node["plugin_id"],
+                    node["artifact_digest"],
+                ),
+            )
+            if not instance:
+                fail(409, "plugin_instance_unavailable")
+
+    def _dispatch_orchestrated_v2(
+        conn, *, draft: dict, upload: dict, pipeline: dict, owner: str, target_node_id: str
+    ) -> dict:
+        """在同一事务内写入 Console 快照、Run、Task、Assignment 与受控任务意图。"""
+        if pipeline["state"] != "published":
+            fail(409, "orchestrated_pipeline_not_published")
+        revision = one(
+            conn,
+            """
+            SELECT * FROM pipeline_revision
+            WHERE pipeline_id=%s AND revision=%s
+            """,
+            (pipeline["orchestration_pipeline_id"], pipeline["orchestration_revision"]),
+        )
+        if not revision or revision["graph_digest"] != pipeline["graph_digest"]:
+            fail(409, "pipeline_revision_binding_invalid")
+        _assert_v2_plugin_instances(conn, node_id=target_node_id, revision=revision)
+
+        input_ref = f"console_upload:{upload['id']}:{upload['sha256']}"
+        idempotency_key = f"console_job:{draft['id']}:{pipeline['graph_digest']}"
+        run, _, duplicate = orchestration.submit_pipeline_run(
+            conn,
+            owner=owner,
+            pipeline_id=pipeline["orchestration_pipeline_id"],
+            revision=int(pipeline["orchestration_revision"]),
+            input_ref=input_ref,
+            idempotency_key=idempotency_key,
+        )
+        execution = one(
+            conn,
+            "SELECT * FROM console_job_execution WHERE run_id=%s",
+            (run["run_id"],),
+        )
+        if duplicate and execution:
+            return {**draft, **execution, "pipeline_revision": execution["pipeline_revision"]}
+
+        execution_id = identifier("execution")
+        execution = one(
+            conn,
+            """
+            INSERT INTO console_job_execution(
+                execution_id,job_id,run_id,pipeline_id,pipeline_revision,graph_digest,
+                target_node_id,input_ref,state
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'running')
+            RETURNING *
+            """,
+            (
+                execution_id,
+                draft["id"],
+                run["run_id"],
+                pipeline["orchestration_pipeline_id"],
+                pipeline["orchestration_revision"],
+                pipeline["graph_digest"],
+                target_node_id,
+                input_ref,
+            ),
+        )
+        assignments = orchestration.schedule_ready_tasks(
+            conn,
+            candidate_node_id=target_node_id,
+            is_co_located=True,
+            max_tasks=16,
+        )
+        node_specs = {item["id"]: item for item in revision["definition_json"].get("nodes", [])}
+        for assignment in assignments:
+            if assignment["run_id"] != run["run_id"]:
+                continue
+            spec = node_specs[assignment["node_id"]]
+            conn.execute(
+                """
+                INSERT INTO console_deployment_intent(
+                    id,node_id,instance_id,action,artifact_digest,rollback_digest,config,
+                    state,created_by,job_id,deadline_unix_ms
+                ) VALUES (%s,%s,NULL,'task_process',%s,NULL,%s,'pending',%s,%s,%s)
+                """,
+                (
+                    identifier("task"),
+                    target_node_id,
+                    spec["artifact_digest"],
+                    Jsonb(
+                        {
+                            "execution_mode": "orchestrated_v2",
+                            "execution_id": execution_id,
+                            "run_id": run["run_id"],
+                            "task_id": assignment["task_id"],
+                            "assignment_id": assignment["assignment_id"],
+                            "attempt": assignment["attempt"],
+                            "asset_ref": f"console_upload:{upload['id']}",
+                            "content_hash": upload["sha256"],
+                            "pipeline_id": pipeline["orchestration_pipeline_id"],
+                            "pipeline_revision": pipeline["orchestration_revision"],
+                            "graph_digest": pipeline["graph_digest"],
+                        }
+                    ),
+                    owner,
+                    draft["id"],
+                    run["deadline_unix_ms"],
+                ),
+            )
+
+        updated = one(
+            conn,
+            """
+            UPDATE console_job_draft
+            SET state='processing',target_node_id=%s,error_code=NULL,error_detail=NULL,
+                dispatched_at=now(),completed_at=NULL
+            WHERE id=%s
+            RETURNING *
+            """,
+            (target_node_id, draft["id"]),
+        )
+        audit(conn, owner, "job.dispatch.orchestrated_v2", draft["id"])
+        return {
+            **updated,
+            "execution_id": execution_id,
+            "run_id": run["run_id"],
+            "execution_mode": "orchestrated_v2",
+            "pipeline_revision": pipeline["orchestration_revision"],
+            "graph_digest": pipeline["graph_digest"],
+            "modality_summary": execution["modality_summary"],
+        }
 
     def _dispatch_job_internal(conn, draft_id: str, owner: str, target_node_id: str | None = None):
         draft = one(
@@ -191,6 +352,23 @@ def register(app, pool, auth, settings):
 
         if not target_node["is_co_located"]:
             fail(422, "data_locality_violation")
+
+        pipeline = one(
+            conn,
+            "SELECT * FROM console_pipeline WHERE id=%s FOR SHARE",
+            (draft["pipeline_id"],),
+        )
+        if not pipeline:
+            fail(422, "pipeline_not_available")
+        if pipeline.get("execution_mode") == "orchestrated_v2":
+            return _dispatch_orchestrated_v2(
+                conn,
+                draft=draft,
+                upload=upload,
+                pipeline=pipeline,
+                owner=owner,
+                target_node_id=target_node_id,
+            )
 
         task_intent_id = identifier("task")
         task_config = {
@@ -283,8 +461,14 @@ def register(app, pool, auth, settings):
             items = rows(
                 conn,
                 (
-                    "SELECT * FROM console_job_draft WHERE owner=%s ORDER BY "
-                    "created_at DESC,id LIMIT %s OFFSET %s"
+                    "SELECT j.*, e.execution_id,e.run_id,e.pipeline_revision,e.graph_digest,"
+                    "e.state AS execution_state,e.modality_summary "
+                    "FROM console_job_draft j "
+                    "LEFT JOIN LATERAL ("
+                    "  SELECT * FROM console_job_execution e WHERE e.job_id=j.id "
+                    "  ORDER BY e.created_at DESC LIMIT 1"
+                    ") e ON true WHERE j.owner=%s "
+                    "ORDER BY j.created_at DESC,j.id LIMIT %s OFFSET %s"
                 ),
                 (p.name, limit, offset),
             )
@@ -292,10 +476,110 @@ def register(app, pool, auth, settings):
                 "SELECT count(*) FROM console_job_draft WHERE owner=%s", (p.name,)
             ).fetchone()[0]
         for item in items:
+            item["execution_mode"] = (
+                "orchestrated_v2" if item.get("execution_id") else "legacy_ocr_v1"
+            )
             item["reason"] = item.get("error_code") or (
                 "" if item.get("state") in {"processing", "completed"} else ""
             )
         return out({"items": items, "total": total}, pb.JobDraftList)
+
+    @app.get("/v1/jobs/{key}/execution")
+    def job_execution(
+        key: str,
+        execution_id: str = Query("", max_length=128),
+        p: Annotated[object, Depends(auth.require("jobs:read"))] = None,
+    ):
+        """读取任务绑定的 Revision、任务、回执与安全状态摘要，不返回媒体或模型输出正文。"""
+        with pool.connection() as conn:
+            where_execution = "AND e.execution_id=%s" if execution_id else ""
+            params = (key, p.name, execution_id) if execution_id else (key, p.name)
+            execution = one(
+                conn,
+                """
+                SELECT e.* FROM console_job_execution e
+                JOIN console_job_draft j ON j.id=e.job_id
+                WHERE e.job_id=%s AND j.owner=%s
+                """
+                + where_execution
+                + " ORDER BY e.created_at DESC LIMIT 1",
+                params,
+            )
+            if not execution:
+                fail(404, "job_execution_not_found")
+            tasks = rows(
+                conn,
+                """
+                SELECT task_id,node_id,attempt,max_attempts,required,state,assignment_id,
+                       reason_code,error_detail,output_ref,created_at,updated_at
+                FROM pipeline_task WHERE run_id=%s ORDER BY created_at,node_id
+                """,
+                (execution["run_id"],),
+            )
+            receipts = rows(
+                conn,
+                """
+                SELECT task_id,attempt,assignment_id,plugin_id,artifact_digest,config_hash,
+                       input_count,output_count,result_manifest_ref,reason_code,receipt_digest,
+                       started_at,completed_at
+                FROM task_execution_receipt WHERE run_id=%s
+                ORDER BY created_at,task_id
+                """,
+                (execution["run_id"],),
+            )
+        return {"execution": execution, "tasks": tasks, "receipts": receipts}
+
+    @app.get("/v1/executions/{execution_id}/timeline")
+    def execution_timeline(
+        execution_id: str,
+        p: Annotated[object, Depends(auth.require("materials:read"))] = None,
+    ):
+        """读取每秒覆盖事实的最新版本；没有素材的格子照样返回其可解释状态。"""
+        with pool.connection() as conn:
+            execution = one(
+                conn,
+                """
+                SELECT e.execution_id,e.run_id,e.pipeline_id,e.pipeline_revision,e.graph_digest,
+                       e.state,e.modality_summary
+                FROM console_job_execution e
+                JOIN console_job_draft j ON j.id=e.job_id
+                WHERE e.execution_id=%s AND j.owner=%s
+                """,
+                (execution_id, p.name),
+            )
+            if not execution:
+                fail(404, "execution_not_found")
+            windows = rows(
+                conn,
+                """
+                WITH current_windows AS (
+                    SELECT *, row_number() OVER (
+                        PARTITION BY execution_id,stream_id,start_ms,end_ms
+                        ORDER BY state_revision DESC
+                    ) AS ordinal
+                    FROM timeline_window_state WHERE execution_id=%s
+                )
+                SELECT execution_id,stream_id,start_ms,end_ms,state_revision,sampling_state,
+                       modality_states,reason_codes,observed_at
+                FROM current_windows WHERE ordinal=1
+                ORDER BY stream_id,start_ms,end_ms
+                """,
+                (execution_id,),
+            )
+            materials_for_execution = rows(
+                conn,
+                """
+                SELECT material_unit_id,material_revision
+                FROM material_execution WHERE execution_id=%s
+                ORDER BY material_unit_id,material_revision
+                """,
+                (execution_id,),
+            )
+        return {
+            "execution": execution,
+            "windows": windows,
+            "material_references": materials_for_execution,
+        }
 
     @app.post("/v1/job-drafts", status_code=201)
     def create_draft(

@@ -172,7 +172,7 @@ class AudioSegment(_message.Message):
     def __init__(self, segment_id: _Optional[str] = ..., time_range: _Optional[_Union[_common_pb2.TimeRange, _Mapping]] = ..., sample_rate: _Optional[int] = ..., channels: _Optional[int] = ..., bytes: _Optional[int] = ..., partial: bool = ..., sample_format: _Optional[str] = ...) -> None: ...
 
 class AudioSegmentReport(_message.Message):
-    __slots__ = ("segment_ms", "segments", "partial_segments", "bytes", "listed", "listed_limit", "dropped_samples", "discontinuities", "drop_reasons")
+    __slots__ = ("segment_ms", "segments", "partial_segments", "bytes", "listed", "listed_limit", "dropped_samples", "discontinuities", "drop_reasons", "overlap_ms")
     SEGMENT_MS_FIELD_NUMBER: _ClassVar[int]
     SEGMENTS_FIELD_NUMBER: _ClassVar[int]
     PARTIAL_SEGMENTS_FIELD_NUMBER: _ClassVar[int]
@@ -182,6 +182,7 @@ class AudioSegmentReport(_message.Message):
     DROPPED_SAMPLES_FIELD_NUMBER: _ClassVar[int]
     DISCONTINUITIES_FIELD_NUMBER: _ClassVar[int]
     DROP_REASONS_FIELD_NUMBER: _ClassVar[int]
+    OVERLAP_MS_FIELD_NUMBER: _ClassVar[int]
     segment_ms: int
     segments: int
     partial_segments: int
@@ -191,7 +192,8 @@ class AudioSegmentReport(_message.Message):
     dropped_samples: int
     discontinuities: int
     drop_reasons: _containers.RepeatedScalarFieldContainer[str]
-    def __init__(self, segment_ms: _Optional[int] = ..., segments: _Optional[int] = ..., partial_segments: _Optional[int] = ..., bytes: _Optional[int] = ..., listed: _Optional[_Iterable[_Union[AudioSegment, _Mapping]]] = ..., listed_limit: _Optional[int] = ..., dropped_samples: _Optional[int] = ..., discontinuities: _Optional[int] = ..., drop_reasons: _Optional[_Iterable[str]] = ...) -> None: ...
+    overlap_ms: int
+    def __init__(self, segment_ms: _Optional[int] = ..., segments: _Optional[int] = ..., partial_segments: _Optional[int] = ..., bytes: _Optional[int] = ..., listed: _Optional[_Iterable[_Union[AudioSegment, _Mapping]]] = ..., listed_limit: _Optional[int] = ..., dropped_samples: _Optional[int] = ..., discontinuities: _Optional[int] = ..., drop_reasons: _Optional[_Iterable[str]] = ..., overlap_ms: _Optional[int] = ...) -> None: ...
 
 class SamplingReport(_message.Message):
     __slots__ = ("track_kind", "min_interval_ms", "static_hold_ms", "change_threshold", "observed", "kept", "kept_first_frame", "kept_content_change", "kept_static_heartbeat", "skipped_rate_limited", "skipped_no_change", "skipped_non_monotonic", "skipped_missing_signature", "max_gap_ms", "max_keeps_bound", "max_frame_interval_ms", "skipped_backpressure_throttled")

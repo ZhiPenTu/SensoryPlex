@@ -23,7 +23,7 @@ from .settings import Settings
 # 多一条（镜像旧了）少一条（没跑迁移）都直接 503。因此每加一条迁移都必须同步这里——
 # 本切片新增 `0003_embedding_index` 时漏掉这一跳，就是被真实集成测试抓出来的。
 # `SCHEMA` 仍是最新版本，供 `schema_version` 字段上报。
-SCHEMA = "0010_plugin_hot_deploy"
+SCHEMA = "0012_timeline_coverage"
 SCHEMA_VERSIONS = {
     "0001_initial",
     "0002_console",
@@ -34,6 +34,8 @@ SCHEMA_VERSIONS = {
     "0007_pipeline_publish",
     "0008_orchestration_run_task",
     "0009_task_dispatch_failure_reconciliation",
+    "0010_plugin_hot_deploy",
+    "0011_multimodal_execution_bridge",
     SCHEMA,
 }
 # 语义检索不可用时的原因码：检索面未配置就是这个码，不是 501、也不是"没有命中"。
@@ -46,9 +48,9 @@ CAPABILITIES = [
     ("keyword_search", True, ""),
     ("file_storage", True, ""),
     ("media_admission", False, "media_admission_not_attached"),
-    # 控制面可下发任务不等于 Runtime 已接线。没有受控执行回执时必须如实报告不可用，
-    # 避免 Console 将刚被拒绝的任务持续展示为“处理中”。
-    ("task_execution", False, "runtime_task_service_not_attached"),
+    # v2 的 Node Agent 已接入受控 Runtime 执行器；每一条完成事实仍须由 assignment 回执
+    # 和（对 Timeline 而言）完整覆盖层共同证明，不能仅凭 intent success 伪造完成。
+    ("task_execution", True, ""),
     ("plugin_installation", False, "runtime_plugin_installer_not_attached"),
     ("pipeline_publish", True, ""),
     ("semantic_search", False, SEMANTIC_UNAVAILABLE_REASON),
@@ -130,16 +132,25 @@ def create_app(settings: Settings | None = None):
         set_trace_id(trace_id)
         start_time = time.perf_counter()
 
-        if request.method in {"POST", "PUT", "PATCH"} and not (
+        is_upload = (
             request.method == "PUT"
             and request.url.path.startswith("/v1/uploads/")
             and request.url.path.endswith("/content")
-        ):
+        )
+        if request.method in {"POST", "PUT", "PATCH"} and not is_upload:
+            max_bytes = (
+                4_194_304
+                if request.url.path.startswith("/v1/agent/tasks/")
+                and request.url.path.endswith(":timeline")
+                else 65536
+            )
             body = bytearray()
             async for chunk in request.stream():
                 body.extend(chunk)
-                if len(body) > 65536:
-                    LOGGER.warning("Request body too large", path=request.url.path, max_bytes=65536)
+                if len(body) > max_bytes:
+                    LOGGER.warning(
+                        "Request body too large", path=request.url.path, max_bytes=max_bytes
+                    )
                     return error(request, 413, "request_body_too_large")
             request._body = bytes(body)
 

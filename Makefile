@@ -68,6 +68,7 @@ TEST_NATS_URL ?= $(if $(filter container,$(EXEC_MODE)),nats://nats:4222,nats://1
 .PHONY: outbox-check outbox-run
 .PHONY: node-check golden-path-check task-worker task-worker-daemon task-worker-stop task-worker-status
 .PHONY: plugin-release plugin-release-verify plugin-deploy-check plugin-deploy-check-api plugin-deploy-check-native
+.PHONY: multimodal-pipeline-check multimodal-execution-check
 .PHONY: consume-check
 .PHONY: event-pipeline-check events-up events-down events-logs
 .PHONY: media-test resident-probe resident-install resident-uninstall resident-status
@@ -259,12 +260,16 @@ timeline-resident-check:
 
 # plugin-artifact 对 sdk 部分可在容器内执行；macOS-only plugin 包保留主机路径。
 plugin-artifact:
+	$(EXEC_API) $(PY_API) tools/plugin_artifact.py plugins/python/processors/asr-whisper-mlx
 	$(EXEC_API) $(PY_API) tools/plugin_artifact.py --sbom plugins/python/processors/asr-whisper-mlx
 	$(EXEC_API) $(PY_API) tools/validate_plugin.py plugins/python/processors/asr-whisper-mlx/plugin.yaml
+	$(EXEC_API) $(PY_API) tools/plugin_artifact.py plugins/python/processors/vlm-moondream
 	$(EXEC_API) $(PY_API) tools/plugin_artifact.py --sbom plugins/python/processors/vlm-moondream
 	$(EXEC_API) $(PY_API) tools/validate_plugin.py plugins/python/processors/vlm-moondream/plugin.yaml
+	$(EXEC_API) $(PY_API) tools/plugin_artifact.py plugins/python/processors/ocr-rapidocr
 	$(EXEC_API) $(PY_API) tools/plugin_artifact.py --sbom plugins/python/processors/ocr-rapidocr
 	$(EXEC_API) $(PY_API) tools/validate_plugin.py plugins/python/processors/ocr-rapidocr/plugin.yaml
+	$(EXEC_API) $(PY_API) tools/plugin_artifact.py plugins/python/processors/embed-bge-onnx
 	$(EXEC_API) $(PY_API) tools/plugin_artifact.py --sbom plugins/python/processors/embed-bge-onnx
 	$(EXEC_API) $(PY_API) tools/validate_plugin.py plugins/python/processors/embed-bge-onnx/plugin.yaml
 
@@ -301,6 +306,16 @@ plugin-deploy-check-api:
 # 槽位已有 active 时自动改走蓝绿 upgrade 并在报告里注明（控制面的 provision 是引导动作）。
 plugin-deploy-check-native:
 	$(PY_HOST) tools/verify_plugin_hot_deploy.py --scope native
+
+# 多模态文件方案（v2）控制面契约与 DAG 发布拒绝验收（ADR-028/029/030）
+multimodal-pipeline-check:
+	$(EXEC_API) $(PY_API) tools/verify_multimodal_pipeline.py
+
+# 多模态文件任务执行闭环验收：调度真实本机三模态插件并输出完整回执与覆盖层报告
+multimodal-execution-check:
+	@test -n "$(MEDIA)" || { echo "usage: make multimodal-execution-check MEDIA=/absolute/path/to/authorized-sample.mp4"; exit 1; }
+	$(CARGO_HOST) build --locked --release -p sensoryplex-runtime --features "$(MEDIA_FEATURES)"
+	$(PY_HOST) tools/verify_multimodal_execution.py --media "$(MEDIA)"
 
 # 模型插件链路验收（M8）：需要本机 VLM 服务（默认 http://127.0.0.1:11434）；
 # cargo build 走主机，verify_model 在容器内执行，MEDIA 通过 bind 进入容器。

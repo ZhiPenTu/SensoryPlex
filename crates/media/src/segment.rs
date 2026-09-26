@@ -36,6 +36,7 @@ pub struct PendingSegment {
 #[derive(Debug, Default)]
 pub struct AudioSegmenter {
     segment_ms: u32,
+    overlap_ms: u32,
     sample_rate: u32,
     channels: u32,
     start_ms: Option<i64>,
@@ -43,6 +44,8 @@ pub struct AudioSegmenter {
     /// 预期的下一个连续点。只有与该点对齐才能让 segment 保持开启。
     cursor_ms: Option<i64>,
     pending: Vec<u8>,
+    /// 最近一次切段后留下的 overlap 不算新音频；流恰好在切段处结束时不能把它再发一次。
+    pending_has_new_audio: bool,
     dropped_samples: u64,
     discontinuities: u64,
     drop_reasons: BTreeSet<&'static str>,
@@ -50,19 +53,35 @@ pub struct AudioSegmenter {
 
 impl AudioSegmenter {
     pub fn new(segment_ms: u32) -> Result<Self, MediaError> {
+        Self::with_overlap(segment_ms, 0)
+    }
+
+    /// `overlap_ms` 是相邻 segment 的真实共享音频，而不是只改时间戳的展示参数。
+    /// 它必须小于一段长度，否则 hop 为零会让同一批字节无限重复。
+    pub fn with_overlap(segment_ms: u32, overlap_ms: u32) -> Result<Self, MediaError> {
         if !(MIN_AUDIO_SEGMENT_MS..=MAX_AUDIO_SEGMENT_MS).contains(&segment_ms) {
             return Err(MediaError::UnsupportedSource(
                 "audio_segment_ms_out_of_range".into(),
             ));
         }
+        if overlap_ms >= segment_ms {
+            return Err(MediaError::UnsupportedSource(
+                "audio_segment_overlap_out_of_range".into(),
+            ));
+        }
         Ok(Self {
             segment_ms,
+            overlap_ms,
             ..Default::default()
         })
     }
 
     pub fn segment_ms(&self) -> u32 {
         self.segment_ms
+    }
+
+    pub fn overlap_ms(&self) -> u32 {
+        self.overlap_ms
     }
 
     pub fn sample_rate(&self) -> u32 {
@@ -143,7 +162,8 @@ impl AudioSegmenter {
             self.discontinuities += 1;
             self.drop_reasons.insert("audio_timeline_discontinuity");
             if let Some(start) = self.start_ms {
-                flushed = self.take(start);
+                // 时间轴断裂不能把上一段的尾部 overlap 带进下一段。
+                flushed = self.take(start, false);
             }
         }
         if self.start_ms.is_none() {
@@ -151,6 +171,7 @@ impl AudioSegmenter {
         }
 
         self.pending.extend_from_slice(bytes);
+        self.pending_has_new_audio = true;
         self.end_ms = pts_ms + duration_ms;
         self.cursor_ms = Some(self.end_ms);
 
@@ -170,7 +191,7 @@ impl AudioSegmenter {
 
         let start = self.start_ms.unwrap_or(pts_ms);
         if self.end_ms - start >= i64::from(self.segment_ms) {
-            let closed = self.take(start);
+            let closed = self.take(start, true);
             return Ok(flushed.or(closed));
         }
         Ok(flushed)
@@ -179,21 +200,39 @@ impl AudioSegmenter {
     /// flush 末尾可能存在的短段。
     pub fn finish(&mut self) -> Option<PendingSegment> {
         let start = self.start_ms?;
-        self.take(start)
+        self.take(start, false)
     }
 
-    fn take(&mut self, start_ms: i64) -> Option<PendingSegment> {
+    fn take(&mut self, start_ms: i64, retain_overlap: bool) -> Option<PendingSegment> {
         let bytes = std::mem::take(&mut self.pending);
+        let has_new_audio = self.pending_has_new_audio;
+        self.pending_has_new_audio = false;
         self.start_ms = None;
-        if bytes.is_empty() {
+        if bytes.is_empty() || !has_new_audio {
             return None;
         }
-        Some(PendingSegment {
+        let segment = PendingSegment {
             start_ms,
             end_ms: self.end_ms,
             partial: self.end_ms - start_ms < i64::from(self.segment_ms),
             bytes,
-        })
+        };
+        if retain_overlap && self.overlap_ms > 0 && self.frame_bytes() > 0 {
+            // 采样率与 frame bytes 是已经核验过的事实。保留完整帧，避免让下游把半个
+            // F32LE sample 当作下一段起点；时间范围也随实际保留的帧数推进。
+            let available_frames = segment.bytes.len() / self.frame_bytes();
+            let requested_frames = (usize::try_from(self.overlap_ms).ok()?
+                * usize::try_from(self.sample_rate).ok()?)
+            .div_ceil(1_000);
+            let retained_frames = available_frames.min(requested_frames);
+            if retained_frames > 0 {
+                let retained_bytes = retained_frames * self.frame_bytes();
+                let retained_ms = (retained_frames * 1_000).div_ceil(self.sample_rate as usize);
+                self.pending = segment.bytes[segment.bytes.len() - retained_bytes..].to_vec();
+                self.start_ms = Some(self.end_ms - retained_ms as i64);
+            }
+        }
+        Some(segment)
     }
 }
 
@@ -231,6 +270,25 @@ mod tests {
             "the tail is shorter than the configured length"
         );
         assert_eq!(segments[1].bytes.len(), 5 * MONO_10MS);
+    }
+
+    #[test]
+    fn overlap_is_real_audio_and_the_final_overlap_is_not_emitted_twice() {
+        let mut segmenter = AudioSegmenter::with_overlap(200, 50).unwrap();
+        let mut segments = Vec::new();
+        for index in 0..40 {
+            if let Some(segment) = push(&mut segmenter, index * 10) {
+                segments.push(segment);
+            }
+        }
+        segments.extend(segmenter.finish());
+        assert_eq!(segments.len(), 3);
+        assert_eq!((segments[0].start_ms, segments[0].end_ms), (0, 200));
+        assert_eq!((segments[1].start_ms, segments[1].end_ms), (150, 350));
+        assert_eq!((segments[2].start_ms, segments[2].end_ms), (300, 400));
+        assert_eq!(segments[1].bytes.len(), 20 * MONO_10MS);
+        assert_eq!(segments[2].bytes.len(), 10 * MONO_10MS);
+        assert_eq!(segmenter.overlap_ms(), 50);
     }
 
     #[test]
@@ -285,6 +343,7 @@ mod tests {
         assert!(AudioSegmenter::new(0).is_err());
         assert!(AudioSegmenter::new(MIN_AUDIO_SEGMENT_MS - 1).is_err());
         assert!(AudioSegmenter::new(MAX_AUDIO_SEGMENT_MS + 1).is_err());
+        assert!(AudioSegmenter::with_overlap(200, 200).is_err());
         let mut segmenter = AudioSegmenter::new(200).unwrap();
         assert!(segmenter
             .push(0, 0, AUDIO_SAMPLE_FORMAT, 0, 10, &[0u8; 4])

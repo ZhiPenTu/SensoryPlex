@@ -228,6 +228,9 @@ message DeploymentIntent {
   // 排空旧实例的受限 grace period（毫秒）；endpoint 文件路径由 Agent 从自己的
   // 版本化实例目录推导，**意图内不携带任何宿主路径**。
   int64 grace_period_ms = 17;
+  // 配置身份由控制面基于原始 JSON 锁定。google.protobuf.Struct 在 JSON 往返时会
+  // 规范化数字或省略 null，Agent 不得从 config 字段重新计算它。
+  string config_hash = 18;
 }
 
 message ReportDeploymentRequest {

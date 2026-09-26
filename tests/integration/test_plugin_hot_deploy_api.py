@@ -52,6 +52,7 @@ INTENT_FIELDS = {
     "bundle_digest",
     "runtime_instance_id",
     "grace_period_ms",
+    "config_hash",
 }
 
 
@@ -422,6 +423,7 @@ def test_intent_carries_hot_deploy_identity_without_urls_or_paths(client, releas
     assert int(intent["generation"]) == 1
     assert intent["release_id"] == releases["0.1.0"]["release_id"]
     assert intent["bundle_digest"] == releases["0.1.0"]["bundle_digest"]
+    assert intent["config_hash"] == "sha256:" + hashlib.sha256(b"{}").hexdigest()
     # grace period 取插件声明的最大请求 deadline（夹在兜底值与上限之间）。
     assert int(intent["grace_period_ms"]) == 5000
     assert int(intent["deadline_unix_ms"]) > 0

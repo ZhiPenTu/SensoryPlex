@@ -336,3 +336,23 @@ GLMemory 协商导致多视频轨竞态、容器内 PCM 的源编码采集不到
 详见 `docs/verification.md` 的"M7 补记二"。同一批提交在远端也跑了两轮 `engineering-checks`、
 三个 job 全绿（run 35896034916 分支 / 35896037193 `master`）；`master` 那次是**外部**快进、
 没有经过 PR，需要维护者确认来源（见 `docs/verification.md` 的"M8 BGE"一节末）。
+
+
+## 多模态文件方案执行闭环（ADR-028 / ADR-029 / ADR-030 桥接）已落地并验收
+
+依据 [多模态文件任务执行闭环方案](design/multimodal-pipeline-execution-plan.md)，已完成同机 `local_native` 完整多模态执行闭环：
+
+1. **执行模式升级为不可变 Revision**：
+   - Console 方案发布不再仅写入逻辑配置，而是编译为不可变 `PipelineRevision`（DAG 依赖、placement、modality、deadline 与采样策略）。
+   - 数据库迁移 `0011_multimodal_execution_bridge.sql` 建立不可变外键，新任务强制绑定 `orchestrated_v2`，任务分发时在同一事务中登记不可变快照 `console_job_execution`。
+2. **受控执行器与回执审计**：
+   - 宿主原生 `tools/task_executor.py` 由 Node Agent（`tools/node_agent.py`）按分配认领任务，从 ADR-030 本机活跃插件获取 loopback 端点，通过同机共享内存与 GStreamer 解码完成分段分帧；
+   - 真实调度 PP-OCRv6、Whisper MLX 与 Moondream VLM，每项任务必须提交带制品与配置摘要的不可变 `TaskExecutionReceipt` 才能终态；
+   - 遗留工作器 `tools/task_worker.py` 与 `task_runner.py` 隔离为仅处理历史兼容任务，无法越权领取 v2 任务。
+3. **1 秒网格覆盖层与素材隔离**：
+   - 迁移 `0012_timeline_coverage.sql` 引入不可变追加式 `timeline_window_state`，按 1 秒网格记录每一秒在各模态下的真实状态（`observed`、`not_sampled_by_policy`、`not_applicable`、`failed`），空秒绝不捏造假素材；
+   - 素材落库关联 `material_execution`，素材列表与详情查询默认按 `execution_id` 过滤隔离。
+4. **自动化验收覆盖**：
+   - `make multimodal-pipeline-check`：20 项通过（验证方案校验拒绝、不可变 Revision 发布、节点实例预检与快照生成）；
+   - `make multimodal-execution-check MEDIA=...`：实测通过，有声真实样本 103.352s 真实产生 11 个素材单元、104 个覆盖窗口，三模型与 Timeline 融合全部真实执行并通过回执验收。
+   - 边界：`golden_path_verified=false` 保持不变；MLX ASR 仅限 macOS；Linux 未伪装可用。

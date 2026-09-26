@@ -135,14 +135,16 @@ class BufferDescriptor(_message.Message):
     def __init__(self, buffer_id: _Optional[str] = ..., kind: _Optional[str] = ..., memory_kind: _Optional[str] = ..., locator: _Optional[_Union[BufferLocator, _Mapping]] = ..., format: _Optional[_Union[BufferFormat, _Mapping]] = ..., stream_id: _Optional[str] = ..., time_range: _Optional[_Union[TimeRange, _Mapping]] = ..., lease: _Optional[_Union[BufferLease, _Mapping]] = ..., content_hash: _Optional[str] = ...) -> None: ...
 
 class BufferLocator(_message.Message):
-    __slots__ = ("handle", "offset", "length")
+    __slots__ = ("handle", "offset", "length", "handoff_endpoint")
     HANDLE_FIELD_NUMBER: _ClassVar[int]
     OFFSET_FIELD_NUMBER: _ClassVar[int]
     LENGTH_FIELD_NUMBER: _ClassVar[int]
+    HANDOFF_ENDPOINT_FIELD_NUMBER: _ClassVar[int]
     handle: str
     offset: int
     length: int
-    def __init__(self, handle: _Optional[str] = ..., offset: _Optional[int] = ..., length: _Optional[int] = ...) -> None: ...
+    handoff_endpoint: str
+    def __init__(self, handle: _Optional[str] = ..., offset: _Optional[int] = ..., length: _Optional[int] = ..., handoff_endpoint: _Optional[str] = ...) -> None: ...
 
 class BufferFormat(_message.Message):
     __slots__ = ("pixel_format", "width", "height", "strides", "sample_rate", "channels", "display_rotation_deg", "pixel_aspect_ratio_num", "pixel_aspect_ratio_den", "source_bit_depth", "color_primaries", "transfer_characteristics", "matrix_coefficients", "sample_format")

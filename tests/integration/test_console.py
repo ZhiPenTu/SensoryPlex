@@ -1,14 +1,19 @@
 """真实 PostgreSQL 验证控制台准备流程；媒体字节仅用于传输测试，不是 AI E2E。"""
 
+import base64
 import hashlib
+import json
 import os
 import uuid
+from datetime import UTC, datetime
 
 import psycopg
 import pytest
+from edge_material_sdk.generated.media.v1 import media_pb2
 from fastapi.testclient import TestClient
 from psycopg import sql
 from psycopg.conninfo import make_conninfo
+from psycopg.types.json import Jsonb
 from sensoryplex_api.app import create_app
 from sensoryplex_api.auth import password_hash
 from sensoryplex_api.settings import Settings
@@ -119,6 +124,220 @@ def upload(client):
     return key, data
 
 
+def multimodal_pipeline(client):
+    """创建并发布供 Agent v2 接口验证的不可变多模态 Revision。"""
+    config_ids = {}
+    for key, plugin_id in (
+        ("ocr_fast", "org.sensoryplex.ocr-rapidocr"),
+        ("asr_fast", "org.sensoryplex.asr-whisper-mlx"),
+        ("vlm_enrich", "org.sensoryplex.vlm-moondream"),
+    ):
+        response = client.post(
+            "/admin/v1/plugin-configurations",
+            json={"plugin_id": plugin_id, "name": f"agent-{key}", "config": {}},
+        )
+        assert response.status_code == 201, response.text
+        config_ids[key] = response.json()["id"]
+    response = client.post(
+        "/admin/v1/multimodal-pipelines",
+        json={
+            "name": "agent-v2",
+            "description": "agent task contract",
+            "components": [
+                {"node_id": key, "config_id": value} for key, value in config_ids.items()
+            ],
+            "policy": {
+                "window_ms": 1000,
+                "sample_interval_ms": 1000,
+                "audio_segment_ms": 6000,
+                "audio_overlap_ms": 500,
+                "vlm_sample_interval_ms": 5000,
+            },
+        },
+    )
+    assert response.status_code == 201, response.text
+    plan = response.json()
+    published = client.post(f"/admin/v1/pipelines/{plan['id']}:publish")
+    assert published.status_code == 200, published.text
+    return plan
+
+
+def enroll_v2_agent(client, *, node_id="v2-agent"):
+    token = client.post(
+        "/admin/v1/nodes/enrollment-tokens",
+        json={"node_id": node_id, "expires_in_minutes": 30},
+    ).json()["token"]
+    enrolled = client.post(
+        "/v1/agent/enroll",
+        json={
+            "enrollment_token": token,
+            "node_id": node_id,
+            "display_name": node_id,
+            "is_co_located": True,
+            "capabilities": {
+                "platform": "macos",
+                "arch": "aarch64",
+                "cpu_cores": 8,
+                "memory_bytes": "17179869184",
+                "supported_artifacts": ["local_native"],
+            },
+        },
+    )
+    assert enrolled.status_code == 200, enrolled.text
+    return enrolled.json()["session_token"]
+
+
+def activate_v2_plugins(console_database, *, pipeline_id, node_id):
+    """仅构造热部署台账事实，供 API 契约测试通过调度前置核验。
+
+    这里不模拟模型调用；真正的 Runtime/插件调用由宿主机 `TaskExecutor` 与媒体验收覆盖。
+    """
+    with psycopg.connect(console_database) as conn:
+        definition = conn.execute(
+            """
+            SELECT revision.definition_json
+            FROM console_pipeline pipeline
+            JOIN pipeline_revision revision
+              ON revision.pipeline_id=pipeline.orchestration_pipeline_id
+             AND revision.revision=pipeline.orchestration_revision
+            WHERE pipeline.id=%s
+            """,
+            (pipeline_id,),
+        ).fetchone()[0]
+        for node in definition["nodes"]:
+            if node["id"] == "timeline_fusion":
+                continue
+            suffix = uuid.uuid4().hex
+            slot_id = f"slot-{suffix}"
+            release_id = f"release-{suffix}"
+            runtime_id = f"runtime-{suffix}"
+            bundle_digest = (
+                "sha256:" + hashlib.sha256(f"bundle:{node['plugin_id']}".encode()).hexdigest()
+            )
+            auxiliary_digest = (
+                "sha256:" + hashlib.sha256(f"release:{node['plugin_id']}".encode()).hexdigest()
+            )
+            conn.execute(
+                """
+                INSERT INTO plugin_release(
+                    release_id,plugin_id,plugin_version,platform,arch,form,artifact_digest,
+                    bundle_digest,manifest_digest,config_schema_digest,sbom_digest,bundle_bytes,
+                    entrypoint,runtime_requirements,trust,authenticated,authentication_method,
+                    signature_status,bundle_path,created_by
+                ) VALUES (%s,%s,%s,'macos','aarch64','local_native',%s,%s,%s,%s,%s,1,
+                          %s,%s,'first_party',true,'test','valid','test.bundle','admin')
+                """,
+                (
+                    release_id,
+                    node["plugin_id"],
+                    node["plugin_version"],
+                    node["artifact_digest"],
+                    bundle_digest,
+                    auxiliary_digest,
+                    auxiliary_digest,
+                    auxiliary_digest,
+                    Jsonb({}),
+                    Jsonb({}),
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO console_plugin_instance(
+                    instance_id,node_id,plugin_id,plugin_version,artifact_digest,desired_state,
+                    actual_state,config_hash,created_by
+                ) VALUES (%s,%s,%s,%s,%s,'ready','ready',%s,'admin')
+                """,
+                (
+                    slot_id,
+                    node_id,
+                    node["plugin_id"],
+                    node["plugin_version"],
+                    node["artifact_digest"],
+                    node["config_hash"],
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO plugin_runtime_instance(
+                    runtime_instance_id,instance_id,node_id,plugin_id,release_id,artifact_digest,
+                    bundle_digest,generation,role,state,endpoint
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,1,'active','active','127.0.0.1:1')
+                """,
+                (
+                    runtime_id,
+                    slot_id,
+                    node_id,
+                    node["plugin_id"],
+                    release_id,
+                    node["artifact_digest"],
+                    bundle_digest,
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE console_plugin_instance
+                SET active_runtime_instance_id=%s,active_release_id=%s,generation=1,
+                    endpoint='127.0.0.1:1'
+                WHERE instance_id=%s
+                """,
+                (runtime_id, release_id, slot_id),
+            )
+
+
+def task_receipt(manifest, *, reason=""):
+    """按 API 的 canonical digest 生成测试回执，不用客户端响应伪造身份。"""
+    started_ms, completed_ms = 1_770_000_000_000, 1_770_000_000_001
+    task = manifest["task"]
+    plugin = manifest["plugin"]
+    started_at = datetime.fromtimestamp(started_ms / 1000, tz=UTC).isoformat()
+    completed_at = datetime.fromtimestamp(completed_ms / 1000, tz=UTC).isoformat()
+    fields = {
+        "run_id": manifest["run"]["run_id"],
+        "task_id": task["task_id"],
+        "attempt": task["attempt"],
+        "assignment_id": task["assignment_id"],
+        "plugin_id": plugin["plugin_id"],
+        "artifact_digest": plugin["artifact_digest"],
+        "config_hash": plugin["config_hash"],
+        "input_count": 0,
+        "output_count": 0,
+        "result_manifest_ref": "agent-result:test",
+        "reason_code": reason,
+        "started_at": started_at,
+        "completed_at": completed_at,
+    }
+    digest = (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(fields, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    )
+    return {
+        **{
+            key: value for key, value in fields.items() if key not in {"started_at", "completed_at"}
+        },
+        "receipt_digest": digest,
+        "started_at_unix_ms": started_ms,
+        "completed_at_unix_ms": completed_ms,
+    }
+
+
+def agent_result_payload(manifest, *, success=True, reason=""):
+    task = manifest["task"]
+    return {
+        "intent_id": manifest["intent_id"],
+        "run_id": manifest["run"]["run_id"],
+        "attempt": task["attempt"],
+        "assignment_id": task["assignment_id"],
+        "success": success,
+        "output_ref": "agent-result:test",
+        "retryable": False,
+        "reason_code": reason,
+        "error_detail": "",
+        "receipt": task_receipt(manifest, reason=reason),
+    }
+
+
 def test_auth_csrf_roles_and_origin(console_app):
     with TestClient(console_app) as client:
         assert client.get("/v1/assets").status_code == 401
@@ -223,6 +442,373 @@ def test_config_versions_pipeline_references_and_drafts(console_app, console_dat
         assert conn.execute("SELECT count(*) FROM processing_job").fetchone()[0] == 0
 
 
+def test_multimodal_pipeline_revision_is_bound_and_requires_active_instances(console_app):
+    """v2 方案锁定三类模型身份；没有匹配 active 实例时不得退回旧 OCR 旁路。"""
+    with TestClient(console_app) as client:
+        login(client)
+
+        config_ids = {}
+        for key, plugin_id in (
+            ("ocr_fast", "org.sensoryplex.ocr-rapidocr"),
+            ("asr_fast", "org.sensoryplex.asr-whisper-mlx"),
+            ("vlm_enrich", "org.sensoryplex.vlm-moondream"),
+        ):
+            response = client.post(
+                "/admin/v1/plugin-configurations",
+                json={"plugin_id": plugin_id, "name": f"v2-{key}", "config": {}},
+            )
+            assert response.status_code == 201, response.text
+            config_ids[key] = response.json()["id"]
+
+        body = {
+            "name": "multimodal-file",
+            "description": "1-second execution contract",
+            "components": [
+                {"node_id": key, "config_id": value} for key, value in config_ids.items()
+            ],
+            "policy": {
+                "window_ms": 1000,
+                "sample_interval_ms": 1000,
+                "audio_segment_ms": 6000,
+                "audio_overlap_ms": 500,
+                "vlm_sample_interval_ms": 5000,
+            },
+        }
+        validated = client.post("/admin/v1/multimodal-pipelines:validate", json=body)
+        assert validated.status_code == 200, validated.text
+        assert validated.json()["valid"] is True
+        unsupported_overlap = client.post(
+            "/admin/v1/multimodal-pipelines:validate",
+            json={**body, "policy": {**body["policy"], "audio_overlap_ms": 6000}},
+        )
+        assert unsupported_overlap.status_code == 422
+        assert unsupported_overlap.json()["reason_code"] == "invalid_multimodal_audio_overlap"
+        graph_digest = validated.json()["graph_digest"]
+        assert {item["id"] for item in validated.json()["nodes"]} == {
+            "ocr_fast",
+            "asr_fast",
+            "vlm_enrich",
+            "timeline_fusion",
+        }
+
+        plan = client.post("/admin/v1/multimodal-pipelines", json=body)
+        assert plan.status_code == 201, plan.text
+        assert plan.json()["execution_mode"] == "orchestrated_v2"
+        assert plan.json()["graph_digest"] == graph_digest
+        assert client.post(f"/admin/v1/pipelines/{plan.json()['id']}:publish").status_code == 200
+
+        asset_id, _ = upload(client)
+        draft = client.post(
+            "/v1/job-drafts",
+            json={
+                "name": "v2 should preflight",
+                "asset_id": asset_id,
+                "pipeline_id": plan.json()["id"],
+            },
+        ).json()
+        token = client.post(
+            "/admin/v1/nodes/enrollment-tokens",
+            json={"node_id": "v2-worker", "expires_in_minutes": 30},
+        ).json()["token"]
+        enrolled = client.post(
+            "/v1/agent/enroll",
+            json={
+                "enrollment_token": token,
+                "node_id": "v2-worker",
+                "display_name": "v2 worker",
+                "is_co_located": True,
+                "capabilities": {
+                    "platform": "macos",
+                    "arch": "aarch64",
+                    "cpu_cores": 8,
+                    "memory_bytes": "17179869184",
+                    "supported_artifacts": ["local_native"],
+                },
+            },
+        )
+        assert enrolled.status_code == 200, enrolled.text
+        blocked = client.post(
+            f"/v1/job-drafts/{draft['id']}:dispatch", json={"node_id": "v2-worker"}
+        )
+        assert blocked.status_code == 409
+        assert blocked.json()["reason_code"] == "plugin_instance_unavailable"
+
+
+def test_v2_agent_manifest_receipt_and_delivery(console_app, console_database):
+    """v2 Agent 只能以受绑定 manifest 和合法 receipt 完成 delivery intent。"""
+    with TestClient(console_app) as client:
+        login(client)
+        plan = multimodal_pipeline(client)
+        session_token = enroll_v2_agent(client)
+        activate_v2_plugins(console_database, pipeline_id=plan["id"], node_id="v2-agent")
+        asset_id, media = upload(client)
+        drafted = client.post(
+            "/v1/job-drafts",
+            json={"name": "agent manifest", "asset_id": asset_id, "pipeline_id": plan["id"]},
+        )
+        assert drafted.status_code == 201, drafted.text
+        dispatched = client.post(f"/v1/job-drafts/{drafted.json()['id']}:dispatch")
+        assert dispatched.status_code == 200, dispatched.text
+
+        agent_headers = {"Authorization": f"Bearer {session_token}"}
+        heartbeat = client.post(
+            "/v1/agent/heartbeat",
+            json={"node_id": "v2-agent", "session_token": session_token},
+        )
+        assert heartbeat.status_code == 200, heartbeat.text
+        assert len(heartbeat.json()["pending_intents"]) == 3
+        with psycopg.connect(console_database) as conn:
+            ocr_intent = conn.execute(
+                """
+                SELECT intent.id
+                FROM console_deployment_intent intent
+                JOIN pipeline_task task ON task.task_id=intent.config->>'task_id'
+                WHERE intent.job_id=%s AND task.node_id='ocr_fast'
+                """,
+                (drafted.json()["id"],),
+            ).fetchone()[0]
+        manifest = client.get(
+            f"/v1/agent/task-intents/{ocr_intent}/manifest", headers=agent_headers
+        )
+        assert manifest.status_code == 200, manifest.text
+        manifest = manifest.json()
+        assert manifest["plugin"]["runtime_instance_id"]
+        assert "endpoint" not in manifest["plugin"]
+        assert (
+            client.get(f"/v1/agent/task-intents/{ocr_intent}/asset", headers=agent_headers).content
+            == media
+        )
+
+        missing_receipt = client.post(
+            f"/v1/agent/tasks/{manifest['task']['task_id']}:result",
+            headers=agent_headers,
+            json={"intent_id": ocr_intent},
+        )
+        assert missing_receipt.status_code == 422
+        bad = agent_result_payload(manifest)
+        bad["receipt"]["receipt_digest"] = "sha256:" + "0" * 64
+        assert (
+            client.post(
+                f"/v1/agent/tasks/{manifest['task']['task_id']}:result",
+                headers=agent_headers,
+                json=bad,
+            ).status_code
+            == 422
+        )
+        accepted = client.post(
+            f"/v1/agent/tasks/{manifest['task']['task_id']}:result",
+            headers=agent_headers,
+            json=agent_result_payload(manifest),
+        )
+        assert accepted.status_code == 200, accepted.text
+        delivered = client.post(
+            "/v1/agent/report",
+            headers=agent_headers,
+            json={
+                "intent_id": ocr_intent,
+                "instance_id": "",
+                "node_id": "v2-agent",
+                "action": "DEPLOYMENT_ACTION_TASK_PROCESS",
+                "success": True,
+                "actual_state": "PLUGIN_INSTANCE_STATE_READY",
+            },
+        )
+        assert delivered.status_code == 200, delivered.text
+        capabilities = {
+            item["name"]: item for item in client.get("/v1/capabilities").json()["capabilities"]
+        }
+        assert capabilities["task_execution"] == {
+            "name": "task_execution",
+            "available": True,
+            "reason": "",
+        }
+
+    with psycopg.connect(console_database) as conn:
+        assert (
+            conn.execute(
+                "SELECT state FROM console_deployment_intent WHERE id=%s", (ocr_intent,)
+            ).fetchone()[0]
+            == "completed"
+        )
+        assert (
+            conn.execute(
+                "SELECT count(*) FROM task_execution_receipt WHERE task_id=%s",
+                (manifest["task"]["task_id"],),
+            ).fetchone()[0]
+            == 1
+        )
+
+
+def test_v2_timeline_allows_empty_materials_but_requires_coverage(console_app, console_database):
+    """没有 Observation 的片段不造假素材，却必须有完整的 1 秒覆盖事实。"""
+    with TestClient(console_app) as client:
+        login(client)
+        plan = multimodal_pipeline(client)
+        session_token = enroll_v2_agent(client, node_id="coverage-agent")
+        activate_v2_plugins(console_database, pipeline_id=plan["id"], node_id="coverage-agent")
+        asset_id, media = upload(client)
+        drafted = client.post(
+            "/v1/job-drafts",
+            json={"name": "coverage only", "asset_id": asset_id, "pipeline_id": plan["id"]},
+        )
+        assert drafted.status_code == 201, drafted.text
+        assert client.post(f"/v1/job-drafts/{drafted.json()['id']}:dispatch").status_code == 200
+        agent_headers = {"Authorization": f"Bearer {session_token}"}
+        initial = client.post(
+            "/v1/agent/heartbeat",
+            json={"node_id": "coverage-agent", "session_token": session_token},
+        )
+        assert initial.status_code == 200, initial.text
+
+        with psycopg.connect(console_database) as conn:
+            task_intents = dict(
+                conn.execute(
+                    """
+                    SELECT task.node_id,intent.id
+                    FROM console_deployment_intent intent
+                    JOIN pipeline_task task ON task.task_id=intent.config->>'task_id'
+                    WHERE intent.job_id=%s
+                    """,
+                    (drafted.json()["id"],),
+                ).fetchall()
+            )
+        for node_id in ("ocr_fast", "asr_fast"):
+            intent_id = task_intents[node_id]
+            manifest_response = client.get(
+                f"/v1/agent/task-intents/{intent_id}/manifest", headers=agent_headers
+            )
+            assert manifest_response.status_code == 200, manifest_response.text
+            manifest = manifest_response.json()
+            assert (
+                client.post(
+                    f"/v1/agent/tasks/{manifest['task']['task_id']}:result",
+                    headers=agent_headers,
+                    json=agent_result_payload(manifest),
+                ).status_code
+                == 200
+            )
+            assert (
+                client.post(
+                    "/v1/agent/report",
+                    headers=agent_headers,
+                    json={
+                        "intent_id": intent_id,
+                        "instance_id": "",
+                        "node_id": "coverage-agent",
+                        "action": "DEPLOYMENT_ACTION_TASK_PROCESS",
+                        "success": True,
+                        "actual_state": "PLUGIN_INSTANCE_STATE_READY",
+                    },
+                ).status_code
+                == 200
+            )
+
+        scheduled = client.post(
+            "/v1/agent/heartbeat",
+            json={"node_id": "coverage-agent", "session_token": session_token},
+        )
+        assert scheduled.status_code == 200, scheduled.text
+        with psycopg.connect(console_database) as conn:
+            timeline_intent = conn.execute(
+                """
+                SELECT intent.id
+                FROM console_deployment_intent intent
+                JOIN pipeline_task task ON task.task_id=intent.config->>'task_id'
+                WHERE intent.job_id=%s AND task.node_id='timeline_fusion'
+                """,
+                (drafted.json()["id"],),
+            ).fetchone()[0]
+        timeline_response = client.get(
+            f"/v1/agent/task-intents/{timeline_intent}/manifest", headers=agent_headers
+        )
+        assert timeline_response.status_code == 200, timeline_response.text
+        timeline = timeline_response.json()
+        before_coverage = client.post(
+            f"/v1/agent/tasks/{timeline['task']['task_id']}:result",
+            headers=agent_headers,
+            json=agent_result_payload(timeline),
+        )
+        assert before_coverage.status_code == 409
+        content_hash = "sha256:" + hashlib.sha256(media).hexdigest()
+        source = media_pb2.MediaSourceDescription(
+            source=media_pb2.MediaSourceRef(
+                stream_id=f"stream-{asset_id}",
+                source_id=f"source-{asset_id}",
+                kind=media_pb2.MEDIA_SOURCE_KIND_FILE,
+                content_hash=content_hash,
+            ),
+            tracks=[media_pb2.MediaTrack(track_kind="video", codec="h264", timing_known=True)],
+            duration_ms=9056,
+            probe_tool="test-contract",
+        )
+        coverage = [
+            {
+                "start_ms": start_ms,
+                "end_ms": min(start_ms + 1000, 9056),
+                "sampling_state": "not_sampled_by_policy",
+                "modality_states": {
+                    "ocr": "not_sampled_by_policy",
+                    "asr": "not_scheduled",
+                    "vlm": "not_sampled_by_policy",
+                },
+                "reason_codes": {},
+            }
+            for start_ms in range(0, 9056, 1000)
+        ]
+        ingested = client.post(
+            f"/v1/agent/tasks/{timeline['task']['task_id']}:timeline",
+            headers=agent_headers,
+            json={
+                "intent_id": timeline_intent,
+                "source_description_b64": base64.b64encode(
+                    source.SerializeToString(deterministic=True)
+                ).decode(),
+                "materials_b64": [],
+                "timeline_items": [],
+                "coverage": coverage,
+            },
+        )
+        assert ingested.status_code == 200, ingested.text
+        assert ingested.json()["materials"] == 0
+        assert ingested.json()["coverage_windows"] == 10
+        assert (
+            client.post(
+                f"/v1/agent/tasks/{timeline['task']['task_id']}:result",
+                headers=agent_headers,
+                json=agent_result_payload(timeline),
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                "/v1/agent/report",
+                headers=agent_headers,
+                json={
+                    "intent_id": timeline_intent,
+                    "instance_id": "",
+                    "node_id": "coverage-agent",
+                    "action": "DEPLOYMENT_ACTION_TASK_PROCESS",
+                    "success": True,
+                    "actual_state": "PLUGIN_INSTANCE_STATE_READY",
+                },
+            ).status_code
+            == 200
+        )
+
+    with psycopg.connect(console_database) as conn:
+        last_window = conn.execute(
+            """
+            SELECT start_ms,end_ms FROM timeline_window_state
+            WHERE execution_id=(
+                SELECT execution_id FROM console_job_execution WHERE job_id=%s
+            ) ORDER BY start_ms DESC LIMIT 1
+            """,
+            (drafted.json()["id"],),
+        ).fetchone()
+        assert last_window == (9000, 9056)
+        assert conn.execute("SELECT count(*) FROM material_unit").fetchone()[0] == 0
+
+
 def test_task_dispatch_surfaces_unattached_runtime(console_app, console_database):
     """任务意图必须有明确动作与终态失败，不能无限停在 processing。"""
     with TestClient(console_app) as client:
@@ -292,8 +878,8 @@ def test_task_dispatch_surfaces_unattached_runtime(console_app, console_database
         capabilities = {item["name"]: item for item in capability_items}
         assert capabilities["task_execution"] == {
             "name": "task_execution",
-            "available": False,
-            "reason": "runtime_task_service_not_attached",
+            "available": True,
+            "reason": "",
         }
 
     with psycopg.connect(console_database) as conn:

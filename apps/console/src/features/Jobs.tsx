@@ -11,6 +11,7 @@ import {
     Select,
     Space,
     Table,
+    Tag,
     Typography,
 } from 'antd';
 import {
@@ -25,7 +26,7 @@ import {
 } from '@ant-design/icons';
 import { Link } from 'react-router-dom';
 import { api, post } from '../api/client';
-import type { JobDraftList, PipelineList, UploadList } from '../api/contracts';
+import type { JobDraft, JobDraftList, JsonObject, PipelineList, UploadList } from '../api/contracts';
 import {
     Badge,
     bytes,
@@ -42,10 +43,200 @@ import { usePermission } from '../session';
 
 const { Text } = Typography;
 
+type ExecutionTask = {
+    task_id: string;
+    node_id: string;
+    attempt: number;
+    max_attempts: number;
+    required: boolean;
+    state: string;
+    reason_code?: string;
+    output_ref?: string;
+};
+
+type ExecutionReceipt = {
+    task_id: string;
+    attempt: number;
+    plugin_id: string;
+    input_count: number;
+    output_count: number;
+    reason_code?: string;
+    receipt_digest: string;
+    completed_at?: string;
+};
+
+type ExecutionDetail = {
+    execution: {
+        execution_id: string;
+        run_id: string;
+        state: string;
+        pipeline_revision: number;
+        graph_digest: string;
+        modality_summary?: JsonObject;
+    };
+    tasks: ExecutionTask[];
+    receipts: ExecutionReceipt[];
+};
+
+function taskCountTags(summary?: JsonObject) {
+    const counts = summary?.counts;
+    if (!counts || typeof counts !== 'object' || Array.isArray(counts)) return null;
+    return Object.entries(counts).map(([state, value]) => (
+        <Tag key={state} style={{ marginInlineEnd: 2 }}>
+            {state}: {String(value)}
+        </Tag>
+    ));
+}
+
+function ExecutionDetails({ job, onClose }: { job: JobDraft; onClose: () => void }) {
+    const detail = useQuery({
+        queryKey: ['job-execution', job.id, job.execution_id],
+        enabled: !!job.execution_id,
+        queryFn: ({ signal }) =>
+            api<ExecutionDetail>(
+                `/v1/jobs/${encodeURIComponent(job.id)}/execution?execution_id=${encodeURIComponent(job.execution_id)}`,
+                { signal },
+            ),
+        refetchInterval: (query) =>
+            query.state.data?.execution.state === 'running' ? 3000 : false,
+    });
+
+    const data = detail.data;
+    return (
+        <Modal title="编排执行详情" onClose={onClose} width={920}>
+            <ErrorNotice error={detail.error} />
+            {detail.isPending ? (
+                <Loading tip="正在读取不可变 Revision、任务和执行回执…" />
+            ) : data ? (
+                <Space direction="vertical" size={14} style={{ width: '100%' }}>
+                    <Card size="small">
+                        <Row gutter={[12, 8]}>
+                            <Col xs={24} md={12}>
+                                <Text type="secondary">执行 ID</Text>
+                                <div className="mono" style={{ fontSize: 12, overflowWrap: 'anywhere' }}>
+                                    {data.execution.execution_id}
+                                </div>
+                            </Col>
+                            <Col xs={24} md={12}>
+                                <Text type="secondary">Run / Revision</Text>
+                                <div className="mono" style={{ fontSize: 12, overflowWrap: 'anywhere' }}>
+                                    {data.execution.run_id} · 图 v{data.execution.pipeline_revision}
+                                </div>
+                            </Col>
+                            <Col xs={24} md={12}>
+                                <Text type="secondary">执行状态</Text>
+                                <div>
+                                    <Badge state={data.execution.state} />
+                                </div>
+                            </Col>
+                            <Col xs={24} md={12}>
+                                <Text type="secondary">图摘要</Text>
+                                <div className="mono" style={{ fontSize: 11, overflowWrap: 'anywhere' }}>
+                                    {data.execution.graph_digest}
+                                </div>
+                            </Col>
+                        </Row>
+                    </Card>
+
+                    {data.execution.state === 'succeeded_with_partial_enrichment' ? (
+                        <Notice>
+                            必需的 OCR / ASR 与 Timeline 已成功；可选 VLM 慢路径未完成。素材仍可检索，
+                            但画面描述应按缺失状态解读，不能当作已补全结果。
+                        </Notice>
+                    ) : null}
+
+                    <Card
+                        size="small"
+                        title={`任务事实（${data.tasks.length}）`}
+                        extra={<Space size={[2, 2]} wrap>{taskCountTags(data.execution.modality_summary)}</Space>}
+                        bodyStyle={{ padding: 0 }}
+                    >
+                        <Table
+                            size="small"
+                            rowKey={(task) => `${task.task_id}:${task.attempt}`}
+                            pagination={false}
+                            dataSource={data.tasks}
+                            columns={[
+                                { title: '节点', dataIndex: 'node_id', key: 'node_id' },
+                                {
+                                    title: '要求',
+                                    dataIndex: 'required',
+                                    key: 'required',
+                                    width: 90,
+                                    render: (required: boolean) => (
+                                        <Tag color={required ? 'blue' : 'default'}>
+                                            {required ? '必需' : '慢路径'}
+                                        </Tag>
+                                    ),
+                                },
+                                {
+                                    title: '尝试',
+                                    key: 'attempt',
+                                    width: 100,
+                                    render: (_: unknown, task: ExecutionTask) =>
+                                        `${task.attempt}/${task.max_attempts}`,
+                                },
+                                {
+                                    title: '状态',
+                                    dataIndex: 'state',
+                                    key: 'state',
+                                    render: (state: string) => <Badge state={state} />,
+                                },
+                                {
+                                    title: '原因',
+                                    dataIndex: 'reason_code',
+                                    key: 'reason_code',
+                                    render: (reason?: string) => reason || '—',
+                                },
+                            ]}
+                        />
+                    </Card>
+
+                    <Card size="small" title={`不可变执行回执（${data.receipts.length}）`} bodyStyle={{ padding: 0 }}>
+                        <Table
+                            size="small"
+                            rowKey={(receipt) => `${receipt.task_id}:${receipt.attempt}`}
+                            pagination={false}
+                            dataSource={data.receipts}
+                            columns={[
+                                { title: '插件', dataIndex: 'plugin_id', key: 'plugin_id' },
+                                {
+                                    title: '输入 / 输出',
+                                    key: 'io',
+                                    width: 120,
+                                    render: (_: unknown, receipt: ExecutionReceipt) =>
+                                        `${receipt.input_count} / ${receipt.output_count}`,
+                                },
+                                {
+                                    title: '结果',
+                                    dataIndex: 'reason_code',
+                                    key: 'reason_code',
+                                    render: (reason?: string) => reason || '成功',
+                                },
+                                {
+                                    title: '摘要',
+                                    dataIndex: 'receipt_digest',
+                                    key: 'receipt_digest',
+                                    render: (digest: string) => (
+                                        <span className="mono" style={{ fontSize: 11 }}>
+                                            {digest.slice(0, 22)}…
+                                        </span>
+                                    ),
+                                },
+                            ]}
+                        />
+                    </Card>
+                </Space>
+            ) : null}
+        </Modal>
+    );
+}
+
 export default function Jobs() {
     const cache = useQueryClient();
     const [offset, setOffset] = useState(0);
     const [open, setOpen] = useState(false);
+    const [executionJob, setExecutionJob] = useState<JobDraft | null>(null);
     const [form] = Form.useForm();
     const canWrite = usePermission('jobs:write');
 
@@ -163,6 +354,30 @@ export default function Jobs() {
             render: (state: string) => <Badge state={state} />,
         },
         {
+            title: '编排执行',
+            key: 'execution',
+            width: 210,
+            render: (_: unknown, item: (typeof items)[0]) =>
+                item.execution_id ? (
+                    <Space direction="vertical" size={2}>
+                        <Space size={[4, 4]} wrap>
+                            <Tag color="blue">编排 v2</Tag>
+                            <Badge state={item.execution_state || 'running'} />
+                        </Space>
+                        <Text type="secondary" style={{ fontSize: 11 }}>
+                            图 v{item.pipeline_revision} · {item.run_id.slice(0, 16)}…
+                        </Text>
+                        <Space size={[2, 2]} wrap>
+                            {taskCountTags(item.modality_summary)}
+                        </Space>
+                    </Space>
+                ) : (
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                        兼容草稿（不可执行）
+                    </Text>
+                ),
+        },
+        {
             title: '创建时间',
             dataIndex: 'created_at',
             key: 'created_at',
@@ -176,7 +391,7 @@ export default function Jobs() {
         {
             title: '操作',
             key: 'actions',
-            width: 260,
+            width: 340,
             align: 'right' as const,
             render: (_: unknown, item: (typeof items)[0]) => (
                 <Space size={8}>
@@ -194,12 +409,24 @@ export default function Jobs() {
 
                     {item.state === 'processing' ? (
                         <Button size="small" disabled icon={<SyncOutlined spin />}>
-                            正在处理…
+                            {item.execution_id ? '正在执行…' : '正在处理…'}
+                        </Button>
+                    ) : null}
+
+                    {item.execution_id ? (
+                        <Button size="small" onClick={() => setExecutionJob(item)}>
+                            执行详情
                         </Button>
                     ) : null}
 
                     {item.state === 'completed' ? (
-                        <Link to="/materials">
+                        <Link
+                            to={
+                                item.execution_id
+                                    ? `/materials?execution=${encodeURIComponent(item.execution_id)}`
+                                    : '/materials'
+                            }
+                        >
                             <Button size="small" type="default" icon={<ArrowRightOutlined />}>
                                 查看素材
                             </Button>
@@ -290,8 +517,8 @@ export default function Jobs() {
             </Row>
 
             <Notice>
-                点击【开始处理】后，控制面会校验数据本地性并派发给同机节点。当前未接入受控 Runtime
-                执行器时，任务会明确失败并显示原因，不会持续显示“处理中”。
+                多模态方案会先执行 OCR / ASR，再由 Timeline 写入每秒 coverage；VLM 是可选慢路径。
+                任务完成必须已有可核验的 Task receipt 与 coverage，缺失任一事实会明确失败，不会伪装成完成。
             </Notice>
 
             <ErrorNotice error={query.error || archive.error || dispatchMutation.error} />
@@ -421,6 +648,10 @@ export default function Jobs() {
                         </Form>
                     )}
                 </Modal>
+            ) : null}
+
+            {executionJob ? (
+                <ExecutionDetails job={executionJob} onClose={() => setExecutionJob(null)} />
             ) : null}
         </div>
     );

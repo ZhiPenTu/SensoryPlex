@@ -58,7 +58,10 @@ class ProcessorPlugin(ABC):
 
     def _validate_buffer_input(self, descriptor, ctx) -> None:
         """buffer 输入的结构准入。字节本身由插件在 `process()` 里按 lease 读取。"""
-        if self.buffer_reader is None:
+        # 常驻插件有两种受控数据面绑定方式：Start 时的固定本机 handoff，或 Runtime
+        # 签发在当前 descriptor 里的短生命周期 loopback handoff。后者不允许插件猜
+        # 文件路径，也不允许控制面传入任意媒体字节。
+        if self.buffer_reader is None and not descriptor.locator.handoff_endpoint:
             raise PluginError(common.UNSUPPORTED_MEMORY_KIND, "buffer_reader_not_attached")
         if descriptor.memory_kind != CPU_SHARED_MEMORY:
             raise PluginError(

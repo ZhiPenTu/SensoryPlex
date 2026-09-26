@@ -59,6 +59,10 @@ message BufferLocator {
   string handle = 1; // Opaque Runtime-issued handle, never a host pointer.
   uint64 offset = 2;
   uint64 length = 3;
+  // Runtime 在本机临时暴露数据面时签发的 loopback endpoint。它不是宿主路径，
+  // 也不是控制面可任意指定的地址；插件仅能用它领取同一 descriptor 的 lease。
+  // 空值表示插件使用已在 Start 阶段绑定的固定本机 handoff。
+  string handoff_endpoint = 4;
 }
 
 message BufferFormat {

@@ -23,7 +23,7 @@ import urllib.request
 from dataclasses import dataclass, field
 
 import grpc
-from edge_material_sdk import BufferReadError, PluginError, ProcessorPlugin
+from edge_material_sdk import BufferReadError, PluginError, ProcessorPlugin, read_descriptor
 from edge_material_sdk.generated.common.v1 import common_pb2 as common
 from edge_material_sdk.generated.material.v1 import material_pb2 as material
 from edge_material_sdk.generated.runtime.v1 import runtime_pb2 as runtime
@@ -31,7 +31,7 @@ from edge_material_sdk.generated.runtime.v1 import runtime_pb2 as runtime
 from .png import encode_rgba
 
 PLUGIN_NAME = "org.sensoryplex.vlm-moondream"
-PLUGIN_VERSION = "0.1.0"
+PLUGIN_VERSION = "0.1.1"
 MODALITY = "vision.scene_description"
 CONSUMES = "media.video_frame"
 DEFAULT_ENDPOINT = "http://127.0.0.1:11434"
@@ -41,7 +41,15 @@ DEFAULT_PROMPT = "Describe what is visible in this image in one sentence."
 CONFIDENCE_UNAVAILABLE_REASON = "model_does_not_report_calibrated_confidence"
 DEFAULT_TIMEOUT_S = 180.0
 
-CONFIG_KEYS = ("endpoint", "model", "prompt", "handoff_endpoint", "timeout_s", "ttl_ms")
+CONFIG_KEYS = (
+    "endpoint",
+    "model",
+    "prompt",
+    "data_plane_mode",
+    "handoff_endpoint",
+    "timeout_s",
+    "ttl_ms",
+)
 
 
 @dataclass
@@ -49,6 +57,7 @@ class VlmConfig:
     endpoint: str = DEFAULT_ENDPOINT
     model: str = DEFAULT_MODEL
     prompt: str = DEFAULT_PROMPT
+    data_plane_mode: str = "static"
     handoff_endpoint: str = ""
     timeout_s: float = DEFAULT_TIMEOUT_S
     ttl_ms: int = 30_000
@@ -66,6 +75,7 @@ class VlmConfig:
             "endpoint": self.endpoint,
             "model": self.model,
             "prompt": self.prompt,
+            "data_plane_mode": self.data_plane_mode,
             "timeout_s": float(self.timeout_s),
             "ttl_ms": int(self.ttl_ms),
         }
@@ -107,7 +117,9 @@ def validate_config(config: dict) -> runtime.ValidationResult:
         return runtime.ValidationResult(valid=False, field_errors=[str(error)])
     if not parsed.endpoint.startswith(("http://127.0.0.1", "http://localhost", "https://")):
         errors.append("endpoint_must_be_explicit")
-    if not parsed.handoff_endpoint:
+    if parsed.data_plane_mode not in {"static", "per_request"}:
+        errors.append("invalid_data_plane_mode")
+    if parsed.data_plane_mode == "static" and not parsed.handoff_endpoint:
         errors.append("handoff_endpoint_required")
     if not 50 <= int(parsed.ttl_ms) <= 60_000:
         errors.append("ttl_ms_out_of_range")
@@ -136,7 +148,9 @@ class VisionVlmPlugin(ProcessorPlugin):
         if not self.artifact_digest:
             raise ValueError("artifact_digest_required")
         parsed = VlmConfig.from_mapping(dict(config))
-        if not parsed.handoff_endpoint:
+        if parsed.data_plane_mode not in {"static", "per_request"}:
+            raise ValueError("invalid_data_plane_mode")
+        if parsed.data_plane_mode == "static" and not parsed.handoff_endpoint:
             raise ValueError("handoff_endpoint_required")
         self.config = parsed
         self.model = self._probe_model(parsed)
@@ -193,7 +207,12 @@ class VisionVlmPlugin(ProcessorPlugin):
     def _read_frame(self, descriptor):
         """按 lease 读取这一帧；任何失败都翻译成契约错误码，不吞掉、不降级。"""
         try:
-            return self.buffer_reader.read(descriptor.buffer_id)
+            return read_descriptor(
+                self.buffer_reader,
+                descriptor,
+                ttl_ms=int(self.config.ttl_ms),
+                timeout_s=float(self.config.timeout_s),
+            )
         except BufferReadError as error:
             raise PluginError(error.code, error.reason_code, error.retryable) from None
         except grpc.RpcError as error:

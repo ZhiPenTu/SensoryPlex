@@ -1,6 +1,6 @@
 [project]
 name = "edge-material-plugin-asr-whisper-mlx"
-version = "0.1.0"
+version = "0.1.1"
 description = "SensoryPlex ASR processor plugin (local MLX Whisper backend, Apple Silicon)"
 requires-python = ">=3.12,<3.13"
 dependencies = [

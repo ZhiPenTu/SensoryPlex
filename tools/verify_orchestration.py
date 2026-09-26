@@ -32,6 +32,10 @@ sys.path.insert(0, str(ROOT / "plugins/python/common/src"))
 import psycopg  # noqa: E402
 from sensoryplex_gateway.settings import Settings  # noqa: E402
 
+# 这是验收工具要求的最小数据库版本；新增迁移改变事实/执行契约后必须同步推进，
+# 不能把已经成功迁移的控制面误读为不可用。
+CURRENT_SCHEMA = "0012_timeline_coverage"
+
 
 class OrchestrationVerifier:
     def __init__(
@@ -109,16 +113,12 @@ class OrchestrationVerifier:
 
         self.login()
 
-        # 0. 验证健康检查报告最新 schema_version；0008 是编排迁移，0009 是后续任务回填迁移。
+        # 0. 验证健康检查报告与当前执行 / coverage 事实迁移一致。
         status, health = self._http("GET", "/v1/health")
         self.log(
             "00-health",
             f"API Schema version: {health.get('schema_version')}",
-            ok=(
-                status == 200
-                and health.get("schema_version")
-                in {"0008_orchestration_run_task", "0009_task_dispatch_failure_reconciliation"}
-            ),
+            ok=(status == 200 and health.get("schema_version") == CURRENT_SCHEMA),
         )
 
         pipeline_id = f"test-pipe-{self.test_id}"

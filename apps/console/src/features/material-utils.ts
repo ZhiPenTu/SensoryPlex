@@ -7,6 +7,7 @@ export const searchFields = [
     'end',
     'tags',
     'modalities',
+    'execution',
     'confidence',
     'limit',
 ] as const;
@@ -115,8 +116,10 @@ export function searchRequest(params: URLSearchParams): SearchRequest {
     const limit = params.get('limit') || '20';
     if (!['20', '50', '100'].includes(limit)) throw new Error('显示数量请选择 20、50 或 100。');
     const query = params.get('q') || '',
-        stream = params.get('stream') || '';
-    if (query.length > 2000 || stream.length > 256) throw new Error('查询条件过长。');
+        stream = params.get('stream') || '',
+        execution = params.get('execution') || '';
+    if (query.length > 2000 || stream.length > 256 || execution.length > 128)
+        throw new Error('查询条件过长。');
     return {
         query,
         stream_id: stream,
@@ -127,6 +130,7 @@ export function searchRequest(params: URLSearchParams): SearchRequest {
         ...(confidence ? { min_confidence: Number(confidence) } : {}),
         limit: Number(limit),
         mode: 'keyword',
+        execution_id: execution,
     };
 }
 

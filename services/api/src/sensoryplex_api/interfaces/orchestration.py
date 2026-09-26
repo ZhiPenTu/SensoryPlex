@@ -7,6 +7,7 @@
 - jobs:read: Run 与任务状态详情查询
 """
 
+from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import Body, Depends
@@ -52,6 +53,7 @@ def _format_task(task: dict[str, Any]) -> dict[str, Any]:
         "reason_code": task.get("reason_code") or "",
         "error_detail": task.get("error_detail") or "",
         "output_ref": task.get("output_ref") or "",
+        "required": bool(task.get("required", True)),
         "created_at_unix_ms": int(task["created_at"].timestamp() * 1000)
         if task.get("created_at")
         else 0,
@@ -298,6 +300,34 @@ def register(app, pool, auth, settings):
         retryable = bool(body.get("retryable", False))
         reason_code = body.get("reason_code", "")
         error_detail = body.get("error_detail", "")
+        raw_receipt = body.get("receipt")
+        receipt = None
+        if raw_receipt is not None:
+            if not isinstance(raw_receipt, dict):
+                fail(422, "task_execution_receipt_invalid")
+            try:
+                started_ms = int(raw_receipt["started_at_unix_ms"])
+                completed_ms = int(raw_receipt["completed_at_unix_ms"])
+                if started_ms <= 0 or completed_ms < started_ms:
+                    raise ValueError
+                receipt = {
+                    "run_id": raw_receipt.get("run_id", run_id),
+                    "task_id": raw_receipt.get("task_id", task_id),
+                    "attempt": int(raw_receipt.get("attempt", attempt)),
+                    "assignment_id": raw_receipt.get("assignment_id", assignment_id),
+                    "plugin_id": str(raw_receipt["plugin_id"]),
+                    "artifact_digest": str(raw_receipt["artifact_digest"]),
+                    "config_hash": str(raw_receipt["config_hash"]),
+                    "input_count": int(raw_receipt["input_count"]),
+                    "output_count": int(raw_receipt["output_count"]),
+                    "result_manifest_ref": str(raw_receipt.get("result_manifest_ref", "")),
+                    "reason_code": str(raw_receipt.get("reason_code", reason_code)),
+                    "receipt_digest": str(raw_receipt["receipt_digest"]),
+                    "started_at": datetime.fromtimestamp(started_ms / 1000, tz=UTC),
+                    "completed_at": datetime.fromtimestamp(completed_ms / 1000, tz=UTC),
+                }
+            except (KeyError, TypeError, ValueError, OverflowError):
+                fail(422, "task_execution_receipt_invalid")
 
         with pool.connection() as conn:
             res = orch.report_task_result(
@@ -311,6 +341,7 @@ def register(app, pool, auth, settings):
                 retryable=retryable,
                 reason_code=reason_code,
                 error_detail=error_detail,
+                receipt=receipt,
             )
         return {
             "task": _format_task(res["task"]),

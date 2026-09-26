@@ -28,7 +28,7 @@ from dataclasses import dataclass
 
 import grpc
 import numpy as np
-from edge_material_sdk import BufferReadError, PluginError, ProcessorPlugin
+from edge_material_sdk import BufferReadError, PluginError, ProcessorPlugin, read_descriptor
 from edge_material_sdk.generated.common.v1 import common_pb2 as common
 from edge_material_sdk.generated.material.v1 import material_pb2 as material
 from edge_material_sdk.generated.runtime.v1 import runtime_pb2 as runtime
@@ -36,7 +36,7 @@ from edge_material_sdk.generated.runtime.v1 import runtime_pb2 as runtime
 from . import models
 
 PLUGIN_NAME = "org.sensoryplex.ocr-rapidocr"
-PLUGIN_VERSION = "0.1.0"
+PLUGIN_VERSION = "0.1.1"
 MODALITY = "ocr_blocks"
 CONSUMES = "media.video_frame"
 INPUT_KIND = "video_frame"
@@ -53,6 +53,7 @@ PROVIDER_EP = {"cpu": "CPUExecutionProvider", "coreml": "CoreMLExecutionProvider
 SESSION_ROLES = (("text_det", "det"), ("text_cls", "cls"), ("text_rec", "rec"))
 
 CONFIG_KEYS = (
+    "data_plane_mode",
     "handoff_endpoint",
     "provider",
     "model_dir",
@@ -67,6 +68,7 @@ DEFAULT_MODEL_ID = "PP-OCRv6_mobile"
 
 @dataclass
 class OcrConfig:
+    data_plane_mode: str = "static"
     handoff_endpoint: str = ""
     provider: str = "cpu"
     model_dir: str = ""
@@ -86,6 +88,7 @@ class OcrConfig:
     def effective(self) -> dict:
         """语义配置：`model_dir` 是位置（身份由权重摘要承担），`handoff_endpoint` 是传输位置。"""
         return {
+            "data_plane_mode": self.data_plane_mode,
             "provider": self.provider,
             "model_id": self.model_id,
             "model_revision": self.model_revision,
@@ -117,7 +120,9 @@ def validate_config(config: dict) -> runtime.ValidationResult:
         parsed = OcrConfig.from_mapping(dict(config))
     except (ValueError, TypeError) as error:
         return runtime.ValidationResult(valid=False, field_errors=[str(error)])
-    if not parsed.handoff_endpoint:
+    if parsed.data_plane_mode not in {"static", "per_request"}:
+        errors.append("invalid_data_plane_mode")
+    if parsed.data_plane_mode == "static" and not parsed.handoff_endpoint:
         errors.append("handoff_endpoint_required")
     if parsed.provider not in PROVIDERS:
         errors.append(f"unsupported_provider:{parsed.provider}")
@@ -148,7 +153,9 @@ class OcrPlugin(ProcessorPlugin):
         if not self.artifact_digest:
             raise ValueError("artifact_digest_required")
         parsed = OcrConfig.from_mapping(dict(config))
-        if not parsed.handoff_endpoint:
+        if parsed.data_plane_mode not in {"static", "per_request"}:
+            raise ValueError("invalid_data_plane_mode")
+        if parsed.data_plane_mode == "static" and not parsed.handoff_endpoint:
             raise ValueError("handoff_endpoint_required")
         if parsed.provider not in PROVIDERS:
             raise ValueError(f"unsupported_provider:{parsed.provider}")
@@ -284,7 +291,12 @@ class OcrPlugin(ProcessorPlugin):
     def _read_frame(self, descriptor):
         """按 lease 读取这一帧；任何失败都翻译成契约错误码，不吞掉、不降级。"""
         try:
-            return self.buffer_reader.read(descriptor.buffer_id)
+            return read_descriptor(
+                self.buffer_reader,
+                descriptor,
+                ttl_ms=int(self.config.ttl_ms),
+                timeout_s=float(self.config.timeout_s),
+            )
         except BufferReadError as error:
             raise PluginError(error.code, error.reason_code, error.retryable) from None
         except grpc.RpcError as error:

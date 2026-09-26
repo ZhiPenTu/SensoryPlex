@@ -3,14 +3,19 @@
 包含管理侧节点 Registry、预检、部署意图下发、回滚，以及 Agent 注册与心跳通道。
 """
 
+import base64
 import hashlib
+import json
 import secrets
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated
 
+from edge_material_sdk.generated.material.v1 import material_pb2
+from edge_material_sdk.generated.media.v1 import media_pb2
 from edge_material_sdk.generated.node.v1 import node_pb2 as pb
 from fastapi import Body, Depends, Header, Query
+from fastapi.responses import FileResponse
 from google.protobuf.json_format import MessageToDict
 from psycopg.types.json import Jsonb
 
@@ -25,6 +30,8 @@ from ..contracts import (
     rows,
     text_field,
 )
+from ..infrastructure import materials, timeline_ingest
+from ..infrastructure import orchestration as orchestrator
 from ..infrastructure.catalog import plugin
 from ..infrastructure.preflight import check_preflight
 from .plugin_deploy import (
@@ -50,6 +57,213 @@ def to_proto_node_status(status_str: str) -> str:
 
 
 def register(app, pool, auth, settings):
+    def authenticated_node(conn, authorization: str | None, expected_node_id: str):
+        """认证 Agent 会话并锁定到意图所属节点，不能只信请求体里的 node_id。"""
+        token = ""
+        if authorization and authorization.startswith("Bearer "):
+            token = authorization.split(" ", 1)[1]
+        if not token:
+            fail(401, "missing_node_session_token")
+        node = one(
+            conn,
+            "SELECT * FROM console_node WHERE session_token_hash=%s FOR SHARE",
+            (hash_token(token),),
+        )
+        if not node:
+            fail(401, "invalid_node_credentials")
+        if node["node_id"] != expected_node_id:
+            fail(403, "agent_node_mismatch")
+        if node["status"] in {"revoked", "offline", "draining"}:
+            fail(409, "agent_node_not_schedulable")
+        return node
+
+    def v2_intent_context(conn, intent_id: str, authorization: str | None, *, lock: bool = False):
+        """读取一条 v2 任务意图的最小可信上下文。
+
+        这里刻意不返回 blob 路径、插件 endpoint、命令或密钥。前两者分别只属于 API
+        数据面下载与 Agent 本机热部署台账，不能借由控制面消息泄漏。
+        """
+        suffix = " FOR UPDATE" if lock else ""
+        intent = one(
+            conn,
+            "SELECT * FROM console_deployment_intent WHERE id=%s" + suffix,
+            (intent_id,),
+        )
+        if not intent:
+            fail(404, "deployment_intent_not_found")
+        if intent["action"] != "task_process":
+            fail(409, "agent_intent_not_task_process")
+        authenticated_node(conn, authorization, intent["node_id"])
+        config = intent.get("config") or {}
+        if config.get("execution_mode") != "orchestrated_v2":
+            fail(409, "agent_legacy_task_execution_unsupported")
+        required = (
+            "execution_id",
+            "run_id",
+            "task_id",
+            "assignment_id",
+            "asset_ref",
+            "content_hash",
+        )
+        if any(not isinstance(config.get(field), str) or not config[field] for field in required):
+            fail(409, "task_intent_config_invalid")
+        if intent["state"] not in {"dispatched", "completed"}:
+            fail(409, "task_intent_not_active")
+
+        execution = one(
+            conn,
+            "SELECT * FROM console_job_execution WHERE execution_id=%s AND run_id=%s",
+            (config["execution_id"], config["run_id"]),
+        )
+        if not execution:
+            fail(409, "task_execution_binding_missing")
+        task = one(
+            conn,
+            "SELECT * FROM pipeline_task WHERE task_id=%s AND run_id=%s",
+            (config["task_id"], config["run_id"]),
+        )
+        assignment = one(
+            conn,
+            "SELECT * FROM scheduler_assignment WHERE assignment_id=%s AND task_id=%s",
+            (config["assignment_id"], config["task_id"]),
+        )
+        if not task or not assignment:
+            fail(409, "task_assignment_missing")
+        if (
+            task["assignment_id"] != assignment["assignment_id"]
+            or task["attempt"] != assignment["attempt"]
+            or assignment["actual_node_id"] != intent["node_id"]
+            or task["attempt"] != int(config.get("attempt") or 0)
+        ):
+            fail(409, "task_assignment_binding_invalid")
+        if task["state"] not in {"assigned", "running", "succeeded", "failed", "cancelled"}:
+            fail(409, "task_not_executable")
+
+        revision = one(
+            conn,
+            "SELECT * FROM pipeline_revision WHERE pipeline_id=%s AND revision=%s",
+            (execution["pipeline_id"], execution["pipeline_revision"]),
+        )
+        if not revision or revision["graph_digest"] != execution["graph_digest"]:
+            fail(409, "task_revision_binding_invalid")
+        node = next(
+            (
+                item
+                for item in revision["definition_json"].get("nodes", [])
+                if item.get("id") == task["node_id"]
+            ),
+            None,
+        )
+        if not node:
+            fail(409, "task_node_missing_from_revision")
+        upload = one(
+            conn,
+            """
+            SELECT upload.id,upload.filename,upload.size_bytes,upload.content_type,upload.sha256
+            FROM console_upload upload
+            JOIN console_job_draft job ON job.asset_id=upload.id
+            WHERE job.id=%s AND upload.sha256=%s AND upload.state='awaiting_admission'
+            """,
+            (execution["job_id"], config["content_hash"]),
+        )
+        if not upload:
+            fail(409, "task_asset_binding_missing")
+        return intent, config, execution, task, assignment, revision, node, upload
+
+    def task_intent_payload(conn, assignment: dict, *, actor: str = "scheduler") -> dict | None:
+        """把已分配 Task 收敛成一条受控 Agent 意图。
+
+        同一 assignment 最多存在一条 task_process 意图；重复调度不会产生两个消费者。
+        """
+        execution = one(
+            conn,
+            "SELECT * FROM console_job_execution WHERE run_id=%s",
+            (assignment["run_id"],),
+        )
+        if not execution:
+            return None
+        task = one(conn, "SELECT * FROM pipeline_task WHERE task_id=%s", (assignment["task_id"],))
+        run = one(
+            conn,
+            "SELECT deadline_unix_ms FROM pipeline_run WHERE run_id=%s",
+            (assignment["run_id"],),
+        )
+        revision = one(
+            conn,
+            "SELECT definition_json FROM pipeline_revision WHERE pipeline_id=%s AND revision=%s",
+            (execution["pipeline_id"], execution["pipeline_revision"]),
+        )
+        job = one(
+            conn, "SELECT asset_id,owner FROM console_job_draft WHERE id=%s", (execution["job_id"],)
+        )
+        upload = one(
+            conn,
+            "SELECT id,sha256 FROM console_upload WHERE id=%s AND state='awaiting_admission'",
+            (job["asset_id"],),
+        )
+        node = next(
+            item
+            for item in revision["definition_json"].get("nodes", [])
+            if item.get("id") == task["node_id"]
+        )
+        existing = one(
+            conn,
+            """
+            SELECT id FROM console_deployment_intent
+            WHERE action='task_process'
+              AND config->>'assignment_id'=%s
+              AND state IN ('pending','dispatched','completed')
+            """,
+            (assignment["assignment_id"],),
+        )
+        if existing:
+            return None
+        intent_id = identifier("task")
+        conn.execute(
+            """
+            INSERT INTO console_deployment_intent(
+                id,node_id,instance_id,action,artifact_digest,rollback_digest,config,
+                state,created_by,job_id,deadline_unix_ms
+            ) VALUES (%s,%s,NULL,'task_process',%s,NULL,%s,'pending',%s,%s,%s)
+            """,
+            (
+                intent_id,
+                assignment["actual_node_id"],
+                node["artifact_digest"],
+                Jsonb(
+                    {
+                        "execution_mode": "orchestrated_v2",
+                        "execution_id": execution["execution_id"],
+                        "run_id": assignment["run_id"],
+                        "task_id": assignment["task_id"],
+                        "assignment_id": assignment["assignment_id"],
+                        "attempt": assignment["attempt"],
+                        "asset_ref": f"console_upload:{upload['id']}",
+                        "content_hash": upload["sha256"],
+                        "pipeline_id": execution["pipeline_id"],
+                        "pipeline_revision": execution["pipeline_revision"],
+                        "graph_digest": execution["graph_digest"],
+                    }
+                ),
+                actor,
+                execution["job_id"],
+                run["deadline_unix_ms"],
+            ),
+        )
+        return {"intent_id": intent_id, "execution_id": execution["execution_id"]}
+
+    def enqueue_ready_v2_tasks(conn, node_id: str, *, actor: str = "scheduler") -> list[dict]:
+        """领取并写入刚解锁的同机 v2 Task；只处理这个节点，绝不静默改派。"""
+        orchestrator.release_retry_wait_tasks(conn)
+        assignments = orchestrator.schedule_ready_tasks(
+            conn, candidate_node_id=node_id, is_co_located=True, max_tasks=16
+        )
+        return [
+            item
+            for assignment in assignments
+            if (item := task_intent_payload(conn, assignment, actor=actor)) is not None
+        ]
+
     # ── 管理员接口：节点管理与预检 ─────────────────────────────────────────
 
     @app.get("/admin/v1/nodes")
@@ -288,7 +502,12 @@ def register(app, pool, auth, settings):
             )
             previous_digest = existing_inst["artifact_digest"] if existing_inst else None
             inst_id = existing_inst["instance_id"] if existing_inst else identifier("inst")
-            config_hash = "sha256:" + hashlib.sha256(str(config).encode()).hexdigest()
+            config_hash = (
+                "sha256:"
+                + hashlib.sha256(
+                    json.dumps(config, sort_keys=True, separators=(",", ":")).encode()
+                ).hexdigest()
+            )
 
             inst = one(
                 conn,
@@ -644,6 +863,437 @@ def register(app, pool, auth, settings):
             pb.EnrollNodeResponse,
         )
 
+    @app.get("/v1/agent/task-intents/{intent_id}/manifest")
+    def task_manifest(
+        intent_id: str,
+        authorization: Annotated[str | None, Header()] = None,
+    ):
+        """发放一个已分配 v2 Task 的受控执行清单。
+
+        清单只含任务身份和不可变策略。媒体只能从相邻的受认证数据面端点读取，插件
+        endpoint 只能从 Agent 的本机热部署台账读取，避免控制消息泄漏路径、端口或密钥。
+        """
+        with pool.connection() as conn:
+            intent, _config, execution, task, assignment, revision, node, upload = (
+                v2_intent_context(conn, intent_id, authorization, lock=True)
+            )
+            if intent["state"] != "dispatched":
+                fail(409, "task_intent_not_active")
+            if task["state"] == "assigned":
+                conn.execute(
+                    "UPDATE pipeline_task SET state='running',updated_at=now() WHERE task_id=%s",
+                    (task["task_id"],),
+                )
+                task["state"] = "running"
+
+            runtime_instance_id = ""
+            if node["plugin_id"] != "org.sensoryplex.runtime.timeline-fusion":
+                runtime = one(
+                    conn,
+                    """
+                    SELECT runtime.runtime_instance_id
+                    FROM console_plugin_instance slot
+                    JOIN plugin_runtime_instance runtime
+                      ON runtime.runtime_instance_id=slot.active_runtime_instance_id
+                    WHERE slot.node_id=%s AND slot.plugin_id=%s
+                      AND slot.artifact_digest=%s AND slot.config_hash=%s
+                      AND slot.actual_state='ready' AND runtime.node_id=%s
+                      AND runtime.plugin_id=%s AND runtime.artifact_digest=%s
+                      AND runtime.role='active' AND runtime.state='active'
+                      AND runtime.endpoint <> ''
+                    """,
+                    (
+                        intent["node_id"],
+                        node["plugin_id"],
+                        node["artifact_digest"],
+                        node["config_hash"],
+                        intent["node_id"],
+                        node["plugin_id"],
+                        node["artifact_digest"],
+                    ),
+                )
+                if not runtime:
+                    fail(409, "plugin_instance_unavailable")
+                runtime_instance_id = runtime["runtime_instance_id"]
+
+            run = one(
+                conn,
+                "SELECT deadline_unix_ms FROM pipeline_run WHERE run_id=%s",
+                (task["run_id"],),
+            )
+            timeline = next(
+                (
+                    item
+                    for item in revision["definition_json"].get("nodes", [])
+                    if item.get("id") == "timeline_fusion"
+                ),
+                {},
+            )
+            return {
+                "intent_id": intent["id"],
+                "execution_id": execution["execution_id"],
+                "run": {
+                    "run_id": task["run_id"],
+                    "pipeline_id": execution["pipeline_id"],
+                    "pipeline_revision": execution["pipeline_revision"],
+                    "graph_digest": execution["graph_digest"],
+                },
+                "task": {
+                    "task_id": task["task_id"],
+                    "node_id": task["node_id"],
+                    "attempt": task["attempt"],
+                    "assignment_id": assignment["assignment_id"],
+                    "deadline_unix_ms": run["deadline_unix_ms"],
+                    "required": bool(task["required"]),
+                    "state": task["state"],
+                },
+                "assignment": {
+                    "node_id": assignment["actual_node_id"],
+                    "data_plane_node_id": assignment["data_plane_node_id"],
+                    "lease_expires_at_unix_ms": int(
+                        assignment["lease_expires_at"].timestamp() * 1000
+                    ),
+                },
+                "plugin": {
+                    "plugin_id": node["plugin_id"],
+                    "plugin_version": node["plugin_version"],
+                    "artifact_digest": node["artifact_digest"],
+                    "config_hash": node["config_hash"],
+                    "runtime_instance_id": runtime_instance_id,
+                    "consumes": node["consumes"],
+                    "produces": node["produces"],
+                    "deadline_ms": node["deadline_ms"],
+                    "max_attempts": node["max_attempts"],
+                },
+                "policy": timeline.get("execution_policy") or {},
+                "asset": {
+                    "asset_id": upload["id"],
+                    "filename": upload["filename"],
+                    "size_bytes": upload["size_bytes"],
+                    "content_type": upload["content_type"],
+                    "content_hash": upload["sha256"],
+                },
+            }
+
+    @app.get("/v1/agent/task-intents/{intent_id}/asset")
+    def task_asset(
+        intent_id: str,
+        authorization: Annotated[str | None, Header()] = None,
+    ):
+        """只向持有该 assignment 的节点返回原始媒体字节。"""
+        with pool.connection() as conn:
+            intent, _config, _execution, _task, _assignment, _revision, _node, upload = (
+                v2_intent_context(conn, intent_id, authorization)
+            )
+            if intent["state"] != "dispatched":
+                fail(409, "task_intent_not_active")
+        path = settings.blob_root.resolve() / upload["sha256"][7:]
+        if not path.is_file():
+            fail(503, "blob_unavailable")
+        return FileResponse(
+            path,
+            media_type=upload["content_type"],
+            filename=upload["filename"],
+            headers={"X-Content-SHA256": upload["sha256"]},
+        )
+
+    @app.post("/v1/agent/tasks/{task_id}:result")
+    def agent_task_result(
+        task_id: str,
+        body: Annotated[dict, Body()] = ...,
+        authorization: Annotated[str | None, Header()] = None,
+    ):
+        """节点侧结果的唯一写入口：先核 assignment，再落不可变回执和 Task 状态。"""
+        intent_id = str(body.get("intent_id", ""))
+        raw_receipt = body.get("receipt")
+        if not intent_id:
+            fail(422, "task_intent_id_required")
+        if not isinstance(raw_receipt, dict):
+            fail(422, "task_execution_receipt_invalid")
+        with pool.connection() as conn:
+            intent, config, execution, task, assignment, _revision, _node, _upload = (
+                v2_intent_context(conn, intent_id, authorization, lock=True)
+            )
+            if task_id != config["task_id"] or task_id != task["task_id"]:
+                fail(403, "agent_task_result_mismatch")
+            if intent["state"] != "dispatched":
+                fail(409, "task_intent_not_active")
+            if task["node_id"] == "timeline_fusion" and bool(body.get("success", False)):
+                # Timeline 成功不是一个空回执：覆盖层必须已经由专用写入口在同一 execution
+                # 下落库，才能证明最后一个节点真的按 1 秒网格完成了事实登记。
+                coverage = one(
+                    conn,
+                    "SELECT 1 FROM timeline_window_state WHERE execution_id=%s LIMIT 1",
+                    (execution["execution_id"],),
+                )
+                if not coverage:
+                    fail(409, "timeline_coverage_required_before_success")
+            try:
+                started_ms = int(raw_receipt["started_at_unix_ms"])
+                completed_ms = int(raw_receipt["completed_at_unix_ms"])
+                if started_ms <= 0 or completed_ms < started_ms:
+                    raise ValueError
+                receipt = {
+                    "run_id": str(raw_receipt.get("run_id", task["run_id"])),
+                    "task_id": str(raw_receipt.get("task_id", task_id)),
+                    "attempt": int(raw_receipt.get("attempt", task["attempt"])),
+                    "assignment_id": str(
+                        raw_receipt.get("assignment_id", assignment["assignment_id"])
+                    ),
+                    "plugin_id": str(raw_receipt["plugin_id"]),
+                    "artifact_digest": str(raw_receipt["artifact_digest"]),
+                    "config_hash": str(raw_receipt["config_hash"]),
+                    "input_count": int(raw_receipt["input_count"]),
+                    "output_count": int(raw_receipt["output_count"]),
+                    "result_manifest_ref": str(raw_receipt.get("result_manifest_ref", "")),
+                    "reason_code": str(raw_receipt.get("reason_code", body.get("reason_code", ""))),
+                    "receipt_digest": str(raw_receipt["receipt_digest"]),
+                    "started_at": datetime.fromtimestamp(started_ms / 1000, tz=UTC),
+                    "completed_at": datetime.fromtimestamp(completed_ms / 1000, tz=UTC),
+                }
+            except (KeyError, TypeError, ValueError, OverflowError):
+                fail(422, "task_execution_receipt_invalid")
+            result = orchestrator.report_task_result(
+                conn,
+                task_id=task_id,
+                run_id=str(body.get("run_id", task["run_id"])),
+                attempt=int(body.get("attempt", task["attempt"])),
+                assignment_id=str(body.get("assignment_id", assignment["assignment_id"])),
+                success=bool(body.get("success", False)),
+                output_ref=str(body.get("output_ref", "")),
+                retryable=bool(body.get("retryable", False)),
+                reason_code=str(body.get("reason_code", "")),
+                error_detail=str(body.get("error_detail", "")),
+                receipt=receipt,
+            )
+            enqueued = enqueue_ready_v2_tasks(conn, intent["node_id"], actor="agent-result")
+            audit(
+                conn,
+                intent["node_id"],
+                "task.execution.result",
+                f"{task_id}:{assignment['assignment_id']}",
+            )
+        return {
+            "task": result["task"],
+            "unlocked_task_ids": result.get("unlocked_task_ids", []),
+            "enqueued_intents": enqueued,
+            "retry_scheduled": result.get("retry_scheduled", False),
+            "discarded": result.get("discarded", False),
+        }
+
+    @app.post("/v1/agent/tasks/{task_id}:timeline")
+    def ingest_timeline(
+        task_id: str,
+        body: Annotated[dict, Body()] = ...,
+        authorization: Annotated[str | None, Header()] = None,
+    ):
+        """受控写入 Timeline 融合出的派生事实与完整 1 秒覆盖层。
+
+        这不是通用素材上传接口：它只接受已分配的 `timeline_fusion` Task，所有素材都必须
+        是 protobuf，且源摘要、Runtime item 帐本、窗口网格和执行批次会在同一事务中复核。
+        """
+        intent_id = str(body.get("intent_id", ""))
+        source_b64 = body.get("source_description_b64")
+        raw_units = body.get("materials_b64")
+        raw_items = body.get("timeline_items")
+        raw_coverage = body.get("coverage")
+        if (
+            not intent_id
+            or not isinstance(source_b64, str)
+            or not isinstance(raw_units, list)
+            or not isinstance(raw_items, list)
+            or not isinstance(raw_coverage, list)
+        ):
+            fail(422, "timeline_ingest_input_invalid")
+        if len(raw_units) > 128 or len(raw_items) > 1024 or len(raw_coverage) > 512:
+            fail(413, "timeline_ingest_limit_exceeded")
+        encoded_size = len(source_b64) + sum(
+            len(value) for value in raw_units if isinstance(value, str)
+        )
+        if encoded_size > 4_000_000 or any(not isinstance(value, str) for value in raw_units):
+            fail(413, "timeline_ingest_limit_exceeded")
+        try:
+            description = media_pb2.MediaSourceDescription()
+            description.ParseFromString(base64.b64decode(source_b64, validate=True))
+            units: list[material_pb2.MaterialUnit] = []
+            for encoded in raw_units:
+                unit = material_pb2.MaterialUnit()
+                unit.ParseFromString(base64.b64decode(encoded, validate=True))
+                units.append(unit)
+        except (ValueError, TypeError):
+            fail(422, "timeline_ingest_protobuf_invalid")
+
+        items: dict[str, tuple[str, int, int]] = {}
+        try:
+            for entry in raw_items:
+                if not isinstance(entry, dict):
+                    raise ValueError
+                item_id = str(entry["item_id"])
+                kind = str(entry["kind"])
+                start_ms, end_ms = int(entry["start_ms"]), int(entry["end_ms"])
+                if (
+                    not item_id
+                    or len(item_id) > 256
+                    or kind not in {"video_frame", "audio_segment"}
+                    or start_ms < 0
+                    or end_ms <= start_ms
+                    or item_id in items
+                ):
+                    raise ValueError
+                items[item_id] = (kind, start_ms, end_ms)
+        except (KeyError, TypeError, ValueError, OverflowError):
+            fail(422, "timeline_ingest_items_invalid")
+
+        allowed_sampling = {
+            "sampled",
+            "not_sampled_by_policy",
+            "not_applicable",
+            "queued",
+            "running",
+            "failed",
+        }
+        allowed_modality = {
+            "queued",
+            "running",
+            "observed",
+            "not_applicable",
+            "failed",
+            "not_sampled_by_policy",
+            "not_scheduled",
+        }
+        try:
+            coverage: list[tuple[int, int, str, dict, dict]] = []
+            for entry in raw_coverage:
+                if not isinstance(entry, dict):
+                    raise ValueError
+                start_ms, end_ms = int(entry["start_ms"]), int(entry["end_ms"])
+                sampling = str(entry["sampling_state"])
+                modalities = entry["modality_states"]
+                reasons = entry.get("reason_codes", {})
+                if (
+                    start_ms < 0
+                    or start_ms % 1000
+                    or end_ms <= start_ms
+                    or end_ms > start_ms + 1000
+                    or sampling not in allowed_sampling
+                    or not isinstance(modalities, dict)
+                    or not isinstance(reasons, dict)
+                    or any(value not in allowed_modality for value in modalities.values())
+                    or any(len(str(value)) > 160 for value in reasons.values())
+                ):
+                    raise ValueError
+                coverage.append((start_ms, end_ms, sampling, modalities, reasons))
+            if coverage != sorted(coverage, key=lambda item: item[:2]):
+                raise ValueError
+        except (KeyError, TypeError, ValueError, OverflowError):
+            fail(422, "timeline_ingest_coverage_invalid")
+
+        with pool.connection() as conn:
+            intent, config, execution, task, assignment, _revision, node, upload = (
+                v2_intent_context(conn, intent_id, authorization, lock=True)
+            )
+            if task_id != task["task_id"] or task["node_id"] != "timeline_fusion":
+                fail(403, "timeline_ingest_task_mismatch")
+            if node["plugin_id"] != "org.sensoryplex.runtime.timeline-fusion":
+                fail(409, "timeline_ingest_plugin_mismatch")
+            if intent["state"] != "dispatched" or task["state"] not in {"assigned", "running"}:
+                fail(409, "timeline_ingest_task_not_active")
+            if description.source.content_hash != config["content_hash"]:
+                fail(422, "timeline_ingest_content_hash_mismatch")
+            expected = []
+            duration = int(description.duration_ms)
+            for start_ms in range(0, duration, 1000):
+                expected.append((start_ms, min(start_ms + 1000, duration)))
+            if [(item[0], item[1]) for item in coverage] != expected:
+                fail(422, "timeline_coverage_grid_invalid")
+            try:
+                references = timeline_ingest.register_references(
+                    conn,
+                    description=description,
+                    owner=one(
+                        conn,
+                        "SELECT owner FROM console_job_draft WHERE id=%s",
+                        (execution["job_id"],),
+                    )["owner"],
+                    units=units,
+                    timeline_items=items,
+                    upload_id=upload["id"],
+                )
+                appended, replayed = 0, 0
+                for unit in units:
+                    previous = one(
+                        conn,
+                        """
+                        SELECT revision,content_hash FROM material_unit
+                        WHERE material_unit_id=%s ORDER BY revision DESC LIMIT 1
+                        """,
+                        (unit.material_unit_id,),
+                    )
+                    if previous:
+                        digest = (
+                            "sha256:"
+                            + hashlib.sha256(unit.SerializeToString(deterministic=True)).hexdigest()
+                        )
+                        unit.revision = (
+                            previous["revision"]
+                            if digest == previous["content_hash"]
+                            else previous["revision"] + 1
+                        )
+                    inserted = materials.append_material(
+                        conn,
+                        unit,
+                        trace_id=f"execution:{execution['execution_id']}",
+                        execution_id=execution["execution_id"],
+                    )
+                    appended += int(inserted)
+                    replayed += int(not inserted)
+                for start_ms, end_ms, sampling, modalities, reasons in coverage:
+                    next_revision = conn.execute(
+                        """
+                        SELECT coalesce(max(state_revision),0)+1 FROM timeline_window_state
+                        WHERE execution_id=%s AND stream_id=%s AND start_ms=%s AND end_ms=%s
+                        """,
+                        (execution["execution_id"], description.source.stream_id, start_ms, end_ms),
+                    ).fetchone()[0]
+                    conn.execute(
+                        """
+                        INSERT INTO timeline_window_state(
+                            execution_id,stream_id,start_ms,end_ms,state_revision,sampling_state,
+                            modality_states,reason_codes
+                        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                        """,
+                        (
+                            execution["execution_id"],
+                            description.source.stream_id,
+                            start_ms,
+                            end_ms,
+                            next_revision,
+                            sampling,
+                            Jsonb(modalities),
+                            Jsonb(reasons),
+                        ),
+                    )
+            except (
+                timeline_ingest.TimelineIngestError,
+                materials.RevisionConflict,
+                ValueError,
+            ) as error:
+                fail(422, str(error).split(":", 1)[0])
+            audit(
+                conn,
+                intent["node_id"],
+                "timeline.ingested",
+                f"{execution['execution_id']}:{task_id}",
+            )
+        return {
+            "execution_id": execution["execution_id"],
+            "references": references,
+            "materials": len(units),
+            "appended": appended,
+            "replayed": replayed,
+            "coverage_windows": len(coverage),
+        }
+
     @app.post("/v1/agent/heartbeat")
     def agent_heartbeat(
         body: Annotated[dict, Body()] = ...,
@@ -689,6 +1339,8 @@ def register(app, pool, auth, settings):
                 (new_status, req.node_id),
             )
 
+            enqueue_ready_v2_tasks(conn, req.node_id, actor="heartbeat")
+
             pending_rows = rows(
                 conn,
                 """
@@ -711,7 +1363,8 @@ def register(app, pool, auth, settings):
                 inst = one(
                     conn,
                     (
-                        "SELECT plugin_id, plugin_version FROM console_plugin_instance "
+                        "SELECT plugin_id, plugin_version, config_hash "
+                        "FROM console_plugin_instance "
                         "WHERE instance_id=%s"
                     ),
                     (pr["instance_id"],),
@@ -723,6 +1376,7 @@ def register(app, pool, auth, settings):
                         pr,
                         inst["plugin_id"] if inst else "",
                         inst["plugin_version"] if inst else "",
+                        inst["config_hash"] if inst else "",
                     )
                 )
 
@@ -781,8 +1435,72 @@ def register(app, pool, auth, settings):
                 return apply_hot_report(conn, node["node_id"], req, intent)
 
             is_task_process = intent["action"] == "task_process"
-            # 当前 Agent 还没有受控 Runtime 的 Start/Process/Cancel 回执协议。即使某个
-            # Agent 错报 success，也不能在没有可核验执行事实时把业务任务写成完成。
+            task_config = intent.get("config") or {}
+            is_v2_task = is_task_process and task_config.get("execution_mode") == "orchestrated_v2"
+            if is_v2_task:
+                # v2 任务是否“执行完毕”只取决于专用 result 入口已验真的 assignment 回执，
+                # 不取决于 Agent 在 ReportDeployment 里填了 success。业务失败也可以有合法
+                # 回执，此时意图已经交付完成，Job 终态由编排器投影。
+                authenticated_node(conn, authorization, intent["node_id"])
+                receipt = one(
+                    conn,
+                    """
+                    SELECT receipt_digest FROM task_execution_receipt
+                    WHERE task_id=%s AND attempt=%s AND assignment_id=%s
+                    """,
+                    (
+                        task_config.get("task_id", ""),
+                        int(task_config.get("attempt") or 0),
+                        task_config.get("assignment_id", ""),
+                    ),
+                )
+                if receipt:
+                    conn.execute(
+                        """
+                        UPDATE console_deployment_intent
+                        SET state='completed',error_code=NULL,error_detail=NULL,completed_at=now()
+                        WHERE id=%s AND state='dispatched'
+                        """,
+                        (intent["id"],),
+                    )
+                    audit(
+                        conn,
+                        intent["node_id"],
+                        "job.task.intent.completed",
+                        f"{intent['id']}:{receipt['receipt_digest']}",
+                    )
+                    return {"status": "recorded"}
+
+                # Agent 无法把任何回执提交到 result API 时，不能让 v2 意图永久停留在
+                # dispatched。保持与 legacy 一样的显式失败，但绝不把它伪装为 Task 成功。
+                task_error_code = req.error_code or "task_execution_receipt_required"
+                task_error_detail = req.error_detail or "task execution receipt was not recorded"
+                conn.execute(
+                    """
+                    UPDATE console_deployment_intent
+                    SET state='failed',error_code=%s,error_detail=%s,completed_at=now()
+                    WHERE id=%s
+                    """,
+                    (task_error_code, task_error_detail, intent["id"]),
+                )
+                conn.execute(
+                    """
+                    UPDATE console_job_draft
+                    SET state='failed',error_code=%s,error_detail=%s,completed_at=now()
+                    WHERE id=%s AND state='processing'
+                    """,
+                    (task_error_code, task_error_detail, intent["job_id"]),
+                )
+                audit(
+                    conn,
+                    intent["node_id"],
+                    "job.task.intent.failed_without_receipt",
+                    f"{intent['id']}:{task_error_code}",
+                )
+                return {"status": "recorded"}
+
+            # legacy 任务没有 Runtime 回执协议。即使某个 Agent 错报 success，也不能在没有
+            # 可核验执行事实时把业务任务写成完成；该行为保留给历史兼容任务。
             task_error_code = req.error_code or "runtime_task_service_not_attached"
             task_error_detail = req.error_detail or "runtime_task_service_not_attached"
             if is_task_process and req.success:

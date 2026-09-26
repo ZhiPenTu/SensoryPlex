@@ -785,6 +785,7 @@ class ApiScenarios:
             "bundle_digest",
             "runtime_instance_id",
             "grace_period_ms",
+            "config_hash",
         }
         self.report.check(
             "意图字段不超出契约白名单（无 URL / 命令 / 宿主路径 / 密钥）",

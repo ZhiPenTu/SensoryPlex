@@ -88,6 +88,9 @@ def process_pending_task(conn) -> bool:
         SELECT id, node_id, config, job_id
         FROM console_deployment_intent
         WHERE action='task_process' AND state='pending'
+          -- v2 任务必须由 Node Agent 的 TaskExecutor 按 assignment/receipt 协议执行；
+          -- 旧旁路不能领取它，更不能将其误写为 legacy OCR 的失败。
+          AND COALESCE(config->>'execution_mode', 'legacy_ocr_v1') = 'legacy_ocr_v1'
         ORDER BY created_at ASC
         FOR UPDATE SKIP LOCKED
         LIMIT 1
@@ -98,9 +101,13 @@ def process_pending_task(conn) -> bool:
         # 同时检查是否有直接处于 processing 状态但 intent 漏领的任务
         draft = conn.execute(
             """
-            SELECT id, owner, asset_id, pipeline_id, name
-            FROM console_job_draft
-            WHERE state='processing' AND (target_node_id=%s OR target_node_id IS NULL)
+            SELECT draft.id, draft.owner, draft.asset_id, draft.pipeline_id, draft.name
+            FROM console_job_draft AS draft
+            JOIN console_pipeline AS pipeline ON pipeline.id=draft.pipeline_id
+            WHERE draft.state='processing'
+              AND (draft.target_node_id=%s OR draft.target_node_id IS NULL)
+              -- 直接扫描 Job 只是遗留兼容入口，同样不能越过 v2 执行器。
+              AND pipeline.execution_mode='legacy_ocr_v1'
             ORDER BY dispatched_at ASC NULLS LAST, created_at ASC
             FOR UPDATE SKIP LOCKED
             LIMIT 1

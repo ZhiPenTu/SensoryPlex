@@ -497,6 +497,9 @@ impl BufferHandoff {
                 handle: self.arena.id().to_string(),
                 offset: held.offset + offset_in_buffer,
                 length,
+                // HandoffService 不持有监听地址；调用方只可写入本次受控的 loopback
+                // endpoint，空值保持“已在 Start 阶段绑定”的既有语义。
+                handoff_endpoint: String::new(),
             }),
             format: Some(held.format.clone()),
             stream_id: held.stream_id.clone(),

@@ -1,6 +1,8 @@
 syntax = "proto3";
 package edge.material.orchestration.v1;
 
+import "google/protobuf/struct.proto";
+
 // The authoritative, immutable identity of a plugin used by a published pipeline revision.
 message PluginReference {
   string plugin_id = 1;
@@ -43,6 +45,8 @@ message PipelineNode {
   uint32 deadline_ms = 6;
   uint32 max_attempts = 7;
   uint32 priority = 8;
+  // false 表示慢路径 enrichment；失败必须可见，但不阻断已完成的必需快路径。
+  bool required = 9;
 }
 
 message PipelineEdge {
@@ -91,6 +95,7 @@ message PipelineTask {
   string output_ref = 11;
   int64 created_at_unix_ms = 12;
   int64 updated_at_unix_ms = 13;
+  bool required = 14;
 }
 
 message SchedulerAssignment {
@@ -105,6 +110,37 @@ message SchedulerAssignment {
   string run_id = 9;
   uint32 attempt = 10;
   int64 created_at_unix_ms = 11;
+}
+
+// 执行器领取的受控输入清单。它只引用本机数据面或已授权 Observation，绝不携带媒体字节、路径或密钥。
+message TaskInputManifest {
+  string run_id = 1;
+  string task_id = 2;
+  uint32 attempt = 3;
+  string assignment_id = 4;
+  string data_plane_node_id = 5;
+  string descriptor_ref = 6;
+  repeated string observation_refs = 7;
+  string stream_id = 8;
+  int64 start_ms = 9;
+  int64 end_ms = 10;
+  string content_hash = 11;
+}
+
+// 回执使“插件进程还活着”和“这个 assignment 已执行”成为两个不可混淆的事实。
+message TaskExecutionReceipt {
+  string run_id = 1;
+  string task_id = 2;
+  uint32 attempt = 3;
+  string assignment_id = 4;
+  PluginReference plugin = 5;
+  int64 started_at_unix_ms = 6;
+  int64 completed_at_unix_ms = 7;
+  uint32 input_count = 8;
+  uint32 output_count = 9;
+  string result_manifest_ref = 10;
+  string reason_code = 11;
+  string receipt_digest = 12;
 }
 
 message ValidatePipelineRevisionRequest {
@@ -194,6 +230,10 @@ message TaskResult {
   bool retryable = 7;
   string reason_code = 8;
   string error_detail = 9;
+  // output_ref 保留兼容；新调用应使用受校验的结果清单与回执。
+  string result_manifest_ref = 10;
+  TaskExecutionReceipt receipt = 11;
+  google.protobuf.Struct result_summary = 12;
 }
 
 message ReportTaskResultRequest {

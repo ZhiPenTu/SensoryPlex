@@ -59,6 +59,7 @@ def intent(**overrides):
         "bundle_digest": "sha256:" + "b" * 64,
         "runtime_instance_id": "rti_1",
         "grace_period_ms": 3000,
+        "config_hash": "sha256:" + "c" * 64,
         "deadline_unix_ms": 0,
     }
     payload.update(overrides)
@@ -106,6 +107,8 @@ def test_incomplete_intent_is_rejected_without_touching_anything(tmp_path):
         ({"bundle_digest": ""}, "deployment_operation_missing:bundle_digest"),
         ({"runtime_instance_id": ""}, "deployment_operation_missing:runtime_instance_id"),
         ({"artifact_digest": "md5:abc"}, "invalid_artifact_digest"),
+        ({"config_hash": ""}, "deployment_operation_missing:config_hash"),
+        ({"config_hash": "sha256:short"}, "invalid_config_hash"),
         ({"bundle_digest": "rel_1"}, "invalid_bundle_digest"),
     ],
 )

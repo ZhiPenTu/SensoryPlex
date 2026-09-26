@@ -16,7 +16,7 @@ class RevisionConflict(ValueError):
     pass
 
 
-def append_material(conn, material: MaterialUnit, *, trace_id: str) -> bool:
+def append_material(conn, material: MaterialUnit, *, trace_id: str, execution_id: str = "") -> bool:
     """原子性事实 + lineage + outbox；True=新增，False=完全一致的 replay。"""
     validate_material(material)
     if not trace_id:
@@ -26,6 +26,14 @@ def append_material(conn, material: MaterialUnit, *, trace_id: str) -> bool:
     data = material.SerializeToString(deterministic=True)
     digest = "sha256:" + hashlib.sha256(data).hexdigest()
     with conn.transaction():
+        if (
+            execution_id
+            and not conn.execute(
+                "SELECT 1 FROM console_job_execution WHERE execution_id=%s",
+                (execution_id,),
+            ).fetchone()
+        ):
+            raise ValueError("unknown_execution")
         conn.execute(
             "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (material.material_unit_id,)
         )
@@ -39,6 +47,16 @@ def append_material(conn, material: MaterialUnit, *, trace_id: str) -> bool:
                 raise RevisionConflict("material_stream_changed")
             if revision == material.revision:
                 if digest == content_hash:
+                    if execution_id:
+                        conn.execute(
+                            """
+                            INSERT INTO material_execution(
+                                material_unit_id,material_revision,execution_id
+                            ) VALUES (%s,%s,%s)
+                            ON CONFLICT DO NOTHING
+                            """,
+                            (material.material_unit_id, material.revision, execution_id),
+                        )
                     return False
                 raise RevisionConflict("immutable_revision_conflict")
         expected = previous[0][0] + 1 if previous else 1
@@ -63,17 +81,10 @@ def append_material(conn, material: MaterialUnit, *, trace_id: str) -> bool:
                 raise ValueError("source_stream_mismatch")
             p = obs.provenance
             release = conn.execute(
-                "SELECT name,version,artifact_hash,backend,config_hash FROM model_release "
-                "WHERE model_release_id=%s",
+                "SELECT name,artifact_hash FROM model_release WHERE model_release_id=%s",
                 (p.model_release_id,),
             ).fetchone()
-            if release != (
-                p.model_id,
-                p.model_version,
-                p.model_artifact_digest,
-                p.execution_backend,
-                p.config_hash,
-            ):
+            if not release or (release[0], release[1]) != (p.model_id, p.model_artifact_digest):
                 raise ValueError("model_release_mismatch")
             item = conn.execute(
                 "SELECT stream_id,start_ms,end_ms FROM timeline_item WHERE item_id=%s",
@@ -160,6 +171,15 @@ def append_material(conn, material: MaterialUnit, *, trace_id: str) -> bool:
                     ref.time_range.end_ms,
                 ),
             )
+        if execution_id:
+            conn.execute(
+                """
+                INSERT INTO material_execution(material_unit_id,material_revision,execution_id)
+                VALUES (%s,%s,%s)
+                ON CONFLICT DO NOTHING
+                """,
+                (material.material_unit_id, material.revision, execution_id),
+            )
         event_id = f"material:{material.material_unit_id}:{material.revision}"
         event = EventEnvelope(
             event_id=event_id,
@@ -198,12 +218,20 @@ LATEST = """NOT EXISTS (SELECT 1 FROM material_unit newer
     WHERE newer.material_unit_id=m.material_unit_id AND newer.revision>m.revision)"""
 
 
-def get_material(conn, principal, material_id, revision=None):
+def get_material(conn, principal, material_id, revision=None, execution_id: str = ""):
     clause = "m.revision=%s" if revision is not None else LATEST
     params = [principal, material_id] + ([revision] if revision is not None else [])
+    execution_clause = ""
+    if execution_id:
+        execution_clause = (
+            " AND EXISTS (SELECT 1 FROM material_execution execution "
+            "WHERE execution.material_unit_id=m.material_unit_id "
+            "AND execution.material_revision=m.revision AND execution.execution_id=%s)"
+        )
+        params.append(execution_id)
     row = conn.execute(
         f"SELECT m.contract_bytes, NOT ({LATEST}) {BASE} "
-        f"WHERE source.owner=%s AND m.material_unit_id=%s AND {clause}",
+        f"WHERE source.owner=%s AND m.material_unit_id=%s AND {clause}{execution_clause}",
         params,
     ).fetchone()
     if row is None:
@@ -223,6 +251,13 @@ def search_materials(conn, principal, request):
     if request.stream_id:
         clauses.append("m.stream_id=%s")
         params.append(request.stream_id)
+    if request.execution_id:
+        clauses.append(
+            "EXISTS (SELECT 1 FROM material_execution execution "
+            "WHERE execution.material_unit_id=m.material_unit_id "
+            "AND execution.material_revision=m.revision AND execution.execution_id=%s)"
+        )
+        params.append(request.execution_id)
     if request.HasField("start_ms"):
         clauses.append("m.end_ms>%s")
         params.append(request.start_ms)

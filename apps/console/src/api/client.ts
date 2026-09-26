@@ -24,6 +24,8 @@ const messages: Record<string, string> = {
     upload_length_mismatch: '文件未完整上传，请重试。',
     upload_capacity_exhausted: '有其他文件正在上传，请稍后重试。',
     pipeline_referenced_by_drafts: '此方案仍被任务草稿引用，请先归档相关任务。',
+    invalid_multimodal_audio_overlap:
+        '当前 Runtime 尚未实现音频切段重叠；请将 overlap 设为 0，避免保存未实际执行的策略。',
     record_already_exists: '记录已存在，请使用其他名称。',
     password_length_12_to_256_required: '密码长度需要为 12–256 位。',
     token_scope_exceeds_grant: '凭据权限不能超出你的业务权限。',

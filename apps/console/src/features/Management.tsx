@@ -58,6 +58,62 @@ import { usePermission, useSession } from '../session';
 
 const { Text } = Typography;
 
+const MULTIMODAL_PLUGIN_IDS = {
+    ocr: 'org.sensoryplex.ocr-rapidocr',
+    asr: 'org.sensoryplex.asr-whisper-mlx',
+    vlm: 'org.sensoryplex.vlm-moondream',
+} as const;
+
+const multimodalInitialValues = {
+    policy: {
+        // Coverage 是不允许被调低的事实契约；其余参数进入不可变 Revision。
+        window_ms: 1000,
+        sample_interval_ms: 1000,
+        audio_segment_ms: 6000,
+        // Runtime 尚未实现 overlap，首期将其锁为 0，避免把未生效的配置写进 Revision。
+    audio_overlap_ms: 500,
+        vlm_sample_interval_ms: 5000,
+    },
+};
+
+type MultimodalFormValues = {
+    name: string;
+    description?: string;
+    ocr_config_id: string;
+    asr_config_id: string;
+    vlm_config_id?: string;
+    policy: {
+        window_ms: number;
+        sample_interval_ms: number;
+        audio_segment_ms: number;
+        audio_overlap_ms: number;
+        vlm_sample_interval_ms: number;
+    };
+};
+
+type MultimodalValidation = {
+    valid: boolean;
+    errors: string[];
+    graph_digest: string;
+    topological_order: string[];
+    fingerprint?: string;
+};
+
+function multimodalPayload(values: MultimodalFormValues) {
+    return {
+        name: values.name,
+        description: values.description || '',
+        components: [
+            { node_id: 'ocr_fast', config_id: values.ocr_config_id },
+            { node_id: 'asr_fast', config_id: values.asr_config_id },
+            ...(values.vlm_config_id
+                ? [{ node_id: 'vlm_enrich', config_id: values.vlm_config_id, required: false }]
+                : []),
+        ],
+        policy: values.policy,
+    };
+}
+
 /**
  * 处理方案管理 (Pipelines)
  */
@@ -66,6 +122,7 @@ export function Pipelines() {
     const [offset, setOffset] = useState(0);
     const [open, setOpen] = useState(false);
     const [form] = Form.useForm();
+    const [validation, setValidation] = useState<MultimodalValidation | null>(null);
 
     const listing = useQuery({
         queryKey: ['pipelines', offset],
@@ -79,18 +136,23 @@ export function Pipelines() {
             api<PluginConfigList>('/admin/v1/plugin-configurations?limit=100', { signal }),
     });
 
-    const save = useMutation({
-        mutationFn: (values: { name: string; description?: string; config_id: string }) => {
-            const config = configs.data?.items.find((x) => x.id === values.config_id);
-            return post('/admin/v1/pipelines', {
-                ...values,
-                plugin_id: config?.plugin_id,
-            });
+    const validate = useMutation({
+        mutationFn: (body: ReturnType<typeof multimodalPayload>) =>
+            post<MultimodalValidation>('/admin/v1/multimodal-pipelines:validate', body),
+        onSuccess: (result, body) => {
+            setValidation({ ...result, fingerprint: JSON.stringify(body) });
+            if (result.valid) message.success('多模态编排校验通过，已锁定本次图摘要。');
         },
+    });
+
+    const save = useMutation({
+        mutationFn: (body: ReturnType<typeof multimodalPayload>) =>
+            post('/admin/v1/multimodal-pipelines', body),
         onSuccess: () => {
-            message.success('处理方案已成功保存');
+            message.success('多模态处理方案已保存为不可变编排版本');
             setOpen(false);
             form.resetFields();
+            setValidation(null);
             void cache.invalidateQueries({ queryKey: ['pipelines'] });
         },
     });
@@ -105,6 +167,26 @@ export function Pipelines() {
 
     const items = listing.data?.items || [];
     const totalCount = listing.data?.total || 0;
+    const configsByPlugin = (pluginId: string) =>
+        configs.data?.items.filter((item) => item.plugin_id === pluginId) || [];
+
+    const validateForm = async () => {
+        try {
+            const values = (await form.validateFields()) as MultimodalFormValues;
+            validate.mutate(multimodalPayload(values));
+        } catch {
+            // Form 已在字段旁展示校验错误，避免再额外弹出同一条提示。
+        }
+    };
+
+    const saveForm = (values: MultimodalFormValues) => {
+        const body = multimodalPayload(values);
+        if (!validation?.valid || validation.fingerprint !== JSON.stringify(body)) {
+            message.warning('当前配置尚未校验，或校验后已被修改；请先重新校验。');
+            return;
+        }
+        save.mutate(body);
+    };
 
     const columns = [
         {
@@ -145,6 +227,22 @@ export function Pipelines() {
             key: 'revision',
             width: 100,
             render: (rev: number) => <Tag color="purple">v{rev}</Tag>,
+        },
+        {
+            title: '执行语义',
+            key: 'execution',
+            width: 180,
+            render: (_: unknown, row: (typeof items)[0]) =>
+                row.execution_mode === 'orchestrated_v2' ? (
+                    <Space size={[4, 4]} wrap>
+                        <Tag color="blue">多模态编排 v2</Tag>
+                        <Text type="secondary" style={{ fontSize: 11 }}>
+                            图 v{row.orchestration_revision}
+                        </Text>
+                    </Space>
+                ) : (
+                    <Tag>兼容草稿</Tag>
+                ),
         },
         {
             title: '状态',
@@ -216,10 +314,13 @@ export function Pipelines() {
             />
 
             <Notice>
-                方案模板支持版本归档。运行时链路接入后，草稿方案可发布为生产级可调度标准流水线。
+                方案以 OCR 与 ASR 为必需快路径，VLM 为可选慢路径；每秒 coverage 是固定事实网格，
+                采样与分段策略会写入不可变 Revision，而不是依赖全局 YAML。
             </Notice>
 
-            <ErrorNotice error={listing.error || configs.error || archive.error} />
+            <ErrorNotice
+                error={listing.error || configs.error || archive.error || validate.error || save.error}
+            />
 
             <Card bodyStyle={{ padding: 0 }}>
                 {listing.isPending ? (
@@ -245,8 +346,14 @@ export function Pipelines() {
             </Card>
 
             {open ? (
-                <Modal title="新建处理方案" onClose={() => setOpen(false)} width={540}>
-                    <Form form={form} layout="vertical" onFinish={(values) => save.mutate(values)}>
+                <Modal title="新建多模态处理方案" onClose={() => setOpen(false)} width={680}>
+                    <Form
+                        form={form}
+                        layout="vertical"
+                        initialValues={multimodalInitialValues}
+                        onValuesChange={() => setValidation(null)}
+                        onFinish={saveForm}
+                    >
                         <Form.Item
                             name="name"
                             label={<span style={{ fontWeight: 500 }}>方案名称</span>}
@@ -266,24 +373,115 @@ export function Pipelines() {
                             />
                         </Form.Item>
 
+                        <Row gutter={12}>
+                            <Col xs={24} md={12}>
+                                <Form.Item
+                                    name="ocr_config_id"
+                                    label={<span style={{ fontWeight: 500 }}>OCR 快路径配置</span>}
+                                    rules={[{ required: true, message: '请选择 OCR 配置' }]}
+                                >
+                                    <Select
+                                        loading={configs.isPending}
+                                        placeholder="选择 RapidOCR 配置"
+                                        options={configsByPlugin(MULTIMODAL_PLUGIN_IDS.ocr).map((item) => ({
+                                            label: `${item.name} · v${item.revision}`,
+                                            value: item.id,
+                                        }))}
+                                    />
+                                </Form.Item>
+                            </Col>
+                            <Col xs={24} md={12}>
+                                <Form.Item
+                                    name="asr_config_id"
+                                    label={<span style={{ fontWeight: 500 }}>ASR 快路径配置</span>}
+                                    rules={[{ required: true, message: '请选择 ASR 配置' }]}
+                                >
+                                    <Select
+                                        loading={configs.isPending}
+                                        placeholder="选择 Whisper 配置"
+                                        options={configsByPlugin(MULTIMODAL_PLUGIN_IDS.asr).map((item) => ({
+                                            label: `${item.name} · v${item.revision}`,
+                                            value: item.id,
+                                        }))}
+                                    />
+                                </Form.Item>
+                            </Col>
+                        </Row>
+
                         <Form.Item
-                            name="config_id"
-                            label={<span style={{ fontWeight: 500 }}>绑定的插件参数配置</span>}
-                            rules={[{ required: true, message: '请选择插件配置' }]}
+                            name="vlm_config_id"
+                            label={<span style={{ fontWeight: 500 }}>VLM 慢路径配置（可选）</span>}
+                            extra="不选择 VLM 时，执行仍会产生完整 coverage；画面描述会明确显示为未配置，而不会伪造结果。"
                         >
                             <Select
-                                placeholder="选择在插件中心已保存的配置方案"
-                                options={configs.data?.items?.map((c) => ({
-                                    label: `${c.name} (${c.plugin_id})`,
-                                    value: c.id,
+                                allowClear
+                                loading={configs.isPending}
+                                placeholder="可选：选择 Moondream 画面描述配置"
+                                options={configsByPlugin(MULTIMODAL_PLUGIN_IDS.vlm).map((item) => ({
+                                    label: `${item.name} · v${item.revision}`,
+                                    value: item.id,
                                 }))}
-                                notFoundContent={
-                                    <div style={{ padding: 12, textAlign: 'center' }}>
-                                        暂无配置，请先在插件中心保存参数方案
-                                    </div>
-                                }
                             />
                         </Form.Item>
+
+                        <Card size="small" title="时间轴与采样策略" style={{ marginBottom: 16 }}>
+                            <Row gutter={12}>
+                                <Col xs={24} md={8}>
+                                    <Form.Item name={['policy', 'window_ms']} label="Coverage 窗口（毫秒）">
+                                        <InputNumber disabled style={{ width: '100%' }} />
+                                    </Form.Item>
+                                </Col>
+                                <Col xs={24} md={8}>
+                                    <Form.Item
+                                        name={['policy', 'sample_interval_ms']}
+                                        label="视频采样最小间隔（毫秒）"
+                                        rules={[{ required: true, type: 'number', min: 250, max: 60000 }]}
+                                    >
+                                        <InputNumber min={250} max={60000} step={250} style={{ width: '100%' }} />
+                                    </Form.Item>
+                                </Col>
+                                <Col xs={24} md={8}>
+                                    <Form.Item
+                                        name={['policy', 'audio_segment_ms']}
+                                        label="ASR 音频切段（毫秒）"
+                                        rules={[{ required: true, type: 'number', min: 1000, max: 60000 }]}
+                                    >
+                                        <InputNumber min={1000} max={60000} step={1000} style={{ width: '100%' }} />
+                                    </Form.Item>
+                                </Col>
+                                <Col xs={24} md={12}>
+                                    <Form.Item name={['policy', 'audio_overlap_ms']} label="ASR 重叠（毫秒）">
+                                        <InputNumber disabled style={{ width: '100%' }} />
+                                    </Form.Item>
+                                </Col>
+                                <Col xs={24} md={12}>
+                                    <Form.Item
+                                        name={['policy', 'vlm_sample_interval_ms']}
+                                        label="VLM 采样间隔（毫秒）"
+                                        rules={[{ required: true, type: 'number', min: 1000, max: 60000 }]}
+                                    >
+                                        <InputNumber min={1000} max={60000} step={1000} style={{ width: '100%' }} />
+                                    </Form.Item>
+                                </Col>
+                            </Row>
+                            <Text type="secondary" style={{ fontSize: 12 }}>
+                                1 秒窗口是不可变协议；音频 overlap 尚未接入 Runtime，当前强制为 0，避免配置看似生效而实际无效。
+                            </Text>
+                        </Card>
+
+                        {validation ? (
+                            <Alert
+                                type={validation.valid ? 'success' : 'error'}
+                                showIcon
+                                message={validation.valid ? '编排校验通过' : '编排校验未通过'}
+                                description={
+                                    validation.valid
+                                        ? `图摘要：${validation.graph_digest}；执行顺序：${validation.topological_order.join(' → ')}`
+                                        : validation.errors.join('；')
+                                }
+                                style={{ marginBottom: 16 }}
+                            />
+                        ) : null}
 
                         <div
                             style={{
@@ -294,13 +492,16 @@ export function Pipelines() {
                             }}
                         >
                             <Button onClick={() => setOpen(false)}>取消</Button>
+                            <Button loading={validate.isPending} onClick={() => void validateForm()}>
+                                校验方案
+                            </Button>
                             <Button
                                 type="primary"
                                 htmlType="submit"
                                 loading={save.isPending}
-                                disabled={!configs.data?.items?.length}
+                                disabled={!validation?.valid}
                             >
-                                保存方案草稿
+                                保存不可变方案
                             </Button>
                         </div>
                     </Form>

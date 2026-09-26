@@ -5,6 +5,7 @@
 """
 
 import argparse
+import hashlib
 import json
 import os
 import platform
@@ -151,6 +152,70 @@ class NodeAgentClient:
                 raise RuntimeError(f"HTTP {e.code}: {code}") from e
             except json.JSONDecodeError:
                 raise RuntimeError(f"HTTP {e.code}: {err_body}") from e
+
+    def _get_json(self, path: str) -> dict[str, Any]:
+        """读取 Agent 专用控制面 JSON；所有调用都带节点会话。"""
+        request = urllib.request.Request(
+            f"{self.main_url}{path}",
+            headers={
+                "Authorization": f"Bearer {self.session_token}",
+                "User-Agent": f"SensoryPlex-NodeAgent/{self.node_id}",
+            },
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            body = error.read().decode("utf-8", "replace")
+            try:
+                code = json.loads(body).get("reason_code") or body[:160]
+            except json.JSONDecodeError:
+                code = body[:160]
+            raise RuntimeError(f"HTTP {error.code}: {code}") from error
+
+    def task_manifest(self, intent_id: str) -> dict[str, Any]:
+        """获取 v2 Task 的受控身份/策略清单；不含媒体路径或插件 endpoint。"""
+        return self._get_json(f"/v1/agent/task-intents/{intent_id}/manifest")
+
+    def download_task_asset(self, intent_id: str, target: Path, expected_digest: str) -> Path:
+        """下载已绑定 assignment 的媒体到 Agent 私有工作区，并复算内容摘要。"""
+        request = urllib.request.Request(
+            f"{self.main_url}/v1/agent/task-intents/{intent_id}/asset",
+            headers={
+                "Authorization": f"Bearer {self.session_token}",
+                "User-Agent": f"SensoryPlex-NodeAgent/{self.node_id}",
+            },
+            method="GET",
+        )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(f"{target.name}.part")
+        digest = hashlib.sha256()
+        try:
+            with urllib.request.urlopen(request, timeout=BUNDLE_DOWNLOAD_TIMEOUT_S) as response:
+                with temporary.open("wb") as handle:
+                    for block in iter(lambda: response.read(1 << 20), b""):
+                        digest.update(block)
+                        handle.write(block)
+        except (urllib.error.URLError, OSError) as error:
+            temporary.unlink(missing_ok=True)
+            raise RuntimeError(f"task_asset_download_failed: {error}") from error
+        actual = "sha256:" + digest.hexdigest()
+        if actual != expected_digest:
+            temporary.unlink(missing_ok=True)
+            raise RuntimeError(
+                f"task_asset_digest_mismatch: expected={expected_digest} actual={actual}"
+            )
+        temporary.replace(target)
+        return target
+
+    def report_task_result(self, task_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """提交 v2 Task 事实；接口会校验本节点、assignment、回执与不可变插件身份。"""
+        return self._post(f"/v1/agent/tasks/{task_id}:result", payload, token=self.session_token)
+
+    def ingest_task_timeline(self, task_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """提交 Timeline 融合出的派生事实；不传原始媒体或任何宿主路径。"""
+        return self._post(f"/v1/agent/tasks/{task_id}:timeline", payload, token=self.session_token)
 
     def register_candidate(
         self,
@@ -504,8 +569,49 @@ def execute_intent(
         return True
 
     elif action == "task_process":
-        # 任务意图与插件安装意图共用传输通道，但 Agent 尚未接入受控 Runtime 执行器。
-        # 必须给控制面稳定的失败事实，不能返回 unknown action 后让任务永久停在处理中。
+        config = intent.get("config") or {}
+        if config.get("execution_mode") == "orchestrated_v2":
+            try:
+                from tools.task_executor import TaskExecutor
+            except ImportError:
+                client.report_deployment(
+                    intent_id=intent_id,
+                    instance_id=instance_id,
+                    action=intent["action"],
+                    success=False,
+                    actual_state="PLUGIN_INSTANCE_STATE_FAILED",
+                    error_code="task_executor_unavailable",
+                    error_detail="agent is running without the controlled task executor module",
+                )
+                return False
+            try:
+                # `execute` 只有在结果入口已持久化可核验回执后才返回。业务失败也会有
+                # receipt，随后由 report 仅完成 delivery intent，不会伪造成业务成功。
+                TaskExecutor(client, base_dir=base_dir).execute(intent)
+            except Exception as error:  # noqa: BLE001 - 不把 Runtime/gRPC/媒体错误回显到控制面
+                LOGGER.error(
+                    "TaskExecutor failed for intent %s: %s", intent_id, error, exc_info=True
+                )
+                client.report_deployment(
+                    intent_id=intent_id,
+                    instance_id=instance_id,
+                    action=intent["action"],
+                    success=False,
+                    actual_state="PLUGIN_INSTANCE_STATE_FAILED",
+                    error_code="task_executor_result_not_recorded",
+                    error_detail="controlled task executor did not record an execution receipt",
+                )
+                return False
+            client.report_deployment(
+                intent_id=intent_id,
+                instance_id=instance_id,
+                action=intent["action"],
+                success=True,
+                actual_state="PLUGIN_INSTANCE_STATE_READY",
+            )
+            return True
+
+        # 历史任务保持明确拒绝，防止旧控制消息绕过不可变 Revision/receipt 协议。
         client.report_deployment(
             intent_id=intent_id,
             instance_id=instance_id,

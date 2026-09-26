@@ -2984,3 +2984,46 @@ ADR-026 建立的「部署意图 + 状态上报」通路里，Agent 只做**目�
   公开站点"的链接策略。
 - **未验证自定义域名与证书链**：只用默认 `*.github.io` 地址（仓库 Pages 配置为 `https_enforced=true`）。
 - **只有两种语言**：日/韩等更多语言是"加语言目录 + 一份 `locales` 配置"的动作，当前未做。
+
+
+## 多模态文件任务执行闭环（ADR-028 / ADR-029 / ADR-030 桥接，2026-09-26）
+
+依据 [多模态文件任务执行闭环方案](design/multimodal-pipeline-execution-plan.md) 落地。
+解决的核心问题是：此前 Console 创建方案与任务只执行 legacy OCR 旁路（`tools/task_runner.py`），
+ASR 从未被调用、VLM 仅走单机未受控旁路，时间轴无法区分“未调度/正在运行/无语音文字/执行失败”，
+且不同执行批次与不同切片策略的素材在查询时存在混看。
+
+### 核心实现事实
+
+1. **不可变 Revision 与桥接存储**：
+   - 迁移 `0011_multimodal_execution_bridge.sql`：`console_pipeline` 增加 `orchestrated_v2` 与不可变 `pipeline_revision` 严格外键约束；`console_job_execution` 提供任务启动时的不可变快照；`task_execution_receipt` 记录 `(task_id, attempt, assignment_id)` 唯一回执；`material_execution` 实现素材按 execution_id 严格隔离。
+   - 迁移 `0012_timeline_coverage.sql`：不可变追加式 `timeline_window_state` 记录 1 秒网格的覆盖事实，空秒不虚构素材。
+2. **契约与 Proto**：
+   - `proto/orchestration/v1/orchestration.proto` 追加 `TaskInputManifest`、`TaskExecutionReceipt`、`TimelineWindow`、`ExecutionSummary`；通过 `make proto` 同步生成 Python SDK 与 Console TypeScript 契约。
+3. **受控执行闭环（TaskExecutor & Node Agent）**：
+   - 新增 `tools/task_executor.py`，只由 `node_agent.py` 领取的 `orchestrated_v2` 意图驱动；
+   - 执行器从 ADR-030 active `plugin_runtime_instance` 读取受控 loopback endpoint，核对 artifact_digest 与 config_hash；
+   - 宿主 GStreamer 解码/切段与 handoff 保留，插件只读一次共享内存并在成功/失败均显式释放 lease；
+   - 调度真实本地 `ocr-rapidocr` (PP-OCRv6)、`asr-whisper-mlx` (Whisper Large v3 Turbo)、`vlm-moondream` (Moondream v2) 与 `sensoryplex-runtime timeline`；
+   - 业务回执与 Timeline 事实通过受认证接口 `/v1/agent/tasks/{id}:result` 与 `:timeline` 事务入库。
+4. **控制台全链路对接**：
+   - `Management.tsx` 支持多模态 v2 场景化方案编辑、DAG 校验与发布；
+   - `Jobs.tsx` 展示执行详情弹窗、快路径/慢路径状态与精确失败原因；
+   - `Materials.tsx` 默认按 execution_id 过滤隔离。
+
+### 验收命令与实测证据
+
+| 验证场景 | 验收命令 | 实测结果 |
+| --- | --- | --- |
+| 1. 契约与单元测试 | `make test-contracts` | **421 passed** in 5.6s (包含 TaskExecutor 与 TaskWorker 隔离测试) |
+| 2. 容器内集成测试 | `make test-integration` | **95 passed** in 49.5s (包含 v2 方案发布、无 active 阻断、Agent 意图与回执协议、覆盖层入库) |
+| 3. Rust 工具链全集 | `cargo test --workspace --locked` | **146 passed** (包含 media 解码切段、handoff、timeline、fusion 核心) |
+| 4. 插件热部署控制面 | `make plugin-deploy-check-api` | **92/92 passed** (包含 release 导入拒收、意图白名单校验、蓝绿切换与回滚) |
+| 5. 方案验证与控制面契约 | `make multimodal-pipeline-check` | **20 项全部通过** (验证非法音频重叠拒收 422、非法 window_ms 拒收 422、缺少必需组件拒收 422、非法配置拒收 422、合法 DAG 编译、发布生成不可变 revision、未准入节点调度拒收 409、不可变执行快照登记) |
+| 6. 真实媒体三模态执行闭环 | `make multimodal-execution-check MEDIA=...` | **实测通过 [PASS]**；真实样本（46.5MB，103.352s）产生 11 个素材单元、104 个 1 秒覆盖窗口（尾窗 `[103000, 103352)` 对齐真实时长）、4 个任务（ASR、OCR、Timeline Fusion、VLM）全部产生受验证回执并达到 succeeded 终态：<br>· ASR (Whisper MLX): 5 inputs, 5 outputs<br>· OCR (RapidOCR): 11 inputs, 11 outputs<br>· VLM (Moondream): 7 inputs, 7 outputs<br>· Timeline Fusion: 16 inputs, 11 outputs |
+
+### 严格未验收边界（保持诚实）
+
+- **`golden_path_verified=false` 保持不变**：多模态文件执行闭环属于同机文件批处理能力，不等于系统整体生产 Golden Path 已验收；
+- **平台专属约束**：ASR 的 MLX 后端仅在 `macos-aarch64` 验证，Linux 环境未支持亦未假冒；
+- **执行范围边界**：本期不包含跨机 raw buffer 共享内存、容器内模型运行、第三方未认证任意命令与进程内热重载。

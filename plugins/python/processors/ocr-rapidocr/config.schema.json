@@ -4,8 +4,12 @@
   "title": "ocr-rapidocr Start(config)",
   "type": "object",
   "additionalProperties": false,
-  "required": ["handoff_endpoint"],
   "properties": {
+    "data_plane_mode": {
+      "enum": ["static", "per_request"],
+      "default": "static",
+      "description": "static 在 Start 时绑定固定 handoff；per_request 仅接受 Runtime 写入 descriptor 的 loopback handoff"
+    },
     "handoff_endpoint": {
       "type": "string",
       "description": "Runtime 数据面 gRPC 地址（只允许 host:port，不含 scheme）"

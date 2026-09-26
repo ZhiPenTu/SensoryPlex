@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 import shutil
 import sys
 import time
@@ -202,6 +203,7 @@ class HotDeployExecutor:
         candidate = identity
         plugin_id = intent["plugin_id"]
         release_id = candidate["release_id"]
+        config_hash = candidate["config_hash"]
         started = time.monotonic()
 
         # ── staging：下载 → 复算摘要 → 安全解包 → 逐文件对账 → 离线安装 ──
@@ -298,6 +300,9 @@ class HotDeployExecutor:
                 "plugin_id": plugin_id,
                 "release_id": release_id,
                 "artifact_digest": intent["artifact_digest"],
+                # 控制面基于原始 JSON 锁定的身份。Struct 传输会规范化数字或省略 null，
+                # 重算会造成台账与 Revision 漂移，故此处只使用独立契约字段。
+                "config_hash": config_hash,
                 "operation_id": candidate["operation_id"],
                 "generation": candidate["generation"],
                 "unit_name": unit,
@@ -495,6 +500,7 @@ class HotDeployExecutor:
             "runtime_instance_id": intent.get("runtime_instance_id") or "",
             "generation": int(intent.get("generation") or 0),
             "artifact_digest": intent.get("artifact_digest") or "",
+            "config_hash": intent.get("config_hash") or "",
         }
         for key, value in candidate.items():
             if key == "generation":
@@ -503,6 +509,8 @@ class HotDeployExecutor:
                 return f"deployment_operation_missing:{key}"
         if not candidate["artifact_digest"].startswith("sha256:"):
             return "invalid_artifact_digest"
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", candidate["config_hash"]):
+            return "invalid_config_hash"
         if not candidate["bundle_digest"].startswith("sha256:"):
             return "invalid_bundle_digest"
         deadline_ms = int(intent.get("deadline_unix_ms") or 0)

@@ -108,6 +108,7 @@ mod tests {
                 handle: "opaque".into(),
                 offset: 0,
                 length: 12,
+                handoff_endpoint: String::new(),
             }),
             lease: Some(BufferLease {
                 lease_id: "lease".into(),

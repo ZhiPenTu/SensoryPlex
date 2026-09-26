@@ -23,6 +23,7 @@ MAX_GRAPH_EDGES = 1024
 MAX_ATTEMPTS = 16
 VALID_PLACEMENTS = {"data_plane_local", "object_ref_allowed"}
 VALID_JOINS = {"same_item", "same_stream_window", "window_contains"}
+TERMINAL_TASK_STATES = {"succeeded", "failed", "cancelled", "blocked"}
 
 
 def validate_and_normalize_graph(
@@ -70,6 +71,9 @@ def validate_and_normalize_graph(
         node_map[node_id] = {
             "id": node_id,
             "plugin_id": plugin_id,
+            # 兼容 ADR-029 的既有图：未声明时仍是必需节点。多模态 v2 显式写入，
+            # 这样可选 VLM 补全失败不会篡改快路径的成功事实。
+            "required": bool(node.get("required", True)),
             "consumes": sorted(consumes),
             "produces": sorted(produces),
             "placement": placement,
@@ -77,6 +81,24 @@ def validate_and_normalize_graph(
             "max_attempts": max_attempts,
             "priority": int(node.get("priority", 0)),
         }
+        # 下列身份字段是可选的通用扩展。Console v2 会强制填满它们；保留通用
+        # 编排 API 的老调用兼容性，避免把历史 P1 revision 误判成可执行多模态方案。
+        for field in ("plugin_version", "artifact_digest", "config_hash", "config_id"):
+            value = node.get(field)
+            if value is not None:
+                normalized = str(value).strip()
+                if not normalized:
+                    errors.append("invalid_orchestration_plugin_identity")
+                    break
+                node_map[node_id][field] = normalized
+        if "execution_policy" in node:
+            # 只有受限多模态编译器会写入本字段；它仍进入 graph_digest，避免任务执行
+            # 时从可变的全局 YAML 重新推断采样和窗口策略。
+            policy = node["execution_policy"]
+            if not isinstance(policy, dict):
+                errors.append("invalid_orchestration_execution_policy")
+                continue
+            node_map[node_id]["execution_policy"] = policy
 
     if errors:
         return False, errors, "", [], {}
@@ -315,7 +337,9 @@ def submit_pipeline_run(
     # 计算入度以确认初始状态
     in_degrees: dict[str, int] = {n["id"]: 0 for n in nodes}
     for e in edges:
-        in_degrees[e["to_node_id"]] = in_degrees.get(e["to_node_id"], 0) + 1
+        # 可选补全不阻塞融合快路径；它的失败仍会保留为独立 Task 终态。
+        if e.get("required", True):
+            in_degrees[e["to_node_id"]] = in_degrees.get(e["to_node_id"], 0) + 1
 
     created_tasks: list[dict[str, Any]] = []
     for n in nodes:
@@ -328,8 +352,8 @@ def submit_pipeline_run(
             """
             INSERT INTO pipeline_task (
                 task_id, run_id, node_id, attempt, max_attempts,
-                idempotency_key, state
-            ) VALUES (%s, %s, %s, 0, %s, %s, %s)
+                idempotency_key, state, required
+            ) VALUES (%s, %s, %s, 0, %s, %s, %s, %s)
             """,
             (
                 task_id,
@@ -338,6 +362,7 @@ def submit_pipeline_run(
                 n.get("max_attempts", 1),
                 task_idemp,
                 initial_state,
+                n.get("required", True),
             ),
         )
         created_tasks.append(
@@ -349,6 +374,7 @@ def submit_pipeline_run(
                 "max_attempts": n.get("max_attempts", 1),
                 "idempotency_key": task_idemp,
                 "state": initial_state,
+                "required": n.get("required", True),
             }
         )
 
@@ -677,6 +703,228 @@ def schedule_ready_tasks(
     return assigned
 
 
+def _receipt_digest(receipt: dict[str, Any]) -> str:
+    """用稳定字段复算回执摘要，避免调用方以同一 identity 覆盖另一份执行事实。"""
+    payload = {
+        "run_id": receipt["run_id"],
+        "task_id": receipt["task_id"],
+        "attempt": int(receipt["attempt"]),
+        "assignment_id": receipt["assignment_id"],
+        "plugin_id": receipt["plugin_id"],
+        "artifact_digest": receipt["artifact_digest"],
+        "config_hash": receipt["config_hash"],
+        "input_count": int(receipt["input_count"]),
+        "output_count": int(receipt["output_count"]),
+        "result_manifest_ref": receipt["result_manifest_ref"],
+        "reason_code": receipt["reason_code"],
+        "started_at": receipt["started_at"].isoformat(),
+        "completed_at": receipt["completed_at"].isoformat(),
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _task_node_spec(conn, task: dict[str, Any]) -> dict[str, Any]:
+    """读取 Task 绑定 Revision 中的节点定义；找不到即说明持久化账目已经损坏。"""
+    run = one(
+        conn,
+        "SELECT pipeline_id,revision FROM pipeline_run WHERE run_id=%s",
+        (task["run_id"],),
+    )
+    revision = (
+        one(
+            conn,
+            "SELECT definition_json FROM pipeline_revision WHERE pipeline_id=%s AND revision=%s",
+            (run["pipeline_id"], run["revision"]),
+        )
+        if run
+        else None
+    )
+    if not revision:
+        fail(409, "task_revision_missing")
+    node = next(
+        (
+            entry
+            for entry in revision["definition_json"].get("nodes", [])
+            if entry["id"] == task["node_id"]
+        ),
+        None,
+    )
+    if not node:
+        fail(409, "task_node_missing_from_revision")
+    return node
+
+
+def _record_task_execution_receipt(conn, task: dict[str, Any], receipt: dict[str, Any]) -> None:
+    """校验并持久化不可变执行回执；同一 assignment 只能重放完全相同的事实。"""
+    required_fields = {
+        "run_id",
+        "task_id",
+        "attempt",
+        "assignment_id",
+        "plugin_id",
+        "artifact_digest",
+        "config_hash",
+        "input_count",
+        "output_count",
+        "result_manifest_ref",
+        "reason_code",
+        "started_at",
+        "completed_at",
+        "receipt_digest",
+    }
+    if not required_fields.issubset(receipt):
+        fail(422, "task_execution_receipt_invalid")
+    if (
+        receipt["run_id"] != task["run_id"]
+        or receipt["task_id"] != task["task_id"]
+        or int(receipt["attempt"]) != task["attempt"]
+        or receipt["assignment_id"] != task["assignment_id"]
+    ):
+        fail(409, "task_execution_receipt_identity_mismatch")
+    if (
+        not isinstance(receipt["input_count"], int)
+        or not isinstance(receipt["output_count"], int)
+        or receipt["input_count"] < 0
+        or receipt["output_count"] < 0
+        or receipt["completed_at"] < receipt["started_at"]
+    ):
+        fail(422, "task_execution_receipt_invalid")
+    if any(
+        len(str(receipt[field])) > limit
+        for field, limit in (
+            ("result_manifest_ref", 512),
+            ("reason_code", 160),
+            ("plugin_id", 256),
+        )
+    ):
+        fail(422, "task_execution_receipt_limits_exceeded")
+
+    node = _task_node_spec(conn, task)
+    for field in ("plugin_id", "artifact_digest", "config_hash"):
+        expected = node.get(field, "")
+        if not expected or receipt[field] != expected:
+            fail(422, "task_receipt_plugin_identity_mismatch")
+
+    computed = _receipt_digest(receipt)
+    if receipt["receipt_digest"] != computed:
+        fail(422, "task_receipt_digest_mismatch")
+    existing = one(
+        conn,
+        """
+        SELECT receipt_digest FROM task_execution_receipt
+        WHERE task_id=%s AND attempt=%s AND assignment_id=%s
+        """,
+        (task["task_id"], task["attempt"], task["assignment_id"]),
+    )
+    if existing:
+        if existing["receipt_digest"] != computed:
+            fail(409, "task_receipt_conflict")
+        return
+
+    conn.execute(
+        """
+        INSERT INTO task_execution_receipt(
+            task_id,attempt,assignment_id,run_id,plugin_id,artifact_digest,config_hash,
+            input_count,output_count,result_manifest_ref,reason_code,receipt_digest,
+            started_at,completed_at
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        """,
+        (
+            task["task_id"],
+            task["attempt"],
+            task["assignment_id"],
+            task["run_id"],
+            receipt["plugin_id"],
+            receipt["artifact_digest"],
+            receipt["config_hash"],
+            receipt["input_count"],
+            receipt["output_count"],
+            receipt["result_manifest_ref"],
+            receipt["reason_code"],
+            computed,
+            receipt["started_at"],
+            receipt["completed_at"],
+        ),
+    )
+
+
+def _sync_console_execution(conn, run_id: str) -> str | None:
+    """将底层 Run 的事实状态投影为 Console 执行摘要，不改变不可变绑定字段。"""
+    execution = one(
+        conn,
+        "SELECT * FROM console_job_execution WHERE run_id=%s FOR UPDATE",
+        (run_id,),
+    )
+    if not execution:
+        return None
+    run = one(conn, "SELECT * FROM pipeline_run WHERE run_id=%s", (run_id,))
+    task_rows = rows(
+        conn,
+        "SELECT node_id,required,state,reason_code FROM pipeline_task "
+        "WHERE run_id=%s ORDER BY node_id",
+        (run_id,),
+    )
+    summary = {
+        "tasks": [
+            {
+                "node_id": item["node_id"],
+                "required": bool(item["required"]),
+                "state": item["state"],
+                "reason_code": item.get("reason_code") or "",
+            }
+            for item in task_rows
+        ],
+        "counts": {
+            state: sum(1 for item in task_rows if item["state"] == state)
+            for state in sorted({item["state"] for item in task_rows})
+        },
+    }
+    terminal = all(item["state"] in TERMINAL_TASK_STATES for item in task_rows)
+    required_succeeded = all(item["state"] == "succeeded" for item in task_rows if item["required"])
+    optional_incomplete = any(
+        not item["required"] and item["state"] != "succeeded" for item in task_rows
+    )
+
+    state = "running"
+    if run["state"] == "cancelled":
+        state = "cancelled"
+    elif run["state"] in {"failed", "expired"}:
+        state = "failed"
+    elif terminal and required_succeeded:
+        state = "succeeded_with_partial_enrichment" if optional_incomplete else "succeeded"
+        if run["state"] not in {"succeeded", "failed", "cancelled", "expired"}:
+            conn.execute(
+                "UPDATE pipeline_run SET state='succeeded',completed_at=now(),updated_at=now() "
+                "WHERE run_id=%s",
+                (run_id,),
+            )
+
+    completed = state in {"succeeded", "succeeded_with_partial_enrichment", "failed", "cancelled"}
+    conn.execute(
+        """
+        UPDATE console_job_execution
+        SET state=%s, modality_summary=%s,
+            completed_at=CASE WHEN %s THEN COALESCE(completed_at, now()) ELSE NULL END
+        WHERE execution_id=%s
+        """,
+        (state, Jsonb(summary), completed, execution["execution_id"]),
+    )
+    if completed:
+        job_state = "completed" if state.startswith("succeeded") else state
+        reason = "" if state.startswith("succeeded") else (run.get("error_code") or state)
+        conn.execute(
+            """
+            UPDATE console_job_draft
+            SET state=%s, error_code=NULLIF(%s,''), error_detail=NULL,
+                completed_at=COALESCE(completed_at, now())
+            WHERE id=%s
+            """,
+            (job_state, reason, execution["job_id"]),
+        )
+    return state
+
+
 def report_task_result(
     conn,
     task_id: str,
@@ -688,6 +936,7 @@ def report_task_result(
     retryable: bool = False,
     reason_code: str = "",
     error_detail: str = "",
+    receipt: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """处理任务结果上报。严格对账 attempt/assignment，
     处理成功解锁、有界重试、失败阻断及取消后结果丢弃。"""
@@ -727,6 +976,18 @@ def report_task_result(
             "discarded": True,
             "reason": "task_already_cancelled",
         }
+
+    # 只有 Console v2 执行强制回执；保留 P1 通用 API 的历史测试和现有 Revision，
+    # 但绝不允许 v2 用裸 output_ref 宣告任务成功。
+    execution_scoped = one(
+        conn,
+        "SELECT execution_id FROM console_job_execution WHERE run_id=%s",
+        (run_id,),
+    )
+    if execution_scoped:
+        if receipt is None:
+            fail(422, "task_execution_receipt_required")
+        _record_task_execution_receipt(conn, task, receipt)
 
     unlocked_task_ids: list[str] = []
 
@@ -774,27 +1035,31 @@ def report_task_result(
                 if unlocked:
                     unlocked_task_ids.append(unlocked["task_id"])
 
-        # 检查 Run 是否整体成功
+        execution_state = _sync_console_execution(conn, run_id)
         remaining = conn.execute(
-            "SELECT count(*) FROM pipeline_task WHERE run_id=%s AND state != 'succeeded'",
+            "SELECT count(*) FROM pipeline_task WHERE run_id=%s "
+            "AND state NOT IN ('succeeded','failed','cancelled','blocked')",
             (run_id,),
         ).fetchone()[0]
-
-        if remaining == 0:
-            conn.execute(
-                """
-                UPDATE pipeline_run
-                SET state='succeeded', completed_at=now(), updated_at=now()
-                WHERE run_id=%s
-                """,
+        if remaining == 0 and execution_state is None:
+            # 通用 ADR-029 Run 没有 Console 执行投影时，沿用既有的“全部成功才成功”语义。
+            unsucceeded = conn.execute(
+                "SELECT count(*) FROM pipeline_task WHERE run_id=%s AND state != 'succeeded'",
                 (run_id,),
-            )
+            ).fetchone()[0]
+            if unsucceeded == 0:
+                conn.execute(
+                    "UPDATE pipeline_run SET state='succeeded',completed_at=now(),updated_at=now() "
+                    "WHERE run_id=%s",
+                    (run_id,),
+                )
 
         updated_task = one(conn, "SELECT * FROM pipeline_task WHERE task_id=%s", (task_id,))
         return {
             "task": updated_task,
             "unlocked_task_ids": unlocked_task_ids,
-            "run_completed": remaining == 0,
+            "run_completed": execution_state in {"succeeded", "succeeded_with_partial_enrichment"}
+            or (execution_state is None and remaining == 0),
         }
 
     else:
@@ -829,6 +1094,17 @@ def report_task_result(
                 (final_reason, error_detail, task_id),
             )
 
+            if not task.get("required", True):
+                # 可选慢路径失败只影响 enrichment 摘要；其 required=false 边不会阻断 Fusion。
+                _sync_console_execution(conn, run_id)
+                updated_task = one(conn, "SELECT * FROM pipeline_task WHERE task_id=%s", (task_id,))
+                return {
+                    "task": updated_task,
+                    "unlocked_task_ids": [],
+                    "reason_code": final_reason,
+                    "partial_enrichment_failed": True,
+                }
+
             # 必需上游失败，递归级联阻塞所有下游 pending 任务
             conn.execute(
                 """
@@ -857,6 +1133,7 @@ def report_task_result(
                 """,
                 (final_reason, error_detail, run_id),
             )
+            _sync_console_execution(conn, run_id)
 
             updated_task = one(conn, "SELECT * FROM pipeline_task WHERE task_id=%s", (task_id,))
             return {
