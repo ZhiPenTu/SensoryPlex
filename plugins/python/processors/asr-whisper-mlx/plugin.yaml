@@ -56,6 +56,6 @@ spec:
   artifacts:
     form: local_native
     image: local:plugins/python/processors/asr-whisper-mlx
-    digest: sha256:f854a08b880febad577120b4c72fd008315dd0f59f761ef1fe97238f18a7cfd0
+    digest: sha256:a0e4d8416a4a670b62933f7ca045ebf14573f3496310fa4bdce65ff92488b896
     sbom: sbom.cdx.json
     signatureUnavailableReason: local_native_plugin_is_not_signed_in_v1

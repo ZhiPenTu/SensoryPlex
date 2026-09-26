@@ -1,0 +1,31 @@
+{
+  "bomFormat": "CycloneDX",
+  "components": [
+    {
+      "name": "edge-material-sdk",
+      "type": "library",
+      "version": "unspecified"
+    }
+  ],
+  "metadata": {
+    "component": {
+      "name": "edge-material-plugin-deploy-canary",
+      "properties": [
+        {
+          "name": "sensoryplex:package_digest",
+          "value": "sha256:5e7931055fcdc24e5d61a7d1a09de3e6f63f137e28fe340e60ac4e9beddd374e"
+        }
+      ],
+      "type": "application",
+      "version": "0.1.0"
+    },
+    "tools": [
+      {
+        "name": "sensoryplex-plugin-artifact",
+        "version": "0.1.0"
+      }
+    ]
+  },
+  "specVersion": "1.5",
+  "version": 1
+}

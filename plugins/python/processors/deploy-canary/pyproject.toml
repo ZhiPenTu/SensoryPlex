@@ -1,0 +1,13 @@
+[project]
+name = "edge-material-plugin-deploy-canary"
+version = "0.1.0"
+description = "SensoryPlex deploy canary plugin (lifecycle-only self-check, no business data)"
+requires-python = ">=3.12,<3.13"
+dependencies = ["edge-material-sdk"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/deploy_canary"]

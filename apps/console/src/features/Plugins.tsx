@@ -27,6 +27,7 @@ import {
     ClusterOutlined,
 } from '@ant-design/icons';
 import { PluginFields, readConfig } from './PluginFields';
+import PluginDeployments from './PluginDeployments';
 import { api, post } from '../api/client';
 import type {
     NodeList,
@@ -427,7 +428,7 @@ export default function Plugins() {
                                                                     setSelectedConfigId('');
                                                                 }}
                                                             >
-                                                                部署至节点
+                                                                部署意图
                                                             </Button>
                                                         </div>
                                                     </Card>
@@ -437,6 +438,16 @@ export default function Plugins() {
                                     )}
                                 </div>
                             ),
+                        },
+                        {
+                            key: 'deployments',
+                            label: (
+                                <Space size={6}>
+                                    <CloudDownloadOutlined />
+                                    <span>热部署（ADR-030）</span>
+                                </Space>
+                            ),
+                            children: <PluginDeployments />,
                         },
                         {
                             key: 'configs',
@@ -630,7 +641,7 @@ export default function Plugins() {
                                 loading={deploy.isPending}
                                 onClick={() => deploy.mutate()}
                             >
-                                下发部署意图
+                                下发部署意图（旧通路）
                             </Button>
                         </div>
                     </div>

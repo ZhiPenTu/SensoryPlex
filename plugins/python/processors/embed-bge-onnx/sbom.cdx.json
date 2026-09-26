@@ -57,7 +57,7 @@
       "properties": [
         {
           "name": "sensoryplex:package_digest",
-          "value": "sha256:09b6d646c528cd8b9d20648bd532ec02dd8e74512df2c4d93d816193f442775d"
+          "value": "sha256:deeb0ccc920df22e28445c50286d538395fb2dc703c8c5e9d1014f1488d8bb60"
         }
       ],
       "type": "application",

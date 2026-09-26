@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     blob_root: Path = ROOT / ".data/console-media"
     console_dist: Path = ROOT / "apps/console/dist"
     plugin_root: Path = ROOT / "plugins/python/processors"
+    # 受控制品仓（ADR-030）：由 tools/plugin_release.py 在构建机写出；API 只读，
+    # 导入时重新计算落盘 bundle 的字节摘要，因此客户端无法伪造 release 摘要。
+    release_repository: Path = ROOT / ".data/releases"
     max_upload_bytes: int = Field(default=1024**3, ge=1, le=10 * 1024**3)
     upload_timeout_s: int = Field(default=900, ge=10, le=3600)
     session_hours: int = Field(default=12, ge=1, le=24)

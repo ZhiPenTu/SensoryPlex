@@ -204,8 +204,41 @@ make demo-seed
 | `make task-worker` | host | 宿主任务执行工作器：监听控制台任务，调度宿主 GStreamer + OCR + Timeline 融合 |
 | `make check` / `test` / `format`（rust 部分） / `runtime` / `pipeline-check` / `media-check` / `media-replay` / `live-check` / `backpressure-check` / `capability-check` / `handoff-check` / `model-check` / `asr-check` | **host** | 调用主机 `cargo`；待批准工具链容器后再切回 |
 | `make stream-up` / `stream-down` / `stream-status` / `stream-logs` | host | 媒体流独立 compose |
+| `make plugin-release` / `plugin-release-verify` | **host** | ADR-030：构建受控 bundle（构建机需要联网 `pip download` 与宿主解释器）并独立复算整包/逐文件摘要；产物写进 `.data/releases/` |
+| `make plugin-deploy-check-api` | api 容器 | ADR-030 控制面契约验收：release 导入与拒收、意图通路、状态机、fencing、蓝绿切换、排空、回滚、下载授权、余量不足、候选准入 |
+| `make plugin-deploy-check-native` | **host** | ADR-030 原生执行器验收：真实平台服务（LaunchAgent）+ 真实进程 + endpoint 文件 + 真实首方插件蓝绿/排空/回滚/重启对账；**可重复运行**（槽位为空走 `provision`，槽位已有 active 自动走蓝绿 `upgrade` 并在报告里注明）；**Linux systemd 适配器尚未在 Linux 节点验收** |
+| `make plugin-deploy-check` | api/host 协调 | 上面两项一起跑（控制面在容器、原生执行器在宿主） |
 
 执行任何 `make <target>` 前确保 `./deploy/up.sh` 已经启动容器栈。
+
+
+## 插件热部署（ADR-030，local_native 首期）
+
+把「部署意图 + 状态上报」升级为真实执行闭环；首期只支持 SensoryPlex 自研、`local_native` 的
+macOS/Linux 插件。热部署 == **独立进程的版本化蓝绿切换**，不提供也不承诺进程内 `hotReload`。
+
+- 范围之外（不得宣称）：容器插件、第三方未签名插件、意图内的任意 URL/命令/宿主路径/密钥、
+  跨机共享内存、业务 `Process` 验证、自动 CPU fallback。
+- 意图只携带 `release_id`/`bundle_digest`/generation 等受控身份；Agent 从受认证端点
+  `GET /v1/agent/releases/{release_id}/bundle` 取包（必须持有未完成意图），解包前拒绝路径穿越、
+  符号链接、超限成员与任一摘要不符；安装用 bundle 内 `wheelhouse` **离线**完成，部署期不联网。
+- 状态机 `accepted → staging → starting → validating → candidate_ready → cutting_over →
+  draining_old → succeeded`；失败进 `failed`。切换前失败旧 active 指针不变；回滚 = 控制面创建
+  **反向部署操作**，不改写历史。候选必须依次通过 `Describe` → 身份/摘要核对 → `ValidateConfig`
+  → `Start` → 连续三次 `Health=ready` 才允许切换。余量不足返回 `upgrade_headroom_insufficient`，
+  不停止旧版本、不降级为停机更新。
+- 平台适配器：macOS 用户级 LaunchAgent、Linux systemd user unit，版本化 unit 名 + 受限环境 +
+  私有日志 + 「异常退出才重启」。候选进程以 `--port 0` 启动，端口只从插件原子写出的 loopback
+  endpoint 文件读取，不从 stdout 推断。
+- 首方 release 构建流程：`make plugin-release PLUGIN_DIR=plugins/python/processors/<plugin>`
+  → API 侧 `POST /admin/v1/plugin-releases:sync`（摘要由 API 复算，声明与实测不符即拒收）
+  → Console 插件中心「热部署（ADR-030）」选已认证 release 发起部署/升级、看实时阶段与耗时、
+  取消（仅切换前）或显式回滚。
+- `plugins/python/processors/deploy-canary` 是**验收/自检探针**（无业务数据，行为由运行目录里的
+  `mode.json` 决定），只用于验证执行器状态机与失败语义，不是业务插件，不得当生产负载。
+- 验收证据边界：`make plugin-deploy-check-api`（容器内 92 项）与
+  `make plugin-deploy-check-native`（宿主真实平台服务与真实首方插件）都通过时才算 macOS 实机
+  闭环完成；这**不等于**整体 Golden Path 完成，`golden_path_verified=false` 保持不变。
 
 
 ## 全链路闭环与维护备忘

@@ -87,7 +87,7 @@ class ModelIdentity:
     backend: str = field(default="ollama")
 
 
-def describe() -> runtime.PluginDescription:
+def describe(artifact_digest: str = "") -> runtime.PluginDescription:
     return runtime.PluginDescription(
         name=PLUGIN_NAME,
         version=PLUGIN_VERSION,
@@ -95,6 +95,7 @@ def describe() -> runtime.PluginDescription:
         consumes=[CONSUMES],
         produces=[f"observation.{MODALITY}"],
         memory_kinds=["cpu_shared_memory"],
+        artifact_digest=artifact_digest,
     )
 
 
@@ -129,7 +130,7 @@ class VisionVlmPlugin(ProcessorPlugin):
 
     # --- 生命周期 -------------------------------------------------------------
     def describe(self) -> runtime.PluginDescription:
-        return describe()
+        return describe(self.artifact_digest)
 
     def configure(self, config: dict) -> None:
         if not self.artifact_digest:

@@ -1,6 +1,7 @@
 """公共 SDK。跨进程消息仅由 proto/ 生成。"""
 
 from .buffer_reader import BufferRead, BufferReadError, LeaseBufferReader
+from .endpoint import remove_endpoint_file, write_endpoint_file
 from .logger import (
     ConsoleLogFormatter,
     JsonLogFormatter,
@@ -34,8 +35,10 @@ __all__ = [
     "get_logger",
     "get_trace_id",
     "log_context",
+    "remove_endpoint_file",
     "sanitize_dict",
     "sanitize_value",
     "set_log_context",
     "set_trace_id",
+    "write_endpoint_file",
 ]

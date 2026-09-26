@@ -17,6 +17,7 @@ import concurrent.futures
 import threading
 
 import grpc
+from edge_material_sdk import remove_endpoint_file, write_endpoint_file
 from edge_material_sdk.generated.common.v1 import common_pb2 as common
 from edge_material_sdk.generated.runtime.v1 import runtime_pb2, runtime_pb2_grpc
 from google.protobuf import json_format
@@ -38,7 +39,7 @@ class PluginServicer(runtime_pb2_grpc.ProcessorPluginServiceServicer):
 
     # --- 生命周期 -------------------------------------------------------------
     def Describe(self, request, context):
-        return describe()
+        return describe(self.plugin.artifact_digest)
 
     def ValidateConfig(self, request, context):
         return validate_config(json_format.MessageToDict(request.config))
@@ -117,12 +118,13 @@ def build_server(plugin: EmbedPlugin, loop: asyncio.AbstractEventLoop, workers: 
     return server
 
 
-def serve(port: int, expect_digest: str | None = None) -> int:
+def serve(port: int, expect_digest: str | None = None, endpoint_file: str | None = None) -> int:
     digest = package_digest()
     if expect_digest and expect_digest != digest:
         # 摘要漂移不是警告：manifest 里写的摘要必须与当前代码一致，否则拒绝启动。
         print(f"artifact digest mismatch: expected {expect_digest} got {digest}")
         return 2
+    description = describe(digest)
     plugin = EmbedPlugin(artifact_digest=digest)
     loop = asyncio.new_event_loop()
     threading.Thread(target=loop.run_forever, daemon=True).start()
@@ -132,11 +134,23 @@ def serve(port: int, expect_digest: str | None = None) -> int:
         print(f"failed to bind 127.0.0.1:{port}")
         return 2
     server.start()
-    print(f"plugin ready name={describe().name} port={bound} artifact_digest={digest}", flush=True)
+    # endpoint 文件在绑定成功之后、对外宣告就绪之前原子写出（ADR-030）。
+    if endpoint_file:
+        write_endpoint_file(
+            endpoint_file,
+            f"127.0.0.1:{bound}",
+            plugin_id=description.name,
+            plugin_version=description.version,
+            artifact_digest=digest,
+        )
+    print(f"plugin ready name={description.name} port={bound} artifact_digest={digest}", flush=True)
     try:
         server.wait_for_termination()
     except KeyboardInterrupt:
         server.stop(grace=1.0)
+    finally:
+        # 进程退出即删掉 endpoint 文件：留着它会让执行器解析到死端点。
+        remove_endpoint_file(endpoint_file)
     return 0
 
 
@@ -144,5 +158,6 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="SensoryPlex BGE text embedding plugin (gRPC)")
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--expect-digest", default=None)
+    parser.add_argument("--endpoint-file", default=None)
     arguments = parser.parse_args(argv)
-    return serve(arguments.port, arguments.expect_digest)
+    return serve(arguments.port, arguments.expect_digest, arguments.endpoint_file)

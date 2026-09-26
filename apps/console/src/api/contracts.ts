@@ -343,6 +343,7 @@ export interface PluginDescription {
   consumes: string[];
   produces: string[];
   memory_kinds: string[];
+  artifact_digest: string;
 }
 export interface ValidateConfigRequest {
   config?: JsonObject;
@@ -428,7 +429,10 @@ export interface DescribeCapabilitiesResponse {
 }
 export type NodeStatus = "NODE_STATUS_UNSPECIFIED" | "NODE_STATUS_CANDIDATE" | "NODE_STATUS_ENROLLING" | "NODE_STATUS_READY" | "NODE_STATUS_DRAINING" | "NODE_STATUS_OFFLINE" | "NODE_STATUS_REVOKED";
 export type PluginInstanceState = "PLUGIN_INSTANCE_STATE_UNSPECIFIED" | "PLUGIN_INSTANCE_STATE_PLANNED" | "PLUGIN_INSTANCE_STATE_INSTALLING" | "PLUGIN_INSTANCE_STATE_READY" | "PLUGIN_INSTANCE_STATE_DEGRADED" | "PLUGIN_INSTANCE_STATE_DRAINING" | "PLUGIN_INSTANCE_STATE_STOPPED" | "PLUGIN_INSTANCE_STATE_FAILED" | "PLUGIN_INSTANCE_STATE_ROLLED_BACK" | "PLUGIN_INSTANCE_STATE_UNINSTALLED";
-export type DeploymentAction = "DEPLOYMENT_ACTION_UNSPECIFIED" | "DEPLOYMENT_ACTION_INSTALL" | "DEPLOYMENT_ACTION_START" | "DEPLOYMENT_ACTION_STOP" | "DEPLOYMENT_ACTION_UNINSTALL" | "DEPLOYMENT_ACTION_ROLLBACK" | "DEPLOYMENT_ACTION_DRAIN" | "DEPLOYMENT_ACTION_TASK_PROCESS";
+export type DeploymentAction = "DEPLOYMENT_ACTION_UNSPECIFIED" | "DEPLOYMENT_ACTION_INSTALL" | "DEPLOYMENT_ACTION_START" | "DEPLOYMENT_ACTION_STOP" | "DEPLOYMENT_ACTION_UNINSTALL" | "DEPLOYMENT_ACTION_ROLLBACK" | "DEPLOYMENT_ACTION_DRAIN" | "DEPLOYMENT_ACTION_TASK_PROCESS" | "DEPLOYMENT_ACTION_STAGE_RELEASE" | "DEPLOYMENT_ACTION_RECONCILE";
+export type PluginOperationStage = "PLUGIN_OPERATION_STAGE_UNSPECIFIED" | "PLUGIN_OPERATION_STAGE_ACCEPTED" | "PLUGIN_OPERATION_STAGE_STAGING" | "PLUGIN_OPERATION_STAGE_STARTING" | "PLUGIN_OPERATION_STAGE_VALIDATING" | "PLUGIN_OPERATION_STAGE_CANDIDATE_READY" | "PLUGIN_OPERATION_STAGE_CUTTING_OVER" | "PLUGIN_OPERATION_STAGE_DRAINING_OLD" | "PLUGIN_OPERATION_STAGE_SUCCEEDED" | "PLUGIN_OPERATION_STAGE_FAILED" | "PLUGIN_OPERATION_STAGE_CANCELLED";
+export type PluginRuntimeRole = "PLUGIN_RUNTIME_ROLE_UNSPECIFIED" | "PLUGIN_RUNTIME_ROLE_CANDIDATE" | "PLUGIN_RUNTIME_ROLE_ACTIVE" | "PLUGIN_RUNTIME_ROLE_PREVIOUS" | "PLUGIN_RUNTIME_ROLE_FAILED";
+export type PluginRuntimeState = "PLUGIN_RUNTIME_STATE_UNSPECIFIED" | "PLUGIN_RUNTIME_STATE_PLANNED" | "PLUGIN_RUNTIME_STATE_STAGED" | "PLUGIN_RUNTIME_STATE_STARTING" | "PLUGIN_RUNTIME_STATE_VALIDATING" | "PLUGIN_RUNTIME_STATE_CANDIDATE_READY" | "PLUGIN_RUNTIME_STATE_ACTIVE" | "PLUGIN_RUNTIME_STATE_DRAINING" | "PLUGIN_RUNTIME_STATE_STOPPED" | "PLUGIN_RUNTIME_STATE_FAILED" | "PLUGIN_RUNTIME_STATE_UNINSTALLED";
 export interface NodeCapabilityProfile {
   platform: string;
   arch: string;
@@ -469,6 +473,11 @@ export interface PluginInstance {
   error_detail: string;
   created_at: string;
   updated_at: string;
+  active_runtime_instance_id: string;
+  active_release_id: string;
+  previous_runtime_instance_id: string;
+  generation: string;
+  endpoint: string;
 }
 export interface PluginInstanceList {
   items: PluginInstance[];
@@ -505,11 +514,27 @@ export interface NodeHeartbeatRequest {
   available_memory_bytes: string;
   current_concurrency: number;
   running_instance_ids: string[];
+  runtime_observations: PluginRuntimeObservation[];
+}
+export interface PluginRuntimeObservation {
+  runtime_instance_id: string;
+  operation_id: string;
+  generation: string;
+  observed_state: string;
+  endpoint: string;
+  supervisor_id: string;
+  supervisor_managed: boolean;
+  unit_loaded: boolean;
+  last_exit_code: number;
+  observed_at: string;
+  reconciliation: string;
+  detail: string;
 }
 export interface NodeHeartbeatResponse {
   status: NodeStatus;
   heartbeat_interval_ms: number;
   pending_intents: DeploymentIntent[];
+  reconciliation_required: string[];
 }
 export interface DeploymentIntent {
   intent_id: string;
@@ -523,6 +548,12 @@ export interface DeploymentIntent {
   config?: JsonObject;
   created_at: string;
   deadline_unix_ms: string;
+  operation_id: string;
+  generation: string;
+  release_id: string;
+  bundle_digest: string;
+  runtime_instance_id: string;
+  grace_period_ms: string;
 }
 export interface ReportDeploymentRequest {
   intent_id: string;
@@ -533,6 +564,19 @@ export interface ReportDeploymentRequest {
   actual_state: string;
   error_code: string;
   error_detail: string;
+  operation_id: string;
+  generation: string;
+  release_id: string;
+  runtime_instance_id: string;
+  stage: PluginOperationStage;
+  verified_plugin_id: string;
+  verified_artifact_digest: string;
+  endpoint: string;
+  supervisor_id: string;
+  staging_ms: string;
+  starting_ms: string;
+  validating_ms: string;
+  draining_ms: string;
 }
 export interface PreflightRequest {
   node_id: string;
@@ -570,4 +614,105 @@ export interface DeregisterNodeResponse {
   node_id: string;
   status: NodeStatus;
   message: string;
+}
+export interface PluginRelease {
+  release_id: string;
+  plugin_id: string;
+  plugin_version: string;
+  platform: string;
+  arch: string;
+  form: string;
+  artifact_digest: string;
+  bundle_digest: string;
+  manifest_digest: string;
+  config_schema_digest: string;
+  sbom_digest: string;
+  bundle_bytes: string;
+  entrypoint?: JsonObject;
+  runtime_requirements?: JsonObject;
+  trust: string;
+  authenticated: boolean;
+  authentication_method: string;
+  signature_status: string;
+  sbom_components: number;
+  declared_memory_bytes: string;
+  declared_cpu_millicores: string;
+  default_deadline_ms: string;
+  published_at: string;
+  created_by: string;
+}
+export interface PluginReleaseList {
+  items: PluginRelease[];
+  total: number;
+}
+export interface PluginRuntimeInstance {
+  runtime_instance_id: string;
+  instance_id: string;
+  node_id: string;
+  plugin_id: string;
+  release_id: string;
+  artifact_digest: string;
+  bundle_digest: string;
+  generation: string;
+  role: PluginRuntimeRole;
+  state: PluginRuntimeState;
+  endpoint: string;
+  supervisor_id: string;
+  unit_name: string;
+  install_dir: string;
+  verified_plugin_id: string;
+  verified_artifact_digest: string;
+  launch_ms: string;
+  drain_ms: string;
+  error_code: string;
+  error_detail: string;
+  created_at: string;
+  updated_at: string;
+}
+export interface PluginDeploymentOperation {
+  operation_id: string;
+  kind: string;
+  node_id: string;
+  instance_id: string;
+  plugin_id: string;
+  release_id: string;
+  from_runtime_instance_id: string;
+  candidate_runtime_instance_id: string;
+  rollback_of_operation_id: string;
+  generation: string;
+  stage: PluginOperationStage;
+  cancellable: boolean;
+  deadline_unix_ms: string;
+  error_code: string;
+  error_detail: string;
+  staging_ms: string;
+  starting_ms: string;
+  validating_ms: string;
+  draining_ms: string;
+  config?: JsonObject;
+  candidate?: PluginRuntimeInstance;
+  active?: PluginRuntimeInstance;
+  previous?: PluginRuntimeInstance;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  completed_at: string;
+}
+export interface PluginDeploymentOperationList {
+  items: PluginDeploymentOperation[];
+  total: number;
+}
+export interface CreatePluginDeploymentRequest {
+  release_id: string;
+  config_id: string;
+  config?: JsonObject;
+}
+export interface SyncPluginReleasesRequest {
+  dry_run: boolean;
+}
+export interface SyncPluginReleasesResponse {
+  imported: string[];
+  unchanged: string[];
+  rejected: string[];
+  total: number;
 }

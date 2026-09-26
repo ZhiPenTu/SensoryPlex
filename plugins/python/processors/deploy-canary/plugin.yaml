@@ -1,0 +1,49 @@
+apiVersion: edge.material.plugin/v1
+kind: ProcessorPlugin
+metadata:
+  name: org.sensoryplex.deploy-canary
+  version: 0.1.0
+  displayName: 热部署自检探针（无业务数据）
+  vendor: SensoryPlex
+  license: Apache-2.0
+  description: 首方自检探针：只实现生命周期契约（Describe/ValidateConfig/Start/Health/Drain/Stop），用于在任何节点上验收热部署执行器而无需模型或业务数据；不消费也不产出任何观测，不接触数据面。
+spec:
+  sdk:
+    runtime: ">=0.1.0 <0.2.0"
+    protocol: v1
+  entrypoint:
+    transport: grpc
+    command: [python, -m, deploy_canary]
+    # 静态启动路径的默认端口；热部署执行器一律以 `--port 0` 启动候选进程，
+    # 真实端口只从插件原子写出的 loopback endpoint 文件读取。
+    port: 50075
+  capabilities:
+    consumes: []
+    produces: []
+    acceptsMemoryKinds: []
+    ordering: per_stream
+    supports:
+      batch: false
+      cancellation: true
+      retry: idempotent
+  resources:
+    cpu: "1"
+    memory: 512Mi
+    maxConcurrency: 1
+    maxBatchSize: 1
+    defaultDeadlineMs: 3000
+  config:
+    schema: config.schema.json
+    secretRefs: []
+  security:
+    network: none
+    dataEgress: local_only
+    filesystem:
+      readOnly: true
+      writablePaths: []
+  artifacts:
+    form: local_native
+    image: local:plugins/python/processors/deploy-canary
+    digest: sha256:5e7931055fcdc24e5d61a7d1a09de3e6f63f137e28fe340e60ac4e9beddd374e
+    sbom: sbom.cdx.json
+    signatureUnavailableReason: local_native_plugin_is_not_signed_in_v1

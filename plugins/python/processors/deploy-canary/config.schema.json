@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sensoryplex:plugin:deploy-canary:config:v1",
+  "title": "deploy-canary Start(config)",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "batch_size": {"type": "integer", "minimum": 1, "default": 1},
+    "scenario": {"type": "string", "description": "验收场景标签，只写进日志，不改变插件行为"}
+  }
+}

@@ -21,7 +21,13 @@ from typing import Any
 from edge_material_sdk import get_logger
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    # 以脚本方式运行时 `sys.path[0]` 是 tools/ 本身，`tools.*` 需要仓库根。
+    sys.path.insert(0, str(ROOT))
+
 LOGGER = get_logger("sensoryplex.agent")
+# 单次 release bundle 下载上限（秒）：大 bundle 走本机回环，给足时间但绝不无限等。
+BUNDLE_DOWNLOAD_TIMEOUT_S = 600.0
 
 
 def probe_host_capabilities() -> dict[str, Any]:
@@ -204,6 +210,7 @@ class NodeAgentClient:
         available_memory_bytes: int = 0,
         current_concurrency: int = 0,
         running_instances: list[str] | None = None,
+        observations: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         payload = {
             "node_id": self.node_id,
@@ -213,6 +220,9 @@ class NodeAgentClient:
             "current_concurrency": current_concurrency,
             "running_instance_ids": running_instances or [],
         }
+        if observations:
+            # Agent 用平台服务实际状态与控制面 generation 对账后的观测；未知状态如实上报。
+            payload["runtime_observations"] = observations
         return self._post("/v1/agent/heartbeat", payload, token=self.session_token)
 
     def report_deployment(
@@ -224,7 +234,22 @@ class NodeAgentClient:
         actual_state: str,
         error_code: str = "",
         error_detail: str = "",
+        *,
+        operation_id: str = "",
+        generation: int = 0,
+        release_id: str = "",
+        runtime_instance_id: str = "",
+        stage: str = "",
+        verified_plugin_id: str = "",
+        verified_artifact_digest: str = "",
+        endpoint: str = "",
+        supervisor_id: str = "",
+        staging_ms: int = 0,
+        starting_ms: int = 0,
+        validating_ms: int = 0,
+        draining_ms: int = 0,
     ) -> dict[str, Any]:
+        """回报部署事实。热部署字段按需附加：空值不回传，避免把"没观测到"写成事实。"""
         payload = {
             "intent_id": intent_id,
             "instance_id": instance_id,
@@ -235,7 +260,58 @@ class NodeAgentClient:
             "error_code": error_code,
             "error_detail": error_detail,
         }
+        hot = {
+            "operation_id": operation_id,
+            "generation": generation,
+            "release_id": release_id,
+            "runtime_instance_id": runtime_instance_id,
+            "stage": stage,
+            "verified_plugin_id": verified_plugin_id,
+            "verified_artifact_digest": verified_artifact_digest,
+            "endpoint": endpoint,
+            "supervisor_id": supervisor_id,
+            "staging_ms": staging_ms,
+            "starting_ms": starting_ms,
+            "validating_ms": validating_ms,
+            "draining_ms": draining_ms,
+        }
+        payload.update({key: value for key, value in hot.items() if value})
         return self._post("/v1/agent/report", payload, token=self.session_token)
+
+    def download_release_bundle(self, release_id: str, target: Path) -> Path:
+        """按 release_id 从**受认证端点**取 bundle；不接受意图里的任意 URL。
+
+        下载先落到 `.part` 再 rename：执行器永远看不到半截文件，摘要复算不会因为"读到一半"
+        而误判。声明摘要只在响应头里做一次早退检查，真正的判据仍是落盘字节。
+        """
+        url = f"{self.main_url}/v1/agent/releases/{release_id}/bundle"
+        headers = {
+            "Authorization": f"Bearer {self.session_token}",
+            "User-Agent": f"SensoryPlex-NodeAgent/{self.node_id}",
+        }
+        request = urllib.request.Request(url, headers=headers, method="GET")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(f"{target.name}.part")
+        try:
+            with urllib.request.urlopen(request, timeout=BUNDLE_DOWNLOAD_TIMEOUT_S) as response:
+                declared = response.headers.get("X-Bundle-Digest", "")
+                with temporary.open("wb") as handle:
+                    shutil.copyfileobj(response, handle, length=1 << 20)
+        except urllib.error.HTTPError as error:
+            body = error.read().decode("utf-8", "replace")
+            try:
+                code = json.loads(body).get("reason_code") or body[:120]
+            except json.JSONDecodeError:
+                code = body[:120]
+            temporary.unlink(missing_ok=True)
+            raise RuntimeError(f"HTTP {error.code}: {code}") from error
+        except (urllib.error.URLError, OSError) as error:
+            temporary.unlink(missing_ok=True)
+            raise RuntimeError(f"bundle_download_failed: {error}") from error
+        temporary.replace(target)
+        if declared:
+            LOGGER.info("release bundle downloaded", release_id=release_id, declared=declared)
+        return target
 
     def deregister(self, reason: str = "agent_uninstalled") -> dict[str, Any]:
         payload = {
@@ -292,6 +368,20 @@ def stop_instance_process(instance_dir: Path) -> None:
         pid_file.unlink(missing_ok=True)
 
 
+def get_hot_deploy_executor(client: NodeAgentClient, state_file: str | None = None):
+    """构造热部署执行器。
+
+    单文件分发场景（install_agent.sh 从主节点只拉 node_agent.py）里没有 `tools` 包，此时返回
+    None：调用方必须把"执行器不可用"作为稳定失败回报，而不是假装执行成功。
+    """
+    try:
+        from tools.node_agent_hot_deploy import HotDeployExecutor
+    except ImportError as error:  # pragma: no cover - 只在单文件分发时命中
+        LOGGER.warning("hot deploy executor unavailable: %s", error)
+        return None
+    return HotDeployExecutor(client, base_dir=get_plugins_base_dir(state_file))
+
+
 def execute_intent(
     intent: dict[str, Any], client: NodeAgentClient, state_file: str | None = None
 ) -> bool:
@@ -318,6 +408,30 @@ def execute_intent(
             error_detail=f"Digest '{digest}' does not meet sha256 checksum requirements",
         )
         return False
+
+    if action in {"stage_release", "drain", "reconcile"} or (
+        action == "stop" and intent.get("operation_id")
+    ):
+        # 热部署动作只能由受控执行器完成：它才知道平台服务、版本化实例与 endpoint 契约。
+        executor = get_hot_deploy_executor(client, state_file)
+        if executor is None:
+            client.report_deployment(
+                intent_id=intent_id,
+                instance_id=instance_id,
+                action=intent["action"],
+                success=False,
+                actual_state="PLUGIN_INSTANCE_STATE_FAILED",
+                error_code="hot_deploy_executor_unavailable",
+                error_detail="agent is running without the hot deploy executor module",
+            )
+            return False
+        if action == "stage_release":
+            return executor.stage_release(intent)
+        if action == "drain":
+            return executor.drain(intent)
+        if action == "reconcile":
+            return executor.reconcile(intent)
+        return executor.stop_runtime(intent)
 
     if action in {"install", "rollback"}:
         target_state = (
@@ -503,7 +617,17 @@ def main():
                     "Deregister notification failed (proceeding with local cleanup): %s", e
                 )
 
-        # 物理清理该节点的所有插件实例目录与进程
+        # 物理清理该节点的所有插件实例目录与进程。
+        # 热部署实例由平台服务托管：必须先卸载 unit，否则删掉安装目录会留下被反复拉起的死单元。
+        executor = get_hot_deploy_executor(client, args.state_file) if token else None
+        if executor is not None:
+            unloaded = executor.unload_all()
+            LOGGER.info(
+                "Unloaded platform-managed plugin instances",
+                stopped=len(unloaded["stopped"]),
+                failed=unloaded["failed"],
+            )
+
         base_dir = get_plugins_base_dir(args.state_file)
         if base_dir.is_dir():
             for pid_file in base_dir.rglob("*.pid"):
@@ -533,11 +657,13 @@ def main():
             sys.exit(1)
 
         client = NodeAgentClient(main_url, args.node_id, token)
+        executor = get_hot_deploy_executor(client, args.state_file)
 
         heartbeat_count = 0
         while True:
             try:
-                hb_res = client.heartbeat()
+                observations = executor.observations() if executor else []
+                hb_res = client.heartbeat(observations=observations)
                 status = hb_res.get("status", "")
                 heartbeat_count += 1
                 if heartbeat_count % 12 == 1:
@@ -546,6 +672,13 @@ def main():
                 if status == "NODE_STATUS_REVOKED":
                     LOGGER.error("Node revoked by main node", node_id=args.node_id)
                     sys.exit(2)
+
+                unverified = hb_res.get("reconciliation_required", [])
+                if unverified:
+                    # 控制面明确要求对账：不猜成功、不删 active/previous 制品，只如实记录。
+                    LOGGER.warning(
+                        "reconciliation required for runtime instances", items=unverified
+                    )
 
                 intents = hb_res.get("pending_intents", [])
                 for intent in intents:

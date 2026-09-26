@@ -24,6 +24,9 @@ message PluginDescription {
   repeated string consumes = 4;
   repeated string produces = 5;
   repeated string memory_kinds = 6;
+  // 插件对自身可执行内容的摘要自证（ADR-030）。进程启动时必须与 --expect-digest 一致，
+  // 否则拒绝启动；Describe 回报的是真实计算值，不是意图回显。
+  string artifact_digest = 7;
 }
 message ValidateConfigRequest { google.protobuf.Struct config = 1; }
 message ValidationResult { bool valid = 1; repeated string field_errors = 2; }

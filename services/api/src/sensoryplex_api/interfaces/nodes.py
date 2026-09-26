@@ -14,15 +14,27 @@ from fastapi import Body, Depends, Header, Query
 from google.protobuf.json_format import MessageToDict
 from psycopg.types.json import Jsonb
 
-from ..contracts import audit, fail, identifier, one, out, parse, rows, text_field
+from ..contracts import (
+    audit,
+    fail,
+    hash_token,
+    identifier,
+    one,
+    out,
+    parse,
+    rows,
+    text_field,
+)
 from ..infrastructure.catalog import plugin
 from ..infrastructure.preflight import check_preflight
+from .plugin_deploy import (
+    apply_hot_report,
+    intent_proto,
+    purge_node_deployment_rows,
+    record_runtime_observations,
+)
 
 ROOT = Path(__file__).resolve().parents[5]
-
-
-def hash_token(token: str) -> str:
-    return hashlib.sha256(token.encode()).hexdigest()
 
 
 def to_proto_node_status(status_str: str) -> str:
@@ -688,48 +700,39 @@ def register(app, pool, auth, settings):
                 (req.node_id,),
             )
             pending_intents = []
-            if pending_rows:
-                for pr in pending_rows:
-                    conn.execute(
-                        (
-                            "UPDATE console_deployment_intent "
-                            "SET state='dispatched', dispatched_at=now() WHERE id=%s"
-                        ),
-                        (pr["id"],),
+            for pr in pending_rows:
+                conn.execute(
+                    (
+                        "UPDATE console_deployment_intent "
+                        "SET state='dispatched', dispatched_at=now() WHERE id=%s"
+                    ),
+                    (pr["id"],),
+                )
+                inst = one(
+                    conn,
+                    (
+                        "SELECT plugin_id, plugin_version FROM console_plugin_instance "
+                        "WHERE instance_id=%s"
+                    ),
+                    (pr["instance_id"],),
+                )
+                # 热部署意图（有 operation_id）必须携带 operation/generation/release/bundle
+                # 身份与截止时间；ADR-026 的历史意图走同一条通道但字段为空。
+                pending_intents.append(
+                    intent_proto(
+                        pr,
+                        inst["plugin_id"] if inst else "",
+                        inst["plugin_version"] if inst else "",
                     )
-                    inst = one(
-                        conn,
-                        (
-                            "SELECT plugin_id, plugin_version FROM console_plugin_instance "
-                            "WHERE instance_id=%s"
-                        ),
-                        (pr["instance_id"],),
-                    )
-                    action_enum = {
-                        "install": "DEPLOYMENT_ACTION_INSTALL",
-                        "start": "DEPLOYMENT_ACTION_START",
-                        "stop": "DEPLOYMENT_ACTION_STOP",
-                        "uninstall": "DEPLOYMENT_ACTION_UNINSTALL",
-                        "rollback": "DEPLOYMENT_ACTION_ROLLBACK",
-                        "drain": "DEPLOYMENT_ACTION_DRAIN",
-                        "task_process": "DEPLOYMENT_ACTION_TASK_PROCESS",
-                    }.get(pr["action"], "DEPLOYMENT_ACTION_UNSPECIFIED")
+                )
 
-                    pending_intents.append(
-                        {
-                            "intent_id": pr["id"],
-                            "instance_id": pr["instance_id"],
-                            "node_id": pr["node_id"],
-                            "plugin_id": inst["plugin_id"] if inst else "",
-                            "plugin_version": inst["plugin_version"] if inst else "",
-                            "action": action_enum,
-                            "artifact_digest": pr["artifact_digest"],
-                            "rollback_digest": pr["rollback_digest"] or "",
-                            "config": pr["config"],
-                            "created_at": pr["created_at"].isoformat() if pr["created_at"] else "",
-                        }
-                    )
-
+            # Agent 用自己的平台服务状态对账；未知状态只报 reconciliation_required。
+            observations = record_runtime_observations(conn, req.node_id, req.runtime_observations)
+            reconciliation_required = [
+                item["runtime_instance_id"]
+                for item in observations
+                if item["reconciliation"] == "reconciliation_required"
+            ]
             proto_status = to_proto_node_status(new_status)
 
         return out(
@@ -737,6 +740,7 @@ def register(app, pool, auth, settings):
                 "status": proto_status,
                 "heartbeat_interval_ms": 5000,
                 "pending_intents": pending_intents,
+                "reconciliation_required": reconciliation_required,
             },
             pb.NodeHeartbeatResponse,
         )
@@ -756,6 +760,25 @@ def register(app, pool, auth, settings):
             )
             if not intent:
                 fail(404, "deployment_intent_not_found")
+
+            if intent["operation_id"]:
+                # 热部署回报必须来自**该节点自己的**认证会话；否则任何人都能拿
+                # 一个 intent_id 去推进别人的蓝绿切换。
+                token = ""
+                if authorization and authorization.startswith("Bearer "):
+                    token = authorization.split(" ", 1)[1]
+                if not token:
+                    fail(401, "missing_node_session_token")
+                node = one(
+                    conn,
+                    "SELECT * FROM console_node WHERE session_token_hash=%s",
+                    (hash_token(token),),
+                )
+                if not node:
+                    fail(401, "invalid_node_credentials")
+                if node["node_id"] != intent["node_id"]:
+                    fail(403, "deployment_report_node_mismatch")
+                return apply_hot_report(conn, node["node_id"], req, intent)
 
             is_task_process = intent["action"] == "task_process"
             # 当前 Agent 还没有受控 Runtime 的 Start/Process/Cancel 回执协议。即使某个
@@ -1063,14 +1086,7 @@ def register_lifecycle_convenience_endpoints(app, pool, auth, settings):
             if nr["status"] == "ready":
                 fail(409, "cannot_delete_ready_node")
 
-            conn.execute(
-                "DELETE FROM console_deployment_intent WHERE node_id=%s",
-                (node_id,),
-            )
-            conn.execute(
-                "DELETE FROM console_plugin_instance WHERE node_id=%s",
-                (node_id,),
-            )
+            purge_node_deployment_rows(conn, node_id)
             conn.execute(
                 "DELETE FROM console_node_enrollment_token WHERE node_id=%s",
                 (node_id,),
@@ -1095,14 +1111,7 @@ def register_lifecycle_convenience_endpoints(app, pool, auth, settings):
             purged = []
             for sn in stale_nodes:
                 nid = sn["node_id"]
-                conn.execute(
-                    "DELETE FROM console_deployment_intent WHERE node_id=%s",
-                    (nid,),
-                )
-                conn.execute(
-                    "DELETE FROM console_plugin_instance WHERE node_id=%s",
-                    (nid,),
-                )
+                purge_node_deployment_rows(conn, nid)
                 conn.execute(
                     "DELETE FROM console_node_enrollment_token WHERE node_id=%s",
                     (nid,),

@@ -16,7 +16,8 @@
 - [x] 控制面、鉴权、迁移、素材查询/回看、Web Console 和可审计的 revision/来源血缘已具备；素材回看不等于自动媒体入库。
 - [x] 文件/SRT 媒体数据面已具备真实解码、抽帧、音频切段、lease、跨进程交接、背压和格式准入；这些均有 macOS 本机证据。
 - [x] VLM、ASR、OCR、BGE、Milvus Lite 索引、纯语义检索、outbox → JetStream → sink 消费与事件 profile 已有单项/链路验收。
-- [x] ADR-026 的节点注册、预检、数据本地性、部署意图、执行/回滚和审计已验收；本轮 `make node-check` 通过 6 个场景。
+- [x] ADR-026 的节点注册、预检、数据本地性与审计已验收；本轮 `make node-check` 通过 6 个场景。其中“目录创建/删除”这一路只是**部署意图通路**（创建槽位 + 下发意图 + 状态回执），**不含**真实制品下载、离线安装、进程托管与候选验证。
+- [x] ADR-030 插件热部署执行器（`local_native` 首期）已在 macOS 实机验收：`make plugin-deploy-check-api` 92 项（含可观测性指标聚合）+ `make plugin-deploy-check-native`（真实 LaunchAgent、真实首方插件蓝绿/排空/回滚/重启对账）+ Console 浏览器验收；Linux 平台适配器尚未在 Linux 节点验收，不得宣称支持 Linux。
 - [ ] 业务 Golden Path 尚未完成：没有证据证明真实媒体会自动经过 Runtime → Timeline → metadata/outbox → 查询与回看；`golden_path_verified` 必须继续为 `false`。
 
 当前依赖顺序：`CP-01 收口当前节点改动` → `GP-01 真实媒体 Golden Path` → `QL-01 质量基线` 与 `OP-01 韧性安全` → `PF-01 跨平台/性能`。
@@ -45,6 +46,11 @@
 - [x] **OP-04 受控多节点集群编排（ADR-029 P2）**  
   状态：**已完成**（2026-09-25 经 `make orchestration-p2-check` 6 个场景全量验证）。  
   范围：基于多节点注册画像的候选调度、数据本地性过滤（raw buffer 仅限同机，observation 跨机分发至 GPU/Edge 节点）、节点排空/离线硬阻断、双向任务认领（`tasks:claim`）与可审计故障转移（Failover：第一任过期记录保留，第二任备用节点成功接手）。
+
+- [x] **OP-05 插件热部署执行器（ADR-030，local_native 首期）**  
+  状态：**已完成**（2026-09-26 经 `make plugin-deploy-check-api`（容器内 92 项）与 `make plugin-deploy-check-native`（宿主真实平台服务 + 真实首方插件 embed-bge-onnx 的 `Describe → ValidateConfig → Start → Health → 蓝绿 → Drain → Stop → 回滚`）验证；另补 `tests/integration/test_plugin_hot_deploy_api.py`（14 项，含此前修掉的意图插件身份、阶段枚举数值、槽位 generation、余量重复扣减、撤销节点清理五个回归，以及本轮新增的指标聚合 / 窗口与节点过滤 / 鉴权三项）与 `tests/contracts/test_plugin_release_bundle.py` / `test_node_agent_hot_deploy.py` / `test_node_agent_unpack_safety.py`（解包上限类拒收）；native 层**可重复运行**——槽位为空时首次部署走 `provision`，槽位已有 active 时自动改走蓝绿 `upgrade` 并在报告里注明；Console「热部署（ADR-030）」页签已通过浏览器验收（UI 真实发起升级并轮询到已完成，「当前 active」= 槽位实时指针 = 本次候选端点）。  
+  范围：把“部署意图 + 状态上报”升级为真实执行闭环；**版本化蓝绿切换**（不做进程内 `hotReload`）；不可变 `plugin_release`（可执行代码身份 + 整包传输摘要）；受控平台定向 bundle 与 Agent 离线安装（解包前拒绝路径穿越/符号链接/超限成员/摘要不符，部署期不联网）；generation CAS 切换 active 指针；排空旧实例并保留其 bundle 作回滚版本；显式回滚 = 反向部署操作；Agent 重启只报 `reconciliation_required`。  
+  边界：Linux systemd user unit 适配器**尚未在 Linux 节点验收**；容器插件、第三方未签名插件、意图内任意 URL/命令/宿主路径/密钥、跨机共享内存、业务 `Process` 验证与自动 CPU fallback 不做。
 
 - [ ] **GP-02 Timeline 语义冲突识别与 revision 策略**  
   状态：**未开始**；依赖 `GP-01`。  
@@ -86,7 +92,10 @@
 | --- | --- | --- |
 | `./deploy/status.sh` | 通过 | console、api、gateway、PostgreSQL、NATS、relay、index 均健康；console/api/gateway HTTP 探测成功。 |
 | `make node-check` | 通过 | api 容器内 ADR-026 6 个场景全通过；不覆盖 CP-01 的候选节点新流程。 |
-| `make console-build` | 通过 | console 容器内 `tsc -b && vite build` 成功；不替代候选审批的浏览器验收。 |
+| `make console-build` | 通过 | console 容器内 `tsc -b && vite build` 成功；插件中心新增“热部署（ADR-030）”页签（release 选择、升级确认、实时阶段/错误码、当前与上一版本、显式回滚、下载/启动/排空耗时）。 |
+| `make lint-ruff` / `make test-py` | 通过 | 容器内 ruff 全绿；契约 414 项 + 集成 92 项通过（含本轮新增的热部署契约与集成用例）。 |
+| `make plugin-deploy-check-api` | 通过 | api 容器内 92/92：制品仓同步与 5 种拒收、意图形状白名单、逐级推进与 validating 不切换、fencing/重复/陈旧回报、蓝绿与排空、显式回滚、下载授权、余量不足、候选准入、可观测性指标聚合（按 node/plugin/release/kind/stage/reason 分桶且与台账逐项一致、`operation_id` 不进 label、无敏感内容泄漏、鉴权）。 |
+| `make plugin-deploy-check-native` | 通过 | 宿主 56/56：真实 LaunchAgent 与真实进程、endpoint 文件契约、8 种 bundle 拒收、7 种候选失败模式、真实首方插件蓝绿/排空/回滚与 Agent 重启对账；**不代表 Linux 已验收**。 |
 
 ## 暂不纳入当前承诺
 

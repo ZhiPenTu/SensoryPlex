@@ -2752,6 +2752,162 @@ JetStream、真实 Node Agent 生命周期或 `Process` 调用。`pipeline_publi
 - `make format && make lint-ruff`：全库 184 个 Python 源码文件格式与静态检查 0 错误 0 告警；
 - `cargo check --workspace` & `cargo test --workspace`：Rust 模块全部通过（172 tests passed）。
 
+## 插件热部署执行器（ADR-030，local_native 首期，2026-09-26）
+
+**背景与解决问题**：
+ADR-026 建立的「部署意图 + 状态上报」通路里，Agent 只做**目录创建与状态标记**：它不解包受控归档、
+不校验可执行内容、不用平台服务托管进程、不探测 endpoint、也不做版本切换。`make node-check` 场景 5
+验收的是「意图通路 + 审计 + digest 回滚」，**不是**真实热部署；把这条通路称为「插件已可热部署」是
+错误的能力声明。本项按 ADR-030 把它升级为**真实执行闭环**，并把范围刻意收窄：只支持 SensoryPlex
+自研、`local_native`、macOS/Linux 的首方插件；热部署的定义是**独立进程的版本化蓝绿切换**，
+不启用也不承诺进程内 `hotReload`（Python 进程内重载无法保证模型会话、数据面 lease 与 gRPC 服务的
+原子替换）。
+
+**关键落地链路**：
+
+1. **不可变 `plugin_release`（追加迁移 0010）**：`artifact_digest`（沿用既有 `package_digest`，
+   `pyproject.toml` + `src/`）是**插件可执行代码的身份**，`bundle_digest` 是**整包传输内容**的 sha256
+   （`tar.gz` 文件本身），manifest / config-schema / SBOM 另有子摘要；`bundle.manifest.json` 逐文件
+   声明摘要而**不含自身摘要**，自引用问题在格式层被消除。只有 `trust=first_party AND authenticated`
+   的 release 可被激活，且**摘要在导入时由 API 对落盘字节重算**，调用方无法通过提交 JSON 伪造。
+2. **受控 bundle 与离线安装**（`tools/plugin_release.py` 构建，`.data/releases/` 即受控制品仓）：
+   平台 + 架构定向归档，内容固定为 `bundle.manifest.json` + `payload/{plugin.yaml,
+   config.schema.json, sbom.cdx.json, pyproject.toml, src/..., requirements.lock.txt, wheelhouse/*.whl}`。
+   Agent **在解包前**拒绝绝对路径、`..` 逃逸、符号链接 / 硬链接、设备与 FIFO 等特殊成员、单文件与
+   总大小超限，以及**落盘字节摘要 / 逐文件摘要 / manifest / config-schema / SBOM 任一不符**；
+   依赖用包内 `wheelhouse` **离线**安装，部署期不联网。归档口径可复现（gzip 头 mtime 归零），
+   同一份内容重建得到同一 `bundle_digest`（否则「同版本重建」会被制品仓判成 `plugin_release_content_conflict`）。
+3. **逻辑槽位与版本化运行实例**：`console_plugin_instance` 仍是逻辑槽位，新增
+   `plugin_runtime_instance`（运行实例，`role = active / previous / candidate`）与
+   `plugin_deployment_operation`（部署操作，带 `generation`），因此**同一节点、同一插件的旧版 active
+   与新版 candidate 可以并存**。部署操作回报里的 `active` 读的是**槽位实时 active 指针**
+   （切换成功后就是本次 candidate，切换前失败则仍是本次操作开始前在服务的旧实例），
+   本次被替换的实例只由 `from_runtime_instance_id` 表达；两者语义不混用，Console 的「当前 active」
+   因此永远指向真正在服务的实例，而不是已 `STOPPED` 的历史实例。
+4. **状态机与 generation CAS**：`accepted → staging → starting → validating → candidate_ready →
+   cutting_over → draining_old → succeeded`，失败进 `failed`；切换只由 `candidate_ready` 触发，
+   用 `UPDATE ... WHERE instance_id=%s AND generation=%s AND active_runtime_instance_id IS DISTINCT FROM %s`
+   做 CAS，失败即 409 `generation_cas_failed`。候选必须依次通过 `Describe` → 身份 / 摘要核对 →
+   `ValidateConfig` → `Start` → 连续三次 `Health=ready` 才允许切换；默认启动总时限 5 分钟、
+   健康间隔 5 秒，所有超时都显式失败。
+5. **fencing 与回报拒绝**：回报必须携带 `operation_id` / generation / release / runtime 身份；
+   重复投递、旧 generation、release 或运行实例不符一律拒绝（`duplicate_deployment_report` /
+   `stale_deployment_report` / `fencing_token_mismatch`），且**被拒后不破坏既有状态**；Creation 预检
+   按旧实例声明资源加候选资源算升级余量，不足返回 `upgrade_headroom_insufficient`，
+   **不停止旧版本、不隐式降级为停机更新**。
+6. **排空、显式回滚与重启对账**：切换后向旧实例发 `Drain` → 等待**不短于插件声明最大请求 deadline**
+   的受限 grace → `Stop` → 卸载 unit，旧 bundle 留作已验证回滚版本（`drain_target_unknown` /
+   `drain_timeout` 显式失败，剩余时限比 grace 短时**不缩水**，直接失败）。回滚 = 控制面创建
+   **反向部署操作**（`kind=rollback`、generation + 1），**不改写历史行**。Agent 重启后用平台服务
+   实际状态、endpoint 与控制面 generation 对账，未知状态只报 `reconciliation_required`，
+   **不猜测成功、不删除 active/previous 制品**。
+7. **平台服务适配器与 endpoint 文件契约**（`tools/node_agent_platform.py`）：macOS 用用户级
+   LaunchAgent、Linux 用 systemd user unit，均为版本化 unit 名 + 受限环境 + 私有日志 +
+   「异常退出才重启」策略。候选进程以 `--port 0` 启动，插件在完成绑定后**原子写出** loopback
+   endpoint 文件，Agent 只读该文件、**不从非结构化 stdout 推断端口**
+   （`plugin_endpoint_file_timeout` / `plugin_endpoint_file_invalid`）。
+8. **管理面与指标**：API 提供部署创建、操作详情、取消（仅切换前）与回滚；release 下载
+   `GET /v1/agent/releases/{release_id}/bundle` **只向持有匹配未完成意图的 Agent 会话**开放；
+   `GET /admin/v1/plugin-deployments/metrics`（`plugins:manage`）把部署台账按
+   `node/plugin/release/kind/stage/reason` 聚合成 Prometheus exposition（计数 + 各阶段耗时 sum/max，
+   `operation_id` 不进 label；`kind` 区分 provision / upgrade / rollback）；
+   Console 插件中心的「热部署（ADR-030）」页签提供已认证 release 选择（按节点平台 / 架构过滤）、
+   升级确认、实时阶段与错误码、当前与上一版本、显式回滚，以及下载 / 启动 / 验证 / 排空耗时。
+   所有写操作走 `plugins:manage`，只读状态沿用既有节点权限。
+   可观测性键位：`plugin_deployment_operation` 同时带 `node_id / plugin_id / release_id / operation_id /
+   generation / stage / error_code`，`console_audit` 记 `node_id + plugin.deploy.<动作> + operation_id:runtime_id`，
+   日志用同一组键；**不写 bundle 内容、命令行密钥、配置秘密、原始媒体或模型输入**（业务 `config` 只在
+   插件 gRPC 面内传递，不进日志与审计）。
+
+**验收证据**：
+
+控制面契约层（`docker compose exec api python tools/verify_plugin_hot_deploy.py --scope api`，
+容器内真实 PostgreSQL，92 项；状态机由「虚拟 Agent 回报」驱动，不起真实插件进程）：
+
+| 验证场景 | 项数 | 动作与验证项 | 实测结果 |
+| --- | --- | --- | --- |
+| 1. 受控制品仓同步与拒收 | 10 | 幂等同步（第二轮 `imported` 与 `rejected` 均为空、`total == unchanged == 5`，5 个首方 release 全部 `first_party + authenticated`）；`bundle_bytes` / `bundle_digest` / 非首方 / 容器形态 / 路径逃逸五类拒收，且拒收后没有任何非首方或篡改制品被导入 | `PASS (10/10)` |
+| 2. 部署创建 → 意图形状 → fencing → 蓝绿切换 | 27 | 意图只带受控身份：**执行器**要用的下载地址 / 命令 / 安装路径 / 密钥都不在意图里（下载走受认证端点、路径由 Agent 从版本化实例目录推导），业务 `config` 只原样经 gRPC 交给插件 `ValidateConfig` / `Start` 由插件自证（不合法即 `candidate_config_invalid`）；grace 不短于插件声明 deadline；`staging → starting → validating` 逐级推进且 validating **不切** active；旧 generation / 错 release / 错运行实例回报被拒；`candidate_ready` 才切换、槽位 generation 与 verified 身份落库；重复投递被拒 | `PASS (27/27)` |
+| 3. 升级（旧 active 与候选并存）→ 排空 → 取消窗口关闭 | 13 | 升级 `from` 是旧 active、generation 递增；切换后进入 `draining_old` 且旧实例记为 previous、蓝绿**同时存在**；**切换后槽位 active 指针已是候选实例**（`active.runtime_instance_id == candidate`、角色为 `ACTIVE`），被替换实例只由 `from_runtime_instance_id` 保留；切换后取消窗口关闭；排空回报后才 succeeded 并记录排空耗时 | `PASS (13/13)` |
+| 4. 显式回滚（反向操作，不改写历史） | 9 | 回滚 `kind=rollback`、指回原操作、取槽位记下的上一版本、generation + 1；**历史操作行未被改写**；回滚完成并排空被替换实例 | `PASS (9/9)` |
+| 5. 切换前取消 | 7 | 取消后操作 `cancelled`、候选置 failed 并落 `cancelled_by_administrator`、**旧 active 指针不变**、下发候选清理意图且清理回报可收尾、已取消操作不能再取消 | `PASS (7/7)` |
+| 6. release 下载授权 | 5 | 只有持有**匹配**未完成意图的 Agent 会话能下载（`bundle_bytes=10711918`）；无意图 → 403 `release_not_entitled_for_this_agent`、无令牌 / 伪令牌 → 401 | `PASS (5/5)` |
+| 7. 升级余量不足 | 6 | 受限节点上同一槽位再次 `provision` 被 `plugin_already_active` 拒（不是靠余量兜底）；余量不足 → 422 `upgrade_headroom_insufficient`，**不为候选建槽位 / 运行实例，旧实例仍是 active** | `PASS (6/6)` |
+| 8. 候选节点未被准入 | 3 | `candidate` 状态节点被挡在部署之前（409 `candidate_node_not_admitted`），且领不到部署意图 | `PASS (3/3)` |
+| 9. 可观测性：指标聚合与敏感内容排除 | 10 | 未认证抓取 → 401、业务凭据（无 `plugins:manage`）→ 403、管理会话 → 200 + Prometheus exposition 文本；**指标桶（按 `kind`/`stage`/`reason` 分组的操作计数 + staging/starting/validating/draining 的 sum/max）与台账逐项一致**（`buckets=4 mismatch=[] extra=[]`）；`kind` 进 label 使升级 / 回滚 / provision 不混桶（`kinds=['provision','rollback','upgrade']`）；`operation_id` 不进 label（低基数规则）；响应不含 bundle 内容 / 配置值 / 宿主路径 / 密钥；info 指标如实回报窗口；`window_hours` 与 `node_id` 过滤生效且不合成行 | `PASS (10/10)` |
+
+宿主原生执行器层（`make plugin-deploy-check-native`，Apple Silicon macOS 实机真实平台服务，
+56 项）：
+
+| 验证场景 | 项数 | 动作与验证项 | 实测结果 |
+| --- | --- | --- | --- |
+| 10. 受控 bundle 拒收 | 9 | 篡改字节 → `release_bundle_digest_mismatch`；改内容 / 追加 → `..._content_digest_mismatch` / `..._size_mismatch`；多成员 / 符号链接 / `..` / 绝对路径 / 改 SBOM → 各自稳定错误码；合法 bundle 通过复算（对照组） | `PASS (8 拒收 + 1 对照)` |
+| 11. deploy-canary 状态机矩阵 | 27 | 真实 LaunchAgent 托管候选进程并切到 succeeded（endpoint 是 loopback 非 0 端口、自证身份与摘要落库、staging/starting/validating 耗时均 > 0、Agent 观测 `matched`）；`wrong_digest` / `wrong_identity` / `invalid_config` / `start_fail` / `health_not_ready` / `no_endpoint` / `endpoint_garbage` 七类失败各自 `<操作 failed + 旧 active 指针不变 + 失败候选已卸载>`；`hung_drain` 在受限 grace 后强制卸载（`draining_ms=3247 ≥ 声明 3000`） | `PASS (27/27)` |
+| 12. 真实首方插件蓝绿验收 | 15 | 预置权重首方插件 `org.sensoryplex.embed-bge-onnx@0.1.0`（`rel_a74442340690233b1b17144b813df933`、`artifact_digest=sha256:deeb0ccc…8d8bb60`）首次部署 → 直连真实进程确认 `Describe` 身份与 `Health=ready`；同插件升级（新 generation）蓝绿切换并排空旧实例（previous 已 stopped、**旧制品仍留在本机可回滚**）；显式回滚成功后 active 指回回滚候选并再次直连确认 | `PASS (15/15)`，真实插件耗时 `staging≈400ms / starting≈14ms / validating≈11096ms` |
+| 13. Agent 重启对账与安全卸载 | 5 | 平台服务消失时观测**如实报 unknown**（不猜成功）→ 控制面回传 `reconciliation_required` → 对账只记录事实（active 指针与角色都不改写）→ 安全卸载停掉全部托管单元且**不删 active/previous 制品** | `PASS (5/5)` |
+
+**回归验证（本轮实测）**：
+
+- `make plugin-deploy-check-api`（容器内）：92/92 通过（`exit 0`）；
+- `make plugin-deploy-check-native`（宿主）：56/56 通过，且**连续两次**运行都是 56/56
+  （槽位为空时首次部署走 `provision`；槽位已有 active 时自动改走蓝绿 `upgrade` 并在报告里注明，
+  因此验收可重复运行，而不会把 `plugin_already_active` 当环境噪音静默降级）；
+- `pytest tests/contracts`（容器内）：414 通过（含新增 `test_plugin_release_bundle.py` 10 项、
+  `test_node_agent_hot_deploy.py` 14 项与 `test_node_agent_unpack_safety.py` 5 项——解包上限类拒收
+  （成员数 / 单成员大小 / 解压总大小 / 路径深度）在写盘前拒绝，形状类拒收由 `--scope native` 覆盖）；
+- `pytest tests/integration`（容器内，真实 PostgreSQL + 真实 NATS JetStream）：92 通过
+  （`test_plugin_hot_deploy_api.py` 14 项，本轮新增指标聚合、窗口与节点过滤、指标端点鉴权 3 项）；
+- `make lint-ruff`：`ruff check` / `ruff format --check` 全库通过（248 个文件已格式化）；
+- `make console-build`：`tsc -b && vite build` 通过（含新增 `PluginDeployments.tsx` 页签），产物已覆盖
+  console 容器内 `index.html`；
+- **Console 浏览器验收（真实 Chromium + Playwright，`http://127.0.0.1:5173/plugins` → 「热部署（ADR-030）」页签）**：
+  demo 账号登录 → 页签与统计卡渲染 → 选 `local-host` + `org.sensoryplex.deploy-canary` + `0.1.0 · macos-aarch64`
+  后按钮自动变「发起升级」并提示该槽位已有 active（`upgrade` 而非 `provision`）→ 确认弹层 → **由 UI 真实发起
+  升级**（连续三轮 `op_3a4156fcdc3346ca94840c5ae97e4e4a` 第 49 代 / `op_37f88f04295147e9950120f2a279bd4f`
+  第 47 代 / `op_ec689bc04eee44d789f8b192824c7889` 第 46 代，三轮都落到 `已完成`）→ 页面按 2.5s 轮询到
+  `已完成`；最后一轮（第 49 代）**全部断言通过且无 4xx/5xx 管理请求**（登录前的 `/auth/v1/me` 401
+  探测不计入），调用序列为 `POST /admin/v1/nodes/local-host/plugins/org.sensoryplex.deploy-canary:upgrade`
+  （201）→ `GET /admin/v1/plugin-deployments?limit=20`（轮询）→ `GET /admin/v1/plugin-deployments/{id}`
+  → `GET /admin/v1/nodes?limit=100`；详情弹窗显示「当前 active `0.1.0 · 127.0.0.1:58321`」
+  **等于本次候选端点**、「本次操作替换 `rti_5b85e193a2834e5ca698aca981dc8013`」等于契约
+  `from_runtime_instance_id`（该旧实例已 `PLUGIN_RUNTIME_STATE_STOPPED`），与
+  `GET /admin/v1/plugin-deployments/{id}` 的控制面回报逐字段一致。
+- **本轮修正的契约语义缺陷**：`PluginDeploymentOperation.active` 原先取 `from_runtime_instance_id`
+  （本次操作**替换掉**的那个实例），使已成功的升级在 Console 里把已停止的旧实例显示成「当前 active」。
+  现改为读槽位实时 active 指针，并在 `proto/node/v1/node.proto` 注释、Console 文案、native 验收断言
+  与集成用例里同时钉住该语义（native 新增 `切换后槽位 active 指针已经是候选实例` /
+  `切换后 active / previous 角色分明` / `被替换实例仍由 from_runtime_instance_id 保留` 三项断言）。
+
+**未验收边界（不得表述为已完成）**：
+
+- **Linux 平台服务适配器未验收**：systemd user unit 分支**没有在任何 Linux 节点跑过**，
+  因此本版本**不得宣称支持 Linux**，只能宣称 macOS 实机闭环。
+- **`deploy-canary` 只是验收 / 自检探针**：无业务数据，行为由运行目录里的 `mode.json` 决定，
+  不是业务插件，不得当生产负载。
+- **契约层通过 ≠ 节点上真的执行过热部署**：`--scope api` 用虚拟 Agent 回报驱动状态机，
+  不起真实插件进程；真实托管能力只由 `--scope native` 证明。
+- **首期范围之外**：容器形态插件、第三方未签名插件、意图内的任意下载 URL、跨机共享内存、
+  业务 `Process` 调用验证、自动 CPU fallback 都没有实现，也没有验收。
+- **指标只做到「端点 + 聚合」这一层，抓取链路未验证**：本轮新增
+  `GET /admin/v1/plugin-deployments/metrics`（要求 `plugins:manage`），对 `plugin_deployment_operation`
+  做真实 `GROUP BY`，按 `node/plugin/release/kind/stage/reason` 输出 Prometheus exposition（操作计数 +
+  staging/starting/validating/draining 的 sum/max），`operation_id` 按
+  `docs/design/plugin-orchestration.md` §8 的低基数规则**故意不进 label**，`--scope api` 会把它与台账
+  逐桶对账（含未认证 401 / 业务凭据 403 / 无敏感内容泄漏 / 窗口与节点过滤不合成行）。**仍缺的是网络与
+  抓取侧**：没有独立指标服务器，也没有 Prometheus / scrape 配置，经 Console Nginx 反代抓取同样没验过
+  （`127.0.0.1:9998/metrics` 是 MediaMTX 流媒体自身的指标，与插件无关）。因此只能表述为「控制面已提供
+  按 node/plugin/release/kind/stage/reason 聚合的指标端点」，**不得表述为「已接入监控」**。
+- **业务 `config` 不是「受控引用」**：它由管理面提供并经插件 `ValidateConfig` 校验（例如 embed 的
+  `model_dir` 是宿主机权重路径）。执行器不解释这些值，但也**不能**宣称「意图内绝对不含宿主路径」；
+  该论断只对执行器自己的下载 / 安装 / 启动路径成立。
+- **`local_native` 插件仍未签名**：本版本的「认证」= 受控制品仓产出 + 导入时重算落盘摘要，
+  **不是**密码学签名；下载端点的访问控制是「持有匹配未完成意图的 Agent 会话」，不是 mTLS。
+- **`golden_path_verified=false` 保持不变**：以上验收只覆盖插件热部署执行器本身，
+  不等于整体业务 Golden Path（媒体准入 → 方案发布 → 任务分发 → 融合入库 → 向量索引 → 语义检索 →
+  原片回看）已完成。
+
+---
+
 ## 开源使用文档站（apps/docs，2026-09-26）
 
 **背景与解决问题**：

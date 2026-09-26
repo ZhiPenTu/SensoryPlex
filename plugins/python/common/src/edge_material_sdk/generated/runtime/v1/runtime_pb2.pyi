@@ -34,20 +34,22 @@ class DescribeRequest(_message.Message):
     def __init__(self) -> None: ...
 
 class PluginDescription(_message.Message):
-    __slots__ = ("name", "version", "protocol", "consumes", "produces", "memory_kinds")
+    __slots__ = ("name", "version", "protocol", "consumes", "produces", "memory_kinds", "artifact_digest")
     NAME_FIELD_NUMBER: _ClassVar[int]
     VERSION_FIELD_NUMBER: _ClassVar[int]
     PROTOCOL_FIELD_NUMBER: _ClassVar[int]
     CONSUMES_FIELD_NUMBER: _ClassVar[int]
     PRODUCES_FIELD_NUMBER: _ClassVar[int]
     MEMORY_KINDS_FIELD_NUMBER: _ClassVar[int]
+    ARTIFACT_DIGEST_FIELD_NUMBER: _ClassVar[int]
     name: str
     version: str
     protocol: str
     consumes: _containers.RepeatedScalarFieldContainer[str]
     produces: _containers.RepeatedScalarFieldContainer[str]
     memory_kinds: _containers.RepeatedScalarFieldContainer[str]
-    def __init__(self, name: _Optional[str] = ..., version: _Optional[str] = ..., protocol: _Optional[str] = ..., consumes: _Optional[_Iterable[str]] = ..., produces: _Optional[_Iterable[str]] = ..., memory_kinds: _Optional[_Iterable[str]] = ...) -> None: ...
+    artifact_digest: str
+    def __init__(self, name: _Optional[str] = ..., version: _Optional[str] = ..., protocol: _Optional[str] = ..., consumes: _Optional[_Iterable[str]] = ..., produces: _Optional[_Iterable[str]] = ..., memory_kinds: _Optional[_Iterable[str]] = ..., artifact_digest: _Optional[str] = ...) -> None: ...
 
 class ValidateConfigRequest(_message.Message):
     __slots__ = ("config",)

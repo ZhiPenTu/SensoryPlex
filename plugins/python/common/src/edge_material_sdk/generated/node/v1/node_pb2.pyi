@@ -41,6 +41,44 @@ class DeploymentAction(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     DEPLOYMENT_ACTION_ROLLBACK: _ClassVar[DeploymentAction]
     DEPLOYMENT_ACTION_DRAIN: _ClassVar[DeploymentAction]
     DEPLOYMENT_ACTION_TASK_PROCESS: _ClassVar[DeploymentAction]
+    DEPLOYMENT_ACTION_STAGE_RELEASE: _ClassVar[DeploymentAction]
+    DEPLOYMENT_ACTION_RECONCILE: _ClassVar[DeploymentAction]
+
+class PluginOperationStage(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    PLUGIN_OPERATION_STAGE_UNSPECIFIED: _ClassVar[PluginOperationStage]
+    PLUGIN_OPERATION_STAGE_ACCEPTED: _ClassVar[PluginOperationStage]
+    PLUGIN_OPERATION_STAGE_STAGING: _ClassVar[PluginOperationStage]
+    PLUGIN_OPERATION_STAGE_STARTING: _ClassVar[PluginOperationStage]
+    PLUGIN_OPERATION_STAGE_VALIDATING: _ClassVar[PluginOperationStage]
+    PLUGIN_OPERATION_STAGE_CANDIDATE_READY: _ClassVar[PluginOperationStage]
+    PLUGIN_OPERATION_STAGE_CUTTING_OVER: _ClassVar[PluginOperationStage]
+    PLUGIN_OPERATION_STAGE_DRAINING_OLD: _ClassVar[PluginOperationStage]
+    PLUGIN_OPERATION_STAGE_SUCCEEDED: _ClassVar[PluginOperationStage]
+    PLUGIN_OPERATION_STAGE_FAILED: _ClassVar[PluginOperationStage]
+    PLUGIN_OPERATION_STAGE_CANCELLED: _ClassVar[PluginOperationStage]
+
+class PluginRuntimeRole(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    PLUGIN_RUNTIME_ROLE_UNSPECIFIED: _ClassVar[PluginRuntimeRole]
+    PLUGIN_RUNTIME_ROLE_CANDIDATE: _ClassVar[PluginRuntimeRole]
+    PLUGIN_RUNTIME_ROLE_ACTIVE: _ClassVar[PluginRuntimeRole]
+    PLUGIN_RUNTIME_ROLE_PREVIOUS: _ClassVar[PluginRuntimeRole]
+    PLUGIN_RUNTIME_ROLE_FAILED: _ClassVar[PluginRuntimeRole]
+
+class PluginRuntimeState(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    PLUGIN_RUNTIME_STATE_UNSPECIFIED: _ClassVar[PluginRuntimeState]
+    PLUGIN_RUNTIME_STATE_PLANNED: _ClassVar[PluginRuntimeState]
+    PLUGIN_RUNTIME_STATE_STAGED: _ClassVar[PluginRuntimeState]
+    PLUGIN_RUNTIME_STATE_STARTING: _ClassVar[PluginRuntimeState]
+    PLUGIN_RUNTIME_STATE_VALIDATING: _ClassVar[PluginRuntimeState]
+    PLUGIN_RUNTIME_STATE_CANDIDATE_READY: _ClassVar[PluginRuntimeState]
+    PLUGIN_RUNTIME_STATE_ACTIVE: _ClassVar[PluginRuntimeState]
+    PLUGIN_RUNTIME_STATE_DRAINING: _ClassVar[PluginRuntimeState]
+    PLUGIN_RUNTIME_STATE_STOPPED: _ClassVar[PluginRuntimeState]
+    PLUGIN_RUNTIME_STATE_FAILED: _ClassVar[PluginRuntimeState]
+    PLUGIN_RUNTIME_STATE_UNINSTALLED: _ClassVar[PluginRuntimeState]
 NODE_STATUS_UNSPECIFIED: NodeStatus
 NODE_STATUS_CANDIDATE: NodeStatus
 NODE_STATUS_ENROLLING: NodeStatus
@@ -66,6 +104,35 @@ DEPLOYMENT_ACTION_UNINSTALL: DeploymentAction
 DEPLOYMENT_ACTION_ROLLBACK: DeploymentAction
 DEPLOYMENT_ACTION_DRAIN: DeploymentAction
 DEPLOYMENT_ACTION_TASK_PROCESS: DeploymentAction
+DEPLOYMENT_ACTION_STAGE_RELEASE: DeploymentAction
+DEPLOYMENT_ACTION_RECONCILE: DeploymentAction
+PLUGIN_OPERATION_STAGE_UNSPECIFIED: PluginOperationStage
+PLUGIN_OPERATION_STAGE_ACCEPTED: PluginOperationStage
+PLUGIN_OPERATION_STAGE_STAGING: PluginOperationStage
+PLUGIN_OPERATION_STAGE_STARTING: PluginOperationStage
+PLUGIN_OPERATION_STAGE_VALIDATING: PluginOperationStage
+PLUGIN_OPERATION_STAGE_CANDIDATE_READY: PluginOperationStage
+PLUGIN_OPERATION_STAGE_CUTTING_OVER: PluginOperationStage
+PLUGIN_OPERATION_STAGE_DRAINING_OLD: PluginOperationStage
+PLUGIN_OPERATION_STAGE_SUCCEEDED: PluginOperationStage
+PLUGIN_OPERATION_STAGE_FAILED: PluginOperationStage
+PLUGIN_OPERATION_STAGE_CANCELLED: PluginOperationStage
+PLUGIN_RUNTIME_ROLE_UNSPECIFIED: PluginRuntimeRole
+PLUGIN_RUNTIME_ROLE_CANDIDATE: PluginRuntimeRole
+PLUGIN_RUNTIME_ROLE_ACTIVE: PluginRuntimeRole
+PLUGIN_RUNTIME_ROLE_PREVIOUS: PluginRuntimeRole
+PLUGIN_RUNTIME_ROLE_FAILED: PluginRuntimeRole
+PLUGIN_RUNTIME_STATE_UNSPECIFIED: PluginRuntimeState
+PLUGIN_RUNTIME_STATE_PLANNED: PluginRuntimeState
+PLUGIN_RUNTIME_STATE_STAGED: PluginRuntimeState
+PLUGIN_RUNTIME_STATE_STARTING: PluginRuntimeState
+PLUGIN_RUNTIME_STATE_VALIDATING: PluginRuntimeState
+PLUGIN_RUNTIME_STATE_CANDIDATE_READY: PluginRuntimeState
+PLUGIN_RUNTIME_STATE_ACTIVE: PluginRuntimeState
+PLUGIN_RUNTIME_STATE_DRAINING: PluginRuntimeState
+PLUGIN_RUNTIME_STATE_STOPPED: PluginRuntimeState
+PLUGIN_RUNTIME_STATE_FAILED: PluginRuntimeState
+PLUGIN_RUNTIME_STATE_UNINSTALLED: PluginRuntimeState
 
 class NodeCapabilityProfile(_message.Message):
     __slots__ = ("platform", "arch", "cpu_cores", "memory_bytes", "unified_memory_bytes", "accelerators", "supported_artifacts", "labels")
@@ -125,7 +192,7 @@ class NodeList(_message.Message):
     def __init__(self, items: _Optional[_Iterable[_Union[NodeInfo, _Mapping]]] = ..., total: _Optional[int] = ...) -> None: ...
 
 class PluginInstance(_message.Message):
-    __slots__ = ("instance_id", "node_id", "plugin_id", "plugin_version", "artifact_digest", "previous_digest", "desired_state", "actual_state", "config_hash", "config", "error_code", "error_detail", "created_at", "updated_at")
+    __slots__ = ("instance_id", "node_id", "plugin_id", "plugin_version", "artifact_digest", "previous_digest", "desired_state", "actual_state", "config_hash", "config", "error_code", "error_detail", "created_at", "updated_at", "active_runtime_instance_id", "active_release_id", "previous_runtime_instance_id", "generation", "endpoint")
     INSTANCE_ID_FIELD_NUMBER: _ClassVar[int]
     NODE_ID_FIELD_NUMBER: _ClassVar[int]
     PLUGIN_ID_FIELD_NUMBER: _ClassVar[int]
@@ -140,6 +207,11 @@ class PluginInstance(_message.Message):
     ERROR_DETAIL_FIELD_NUMBER: _ClassVar[int]
     CREATED_AT_FIELD_NUMBER: _ClassVar[int]
     UPDATED_AT_FIELD_NUMBER: _ClassVar[int]
+    ACTIVE_RUNTIME_INSTANCE_ID_FIELD_NUMBER: _ClassVar[int]
+    ACTIVE_RELEASE_ID_FIELD_NUMBER: _ClassVar[int]
+    PREVIOUS_RUNTIME_INSTANCE_ID_FIELD_NUMBER: _ClassVar[int]
+    GENERATION_FIELD_NUMBER: _ClassVar[int]
+    ENDPOINT_FIELD_NUMBER: _ClassVar[int]
     instance_id: str
     node_id: str
     plugin_id: str
@@ -154,7 +226,12 @@ class PluginInstance(_message.Message):
     error_detail: str
     created_at: str
     updated_at: str
-    def __init__(self, instance_id: _Optional[str] = ..., node_id: _Optional[str] = ..., plugin_id: _Optional[str] = ..., plugin_version: _Optional[str] = ..., artifact_digest: _Optional[str] = ..., previous_digest: _Optional[str] = ..., desired_state: _Optional[str] = ..., actual_state: _Optional[str] = ..., config_hash: _Optional[str] = ..., config: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ..., error_code: _Optional[str] = ..., error_detail: _Optional[str] = ..., created_at: _Optional[str] = ..., updated_at: _Optional[str] = ...) -> None: ...
+    active_runtime_instance_id: str
+    active_release_id: str
+    previous_runtime_instance_id: str
+    generation: int
+    endpoint: str
+    def __init__(self, instance_id: _Optional[str] = ..., node_id: _Optional[str] = ..., plugin_id: _Optional[str] = ..., plugin_version: _Optional[str] = ..., artifact_digest: _Optional[str] = ..., previous_digest: _Optional[str] = ..., desired_state: _Optional[str] = ..., actual_state: _Optional[str] = ..., config_hash: _Optional[str] = ..., config: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ..., error_code: _Optional[str] = ..., error_detail: _Optional[str] = ..., created_at: _Optional[str] = ..., updated_at: _Optional[str] = ..., active_runtime_instance_id: _Optional[str] = ..., active_release_id: _Optional[str] = ..., previous_runtime_instance_id: _Optional[str] = ..., generation: _Optional[int] = ..., endpoint: _Optional[str] = ...) -> None: ...
 
 class PluginInstanceList(_message.Message):
     __slots__ = ("items", "total")
@@ -213,33 +290,65 @@ class EnrollNodeResponse(_message.Message):
     def __init__(self, success: bool = ..., node_id: _Optional[str] = ..., status: _Optional[_Union[NodeStatus, str]] = ..., session_token: _Optional[str] = ..., message: _Optional[str] = ...) -> None: ...
 
 class NodeHeartbeatRequest(_message.Message):
-    __slots__ = ("node_id", "session_token", "timestamp_unix_ms", "available_memory_bytes", "current_concurrency", "running_instance_ids")
+    __slots__ = ("node_id", "session_token", "timestamp_unix_ms", "available_memory_bytes", "current_concurrency", "running_instance_ids", "runtime_observations")
     NODE_ID_FIELD_NUMBER: _ClassVar[int]
     SESSION_TOKEN_FIELD_NUMBER: _ClassVar[int]
     TIMESTAMP_UNIX_MS_FIELD_NUMBER: _ClassVar[int]
     AVAILABLE_MEMORY_BYTES_FIELD_NUMBER: _ClassVar[int]
     CURRENT_CONCURRENCY_FIELD_NUMBER: _ClassVar[int]
     RUNNING_INSTANCE_IDS_FIELD_NUMBER: _ClassVar[int]
+    RUNTIME_OBSERVATIONS_FIELD_NUMBER: _ClassVar[int]
     node_id: str
     session_token: str
     timestamp_unix_ms: int
     available_memory_bytes: int
     current_concurrency: int
     running_instance_ids: _containers.RepeatedScalarFieldContainer[str]
-    def __init__(self, node_id: _Optional[str] = ..., session_token: _Optional[str] = ..., timestamp_unix_ms: _Optional[int] = ..., available_memory_bytes: _Optional[int] = ..., current_concurrency: _Optional[int] = ..., running_instance_ids: _Optional[_Iterable[str]] = ...) -> None: ...
+    runtime_observations: _containers.RepeatedCompositeFieldContainer[PluginRuntimeObservation]
+    def __init__(self, node_id: _Optional[str] = ..., session_token: _Optional[str] = ..., timestamp_unix_ms: _Optional[int] = ..., available_memory_bytes: _Optional[int] = ..., current_concurrency: _Optional[int] = ..., running_instance_ids: _Optional[_Iterable[str]] = ..., runtime_observations: _Optional[_Iterable[_Union[PluginRuntimeObservation, _Mapping]]] = ...) -> None: ...
+
+class PluginRuntimeObservation(_message.Message):
+    __slots__ = ("runtime_instance_id", "operation_id", "generation", "observed_state", "endpoint", "supervisor_id", "supervisor_managed", "unit_loaded", "last_exit_code", "observed_at", "reconciliation", "detail")
+    RUNTIME_INSTANCE_ID_FIELD_NUMBER: _ClassVar[int]
+    OPERATION_ID_FIELD_NUMBER: _ClassVar[int]
+    GENERATION_FIELD_NUMBER: _ClassVar[int]
+    OBSERVED_STATE_FIELD_NUMBER: _ClassVar[int]
+    ENDPOINT_FIELD_NUMBER: _ClassVar[int]
+    SUPERVISOR_ID_FIELD_NUMBER: _ClassVar[int]
+    SUPERVISOR_MANAGED_FIELD_NUMBER: _ClassVar[int]
+    UNIT_LOADED_FIELD_NUMBER: _ClassVar[int]
+    LAST_EXIT_CODE_FIELD_NUMBER: _ClassVar[int]
+    OBSERVED_AT_FIELD_NUMBER: _ClassVar[int]
+    RECONCILIATION_FIELD_NUMBER: _ClassVar[int]
+    DETAIL_FIELD_NUMBER: _ClassVar[int]
+    runtime_instance_id: str
+    operation_id: str
+    generation: int
+    observed_state: str
+    endpoint: str
+    supervisor_id: str
+    supervisor_managed: bool
+    unit_loaded: bool
+    last_exit_code: int
+    observed_at: str
+    reconciliation: str
+    detail: str
+    def __init__(self, runtime_instance_id: _Optional[str] = ..., operation_id: _Optional[str] = ..., generation: _Optional[int] = ..., observed_state: _Optional[str] = ..., endpoint: _Optional[str] = ..., supervisor_id: _Optional[str] = ..., supervisor_managed: bool = ..., unit_loaded: bool = ..., last_exit_code: _Optional[int] = ..., observed_at: _Optional[str] = ..., reconciliation: _Optional[str] = ..., detail: _Optional[str] = ...) -> None: ...
 
 class NodeHeartbeatResponse(_message.Message):
-    __slots__ = ("status", "heartbeat_interval_ms", "pending_intents")
+    __slots__ = ("status", "heartbeat_interval_ms", "pending_intents", "reconciliation_required")
     STATUS_FIELD_NUMBER: _ClassVar[int]
     HEARTBEAT_INTERVAL_MS_FIELD_NUMBER: _ClassVar[int]
     PENDING_INTENTS_FIELD_NUMBER: _ClassVar[int]
+    RECONCILIATION_REQUIRED_FIELD_NUMBER: _ClassVar[int]
     status: NodeStatus
     heartbeat_interval_ms: int
     pending_intents: _containers.RepeatedCompositeFieldContainer[DeploymentIntent]
-    def __init__(self, status: _Optional[_Union[NodeStatus, str]] = ..., heartbeat_interval_ms: _Optional[int] = ..., pending_intents: _Optional[_Iterable[_Union[DeploymentIntent, _Mapping]]] = ...) -> None: ...
+    reconciliation_required: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, status: _Optional[_Union[NodeStatus, str]] = ..., heartbeat_interval_ms: _Optional[int] = ..., pending_intents: _Optional[_Iterable[_Union[DeploymentIntent, _Mapping]]] = ..., reconciliation_required: _Optional[_Iterable[str]] = ...) -> None: ...
 
 class DeploymentIntent(_message.Message):
-    __slots__ = ("intent_id", "instance_id", "node_id", "plugin_id", "plugin_version", "action", "artifact_digest", "rollback_digest", "config", "created_at", "deadline_unix_ms")
+    __slots__ = ("intent_id", "instance_id", "node_id", "plugin_id", "plugin_version", "action", "artifact_digest", "rollback_digest", "config", "created_at", "deadline_unix_ms", "operation_id", "generation", "release_id", "bundle_digest", "runtime_instance_id", "grace_period_ms")
     INTENT_ID_FIELD_NUMBER: _ClassVar[int]
     INSTANCE_ID_FIELD_NUMBER: _ClassVar[int]
     NODE_ID_FIELD_NUMBER: _ClassVar[int]
@@ -251,6 +360,12 @@ class DeploymentIntent(_message.Message):
     CONFIG_FIELD_NUMBER: _ClassVar[int]
     CREATED_AT_FIELD_NUMBER: _ClassVar[int]
     DEADLINE_UNIX_MS_FIELD_NUMBER: _ClassVar[int]
+    OPERATION_ID_FIELD_NUMBER: _ClassVar[int]
+    GENERATION_FIELD_NUMBER: _ClassVar[int]
+    RELEASE_ID_FIELD_NUMBER: _ClassVar[int]
+    BUNDLE_DIGEST_FIELD_NUMBER: _ClassVar[int]
+    RUNTIME_INSTANCE_ID_FIELD_NUMBER: _ClassVar[int]
+    GRACE_PERIOD_MS_FIELD_NUMBER: _ClassVar[int]
     intent_id: str
     instance_id: str
     node_id: str
@@ -262,10 +377,16 @@ class DeploymentIntent(_message.Message):
     config: _struct_pb2.Struct
     created_at: str
     deadline_unix_ms: int
-    def __init__(self, intent_id: _Optional[str] = ..., instance_id: _Optional[str] = ..., node_id: _Optional[str] = ..., plugin_id: _Optional[str] = ..., plugin_version: _Optional[str] = ..., action: _Optional[_Union[DeploymentAction, str]] = ..., artifact_digest: _Optional[str] = ..., rollback_digest: _Optional[str] = ..., config: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ..., created_at: _Optional[str] = ..., deadline_unix_ms: _Optional[int] = ...) -> None: ...
+    operation_id: str
+    generation: int
+    release_id: str
+    bundle_digest: str
+    runtime_instance_id: str
+    grace_period_ms: int
+    def __init__(self, intent_id: _Optional[str] = ..., instance_id: _Optional[str] = ..., node_id: _Optional[str] = ..., plugin_id: _Optional[str] = ..., plugin_version: _Optional[str] = ..., action: _Optional[_Union[DeploymentAction, str]] = ..., artifact_digest: _Optional[str] = ..., rollback_digest: _Optional[str] = ..., config: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ..., created_at: _Optional[str] = ..., deadline_unix_ms: _Optional[int] = ..., operation_id: _Optional[str] = ..., generation: _Optional[int] = ..., release_id: _Optional[str] = ..., bundle_digest: _Optional[str] = ..., runtime_instance_id: _Optional[str] = ..., grace_period_ms: _Optional[int] = ...) -> None: ...
 
 class ReportDeploymentRequest(_message.Message):
-    __slots__ = ("intent_id", "instance_id", "node_id", "action", "success", "actual_state", "error_code", "error_detail")
+    __slots__ = ("intent_id", "instance_id", "node_id", "action", "success", "actual_state", "error_code", "error_detail", "operation_id", "generation", "release_id", "runtime_instance_id", "stage", "verified_plugin_id", "verified_artifact_digest", "endpoint", "supervisor_id", "staging_ms", "starting_ms", "validating_ms", "draining_ms")
     INTENT_ID_FIELD_NUMBER: _ClassVar[int]
     INSTANCE_ID_FIELD_NUMBER: _ClassVar[int]
     NODE_ID_FIELD_NUMBER: _ClassVar[int]
@@ -274,6 +395,19 @@ class ReportDeploymentRequest(_message.Message):
     ACTUAL_STATE_FIELD_NUMBER: _ClassVar[int]
     ERROR_CODE_FIELD_NUMBER: _ClassVar[int]
     ERROR_DETAIL_FIELD_NUMBER: _ClassVar[int]
+    OPERATION_ID_FIELD_NUMBER: _ClassVar[int]
+    GENERATION_FIELD_NUMBER: _ClassVar[int]
+    RELEASE_ID_FIELD_NUMBER: _ClassVar[int]
+    RUNTIME_INSTANCE_ID_FIELD_NUMBER: _ClassVar[int]
+    STAGE_FIELD_NUMBER: _ClassVar[int]
+    VERIFIED_PLUGIN_ID_FIELD_NUMBER: _ClassVar[int]
+    VERIFIED_ARTIFACT_DIGEST_FIELD_NUMBER: _ClassVar[int]
+    ENDPOINT_FIELD_NUMBER: _ClassVar[int]
+    SUPERVISOR_ID_FIELD_NUMBER: _ClassVar[int]
+    STAGING_MS_FIELD_NUMBER: _ClassVar[int]
+    STARTING_MS_FIELD_NUMBER: _ClassVar[int]
+    VALIDATING_MS_FIELD_NUMBER: _ClassVar[int]
+    DRAINING_MS_FIELD_NUMBER: _ClassVar[int]
     intent_id: str
     instance_id: str
     node_id: str
@@ -282,7 +416,20 @@ class ReportDeploymentRequest(_message.Message):
     actual_state: str
     error_code: str
     error_detail: str
-    def __init__(self, intent_id: _Optional[str] = ..., instance_id: _Optional[str] = ..., node_id: _Optional[str] = ..., action: _Optional[_Union[DeploymentAction, str]] = ..., success: bool = ..., actual_state: _Optional[str] = ..., error_code: _Optional[str] = ..., error_detail: _Optional[str] = ...) -> None: ...
+    operation_id: str
+    generation: int
+    release_id: str
+    runtime_instance_id: str
+    stage: PluginOperationStage
+    verified_plugin_id: str
+    verified_artifact_digest: str
+    endpoint: str
+    supervisor_id: str
+    staging_ms: int
+    starting_ms: int
+    validating_ms: int
+    draining_ms: int
+    def __init__(self, intent_id: _Optional[str] = ..., instance_id: _Optional[str] = ..., node_id: _Optional[str] = ..., action: _Optional[_Union[DeploymentAction, str]] = ..., success: bool = ..., actual_state: _Optional[str] = ..., error_code: _Optional[str] = ..., error_detail: _Optional[str] = ..., operation_id: _Optional[str] = ..., generation: _Optional[int] = ..., release_id: _Optional[str] = ..., runtime_instance_id: _Optional[str] = ..., stage: _Optional[_Union[PluginOperationStage, str]] = ..., verified_plugin_id: _Optional[str] = ..., verified_artifact_digest: _Optional[str] = ..., endpoint: _Optional[str] = ..., supervisor_id: _Optional[str] = ..., staging_ms: _Optional[int] = ..., starting_ms: _Optional[int] = ..., validating_ms: _Optional[int] = ..., draining_ms: _Optional[int] = ...) -> None: ...
 
 class PreflightRequest(_message.Message):
     __slots__ = ("node_id", "plugin_id", "config_id", "requires_data_locality", "data_plane_node_id", "config")
@@ -357,3 +504,205 @@ class DeregisterNodeResponse(_message.Message):
     status: NodeStatus
     message: str
     def __init__(self, success: bool = ..., node_id: _Optional[str] = ..., status: _Optional[_Union[NodeStatus, str]] = ..., message: _Optional[str] = ...) -> None: ...
+
+class PluginRelease(_message.Message):
+    __slots__ = ("release_id", "plugin_id", "plugin_version", "platform", "arch", "form", "artifact_digest", "bundle_digest", "manifest_digest", "config_schema_digest", "sbom_digest", "bundle_bytes", "entrypoint", "runtime_requirements", "trust", "authenticated", "authentication_method", "signature_status", "sbom_components", "declared_memory_bytes", "declared_cpu_millicores", "default_deadline_ms", "published_at", "created_by")
+    RELEASE_ID_FIELD_NUMBER: _ClassVar[int]
+    PLUGIN_ID_FIELD_NUMBER: _ClassVar[int]
+    PLUGIN_VERSION_FIELD_NUMBER: _ClassVar[int]
+    PLATFORM_FIELD_NUMBER: _ClassVar[int]
+    ARCH_FIELD_NUMBER: _ClassVar[int]
+    FORM_FIELD_NUMBER: _ClassVar[int]
+    ARTIFACT_DIGEST_FIELD_NUMBER: _ClassVar[int]
+    BUNDLE_DIGEST_FIELD_NUMBER: _ClassVar[int]
+    MANIFEST_DIGEST_FIELD_NUMBER: _ClassVar[int]
+    CONFIG_SCHEMA_DIGEST_FIELD_NUMBER: _ClassVar[int]
+    SBOM_DIGEST_FIELD_NUMBER: _ClassVar[int]
+    BUNDLE_BYTES_FIELD_NUMBER: _ClassVar[int]
+    ENTRYPOINT_FIELD_NUMBER: _ClassVar[int]
+    RUNTIME_REQUIREMENTS_FIELD_NUMBER: _ClassVar[int]
+    TRUST_FIELD_NUMBER: _ClassVar[int]
+    AUTHENTICATED_FIELD_NUMBER: _ClassVar[int]
+    AUTHENTICATION_METHOD_FIELD_NUMBER: _ClassVar[int]
+    SIGNATURE_STATUS_FIELD_NUMBER: _ClassVar[int]
+    SBOM_COMPONENTS_FIELD_NUMBER: _ClassVar[int]
+    DECLARED_MEMORY_BYTES_FIELD_NUMBER: _ClassVar[int]
+    DECLARED_CPU_MILLICORES_FIELD_NUMBER: _ClassVar[int]
+    DEFAULT_DEADLINE_MS_FIELD_NUMBER: _ClassVar[int]
+    PUBLISHED_AT_FIELD_NUMBER: _ClassVar[int]
+    CREATED_BY_FIELD_NUMBER: _ClassVar[int]
+    release_id: str
+    plugin_id: str
+    plugin_version: str
+    platform: str
+    arch: str
+    form: str
+    artifact_digest: str
+    bundle_digest: str
+    manifest_digest: str
+    config_schema_digest: str
+    sbom_digest: str
+    bundle_bytes: int
+    entrypoint: _struct_pb2.Struct
+    runtime_requirements: _struct_pb2.Struct
+    trust: str
+    authenticated: bool
+    authentication_method: str
+    signature_status: str
+    sbom_components: int
+    declared_memory_bytes: int
+    declared_cpu_millicores: int
+    default_deadline_ms: int
+    published_at: str
+    created_by: str
+    def __init__(self, release_id: _Optional[str] = ..., plugin_id: _Optional[str] = ..., plugin_version: _Optional[str] = ..., platform: _Optional[str] = ..., arch: _Optional[str] = ..., form: _Optional[str] = ..., artifact_digest: _Optional[str] = ..., bundle_digest: _Optional[str] = ..., manifest_digest: _Optional[str] = ..., config_schema_digest: _Optional[str] = ..., sbom_digest: _Optional[str] = ..., bundle_bytes: _Optional[int] = ..., entrypoint: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ..., runtime_requirements: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ..., trust: _Optional[str] = ..., authenticated: bool = ..., authentication_method: _Optional[str] = ..., signature_status: _Optional[str] = ..., sbom_components: _Optional[int] = ..., declared_memory_bytes: _Optional[int] = ..., declared_cpu_millicores: _Optional[int] = ..., default_deadline_ms: _Optional[int] = ..., published_at: _Optional[str] = ..., created_by: _Optional[str] = ...) -> None: ...
+
+class PluginReleaseList(_message.Message):
+    __slots__ = ("items", "total")
+    ITEMS_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_FIELD_NUMBER: _ClassVar[int]
+    items: _containers.RepeatedCompositeFieldContainer[PluginRelease]
+    total: int
+    def __init__(self, items: _Optional[_Iterable[_Union[PluginRelease, _Mapping]]] = ..., total: _Optional[int] = ...) -> None: ...
+
+class PluginRuntimeInstance(_message.Message):
+    __slots__ = ("runtime_instance_id", "instance_id", "node_id", "plugin_id", "release_id", "artifact_digest", "bundle_digest", "generation", "role", "state", "endpoint", "supervisor_id", "unit_name", "install_dir", "verified_plugin_id", "verified_artifact_digest", "launch_ms", "drain_ms", "error_code", "error_detail", "created_at", "updated_at")
+    RUNTIME_INSTANCE_ID_FIELD_NUMBER: _ClassVar[int]
+    INSTANCE_ID_FIELD_NUMBER: _ClassVar[int]
+    NODE_ID_FIELD_NUMBER: _ClassVar[int]
+    PLUGIN_ID_FIELD_NUMBER: _ClassVar[int]
+    RELEASE_ID_FIELD_NUMBER: _ClassVar[int]
+    ARTIFACT_DIGEST_FIELD_NUMBER: _ClassVar[int]
+    BUNDLE_DIGEST_FIELD_NUMBER: _ClassVar[int]
+    GENERATION_FIELD_NUMBER: _ClassVar[int]
+    ROLE_FIELD_NUMBER: _ClassVar[int]
+    STATE_FIELD_NUMBER: _ClassVar[int]
+    ENDPOINT_FIELD_NUMBER: _ClassVar[int]
+    SUPERVISOR_ID_FIELD_NUMBER: _ClassVar[int]
+    UNIT_NAME_FIELD_NUMBER: _ClassVar[int]
+    INSTALL_DIR_FIELD_NUMBER: _ClassVar[int]
+    VERIFIED_PLUGIN_ID_FIELD_NUMBER: _ClassVar[int]
+    VERIFIED_ARTIFACT_DIGEST_FIELD_NUMBER: _ClassVar[int]
+    LAUNCH_MS_FIELD_NUMBER: _ClassVar[int]
+    DRAIN_MS_FIELD_NUMBER: _ClassVar[int]
+    ERROR_CODE_FIELD_NUMBER: _ClassVar[int]
+    ERROR_DETAIL_FIELD_NUMBER: _ClassVar[int]
+    CREATED_AT_FIELD_NUMBER: _ClassVar[int]
+    UPDATED_AT_FIELD_NUMBER: _ClassVar[int]
+    runtime_instance_id: str
+    instance_id: str
+    node_id: str
+    plugin_id: str
+    release_id: str
+    artifact_digest: str
+    bundle_digest: str
+    generation: int
+    role: PluginRuntimeRole
+    state: PluginRuntimeState
+    endpoint: str
+    supervisor_id: str
+    unit_name: str
+    install_dir: str
+    verified_plugin_id: str
+    verified_artifact_digest: str
+    launch_ms: int
+    drain_ms: int
+    error_code: str
+    error_detail: str
+    created_at: str
+    updated_at: str
+    def __init__(self, runtime_instance_id: _Optional[str] = ..., instance_id: _Optional[str] = ..., node_id: _Optional[str] = ..., plugin_id: _Optional[str] = ..., release_id: _Optional[str] = ..., artifact_digest: _Optional[str] = ..., bundle_digest: _Optional[str] = ..., generation: _Optional[int] = ..., role: _Optional[_Union[PluginRuntimeRole, str]] = ..., state: _Optional[_Union[PluginRuntimeState, str]] = ..., endpoint: _Optional[str] = ..., supervisor_id: _Optional[str] = ..., unit_name: _Optional[str] = ..., install_dir: _Optional[str] = ..., verified_plugin_id: _Optional[str] = ..., verified_artifact_digest: _Optional[str] = ..., launch_ms: _Optional[int] = ..., drain_ms: _Optional[int] = ..., error_code: _Optional[str] = ..., error_detail: _Optional[str] = ..., created_at: _Optional[str] = ..., updated_at: _Optional[str] = ...) -> None: ...
+
+class PluginDeploymentOperation(_message.Message):
+    __slots__ = ("operation_id", "kind", "node_id", "instance_id", "plugin_id", "release_id", "from_runtime_instance_id", "candidate_runtime_instance_id", "rollback_of_operation_id", "generation", "stage", "cancellable", "deadline_unix_ms", "error_code", "error_detail", "staging_ms", "starting_ms", "validating_ms", "draining_ms", "config", "candidate", "active", "previous", "created_by", "created_at", "updated_at", "completed_at")
+    OPERATION_ID_FIELD_NUMBER: _ClassVar[int]
+    KIND_FIELD_NUMBER: _ClassVar[int]
+    NODE_ID_FIELD_NUMBER: _ClassVar[int]
+    INSTANCE_ID_FIELD_NUMBER: _ClassVar[int]
+    PLUGIN_ID_FIELD_NUMBER: _ClassVar[int]
+    RELEASE_ID_FIELD_NUMBER: _ClassVar[int]
+    FROM_RUNTIME_INSTANCE_ID_FIELD_NUMBER: _ClassVar[int]
+    CANDIDATE_RUNTIME_INSTANCE_ID_FIELD_NUMBER: _ClassVar[int]
+    ROLLBACK_OF_OPERATION_ID_FIELD_NUMBER: _ClassVar[int]
+    GENERATION_FIELD_NUMBER: _ClassVar[int]
+    STAGE_FIELD_NUMBER: _ClassVar[int]
+    CANCELLABLE_FIELD_NUMBER: _ClassVar[int]
+    DEADLINE_UNIX_MS_FIELD_NUMBER: _ClassVar[int]
+    ERROR_CODE_FIELD_NUMBER: _ClassVar[int]
+    ERROR_DETAIL_FIELD_NUMBER: _ClassVar[int]
+    STAGING_MS_FIELD_NUMBER: _ClassVar[int]
+    STARTING_MS_FIELD_NUMBER: _ClassVar[int]
+    VALIDATING_MS_FIELD_NUMBER: _ClassVar[int]
+    DRAINING_MS_FIELD_NUMBER: _ClassVar[int]
+    CONFIG_FIELD_NUMBER: _ClassVar[int]
+    CANDIDATE_FIELD_NUMBER: _ClassVar[int]
+    ACTIVE_FIELD_NUMBER: _ClassVar[int]
+    PREVIOUS_FIELD_NUMBER: _ClassVar[int]
+    CREATED_BY_FIELD_NUMBER: _ClassVar[int]
+    CREATED_AT_FIELD_NUMBER: _ClassVar[int]
+    UPDATED_AT_FIELD_NUMBER: _ClassVar[int]
+    COMPLETED_AT_FIELD_NUMBER: _ClassVar[int]
+    operation_id: str
+    kind: str
+    node_id: str
+    instance_id: str
+    plugin_id: str
+    release_id: str
+    from_runtime_instance_id: str
+    candidate_runtime_instance_id: str
+    rollback_of_operation_id: str
+    generation: int
+    stage: PluginOperationStage
+    cancellable: bool
+    deadline_unix_ms: int
+    error_code: str
+    error_detail: str
+    staging_ms: int
+    starting_ms: int
+    validating_ms: int
+    draining_ms: int
+    config: _struct_pb2.Struct
+    candidate: PluginRuntimeInstance
+    active: PluginRuntimeInstance
+    previous: PluginRuntimeInstance
+    created_by: str
+    created_at: str
+    updated_at: str
+    completed_at: str
+    def __init__(self, operation_id: _Optional[str] = ..., kind: _Optional[str] = ..., node_id: _Optional[str] = ..., instance_id: _Optional[str] = ..., plugin_id: _Optional[str] = ..., release_id: _Optional[str] = ..., from_runtime_instance_id: _Optional[str] = ..., candidate_runtime_instance_id: _Optional[str] = ..., rollback_of_operation_id: _Optional[str] = ..., generation: _Optional[int] = ..., stage: _Optional[_Union[PluginOperationStage, str]] = ..., cancellable: bool = ..., deadline_unix_ms: _Optional[int] = ..., error_code: _Optional[str] = ..., error_detail: _Optional[str] = ..., staging_ms: _Optional[int] = ..., starting_ms: _Optional[int] = ..., validating_ms: _Optional[int] = ..., draining_ms: _Optional[int] = ..., config: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ..., candidate: _Optional[_Union[PluginRuntimeInstance, _Mapping]] = ..., active: _Optional[_Union[PluginRuntimeInstance, _Mapping]] = ..., previous: _Optional[_Union[PluginRuntimeInstance, _Mapping]] = ..., created_by: _Optional[str] = ..., created_at: _Optional[str] = ..., updated_at: _Optional[str] = ..., completed_at: _Optional[str] = ...) -> None: ...
+
+class PluginDeploymentOperationList(_message.Message):
+    __slots__ = ("items", "total")
+    ITEMS_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_FIELD_NUMBER: _ClassVar[int]
+    items: _containers.RepeatedCompositeFieldContainer[PluginDeploymentOperation]
+    total: int
+    def __init__(self, items: _Optional[_Iterable[_Union[PluginDeploymentOperation, _Mapping]]] = ..., total: _Optional[int] = ...) -> None: ...
+
+class CreatePluginDeploymentRequest(_message.Message):
+    __slots__ = ("release_id", "config_id", "config")
+    RELEASE_ID_FIELD_NUMBER: _ClassVar[int]
+    CONFIG_ID_FIELD_NUMBER: _ClassVar[int]
+    CONFIG_FIELD_NUMBER: _ClassVar[int]
+    release_id: str
+    config_id: str
+    config: _struct_pb2.Struct
+    def __init__(self, release_id: _Optional[str] = ..., config_id: _Optional[str] = ..., config: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ...) -> None: ...
+
+class SyncPluginReleasesRequest(_message.Message):
+    __slots__ = ("dry_run",)
+    DRY_RUN_FIELD_NUMBER: _ClassVar[int]
+    dry_run: bool
+    def __init__(self, dry_run: bool = ...) -> None: ...
+
+class SyncPluginReleasesResponse(_message.Message):
+    __slots__ = ("imported", "unchanged", "rejected", "total")
+    IMPORTED_FIELD_NUMBER: _ClassVar[int]
+    UNCHANGED_FIELD_NUMBER: _ClassVar[int]
+    REJECTED_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_FIELD_NUMBER: _ClassVar[int]
+    imported: _containers.RepeatedScalarFieldContainer[str]
+    unchanged: _containers.RepeatedScalarFieldContainer[str]
+    rejected: _containers.RepeatedScalarFieldContainer[str]
+    total: int
+    def __init__(self, imported: _Optional[_Iterable[str]] = ..., unchanged: _Optional[_Iterable[str]] = ..., rejected: _Optional[_Iterable[str]] = ..., total: _Optional[int] = ...) -> None: ...

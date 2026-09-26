@@ -67,6 +67,7 @@ TEST_NATS_URL ?= $(if $(filter container,$(EXEC_MODE)),nats://nats:4222,nats://1
 .PHONY: stream-up stream-down stream-status stream-logs live-check model-check asr-check ocr-check embed-check index-check semantic-check parallelism-check plugin-artifact capability-check accelerator-check
 .PHONY: outbox-check outbox-run
 .PHONY: node-check golden-path-check task-worker task-worker-daemon task-worker-stop task-worker-status
+.PHONY: plugin-release plugin-release-verify plugin-deploy-check plugin-deploy-check-api plugin-deploy-check-native
 .PHONY: consume-check
 .PHONY: event-pipeline-check events-up events-down events-logs
 .PHONY: media-test resident-probe resident-install resident-uninstall resident-status
@@ -272,6 +273,34 @@ plugin-artifact-check:
 	$(EXEC_API) $(PY_API) tools/plugin_artifact.py --check plugins/python/processors/vlm-moondream || true
 	$(EXEC_API) $(PY_API) tools/plugin_artifact.py --check plugins/python/processors/ocr-rapidocr || true
 	$(EXEC_API) $(PY_API) tools/plugin_artifact.py --check plugins/python/processors/embed-bge-onnx || true
+
+# ── 插件热部署（ADR-030） ────────────────────────────────────────────────
+# 制品构建固定在**构建机（宿主）**：`pip download` 需要联网与宿主解释器，容器侧既没有 pip
+# 也不应该在部署链路里联网。构建产物写进 `.data/releases/`（受控制品仓）。
+PLUGIN_DIR ?= plugins/python/processors/deploy-canary
+
+plugin-release:
+	$(PY_HOST) tools/plugin_release.py build $(PLUGIN_DIR)
+	$(PY_HOST) tools/plugin_release.py list
+
+plugin-release-verify:
+	@test -n "$(BUNDLE)" || { echo "usage: make plugin-release-verify BUNDLE=.data/releases/<plugin>/<version>/<platform>-<arch>/bundle.tar.gz"; exit 1; }
+	$(PY_HOST) tools/plugin_release.py verify $(BUNDLE)
+
+# 热部署验收：控制面契约在 api 容器内跑；真实进程/平台服务/蓝绿在宿主跑
+# （LaunchAgent 与 systemd user unit 只能托管本机进程）。深度上限与真实首方插件蓝绿都由
+# tools/verify_plugin_hot_deploy.py 驱动，通过即代表 macOS 实机闭环，**不**代表 Linux 已验收。
+plugin-deploy-check:
+	$(EXEC_API) $(PY_API) tools/verify_plugin_hot_deploy.py --scope api
+	$(PY_HOST) tools/verify_plugin_hot_deploy.py --scope native
+
+plugin-deploy-check-api:
+	$(EXEC_API) $(PY_API) tools/verify_plugin_hot_deploy.py --scope api
+
+# native 层在宿主跑真实平台服务与真实进程；可重复运行：槽位为空时首次部署走 provision，
+# 槽位已有 active 时自动改走蓝绿 upgrade 并在报告里注明（控制面的 provision 是引导动作）。
+plugin-deploy-check-native:
+	$(PY_HOST) tools/verify_plugin_hot_deploy.py --scope native
 
 # 模型插件链路验收（M8）：需要本机 VLM 服务（默认 http://127.0.0.1:11434）；
 # cargo build 走主机，verify_model 在容器内执行，MEDIA 通过 bind 进入容器。

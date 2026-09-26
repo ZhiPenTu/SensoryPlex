@@ -1,5 +1,6 @@
 """HTTP 使用 Proto JSON；这里不重新声明跨语言字段。"""
 
+import hashlib
 from datetime import datetime
 from uuid import uuid4
 
@@ -8,6 +9,11 @@ from google.protobuf.json_format import MessageToDict, ParseDict, ParseError
 from psycopg.rows import dict_row
 
 RETRYABLE_HEADER = "X-Retryable"
+
+
+def hash_token(token: str) -> str:
+    """节点会话/入网令牌只以 sha256 落库；明文不落库、不进日志。"""
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
 def fail(status, reason, *, retryable=None):
