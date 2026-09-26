@@ -35,14 +35,14 @@ export function Heading({
     action?: ReactNode;
 }) {
     return (
-        <div style={{ marginBottom: 20 }}>
+        <div style={{ marginBottom: 10 }}>
             <div
                 style={{
                     display: 'flex',
                     justifyContent: 'space-between',
                     alignItems: 'flex-start',
                     flexWrap: 'wrap',
-                    gap: 16,
+                    gap: 8,
                 }}
             >
                 <div>
@@ -50,9 +50,9 @@ export function Heading({
                         <div style={{ marginBottom: 4 }}>
                             <span
                                 style={{
-                                    fontSize: 11,
+                                    fontSize: 10,
                                     fontWeight: 650,
-                                    letterSpacing: '1px',
+                                    letterSpacing: '0.8px',
                                     color: '#64748b',
                                     textTransform: 'uppercase',
                                     display: 'inline-block',
@@ -69,20 +69,21 @@ export function Heading({
                             fontWeight: 700,
                             letterSpacing: '-0.4px',
                             color: '#0f172a',
-                            fontSize: 22,
+                            fontSize: 17,
+                            lineHeight: 1.3,
                         }}
                     >
                         {title}
                     </Title>
                     <Paragraph
                         type="secondary"
-                        style={{ margin: '4px 0 0', fontSize: 13, color: '#475569' }}
+                        style={{ margin: '2px 0 0', fontSize: 12, color: '#475569' }}
                     >
                         {description}
                     </Paragraph>
                 </div>
                 {action ? (
-                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>{action}</div>
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>{action}</div>
                 ) : null}
             </div>
         </div>
@@ -113,14 +114,15 @@ export function ErrorNotice({ error }: { error: unknown }) {
             type="error"
             showIcon
             style={{
-                marginBottom: 16,
-                borderRadius: 6,
+                marginBottom: 8,
+                borderRadius: 5,
+                padding: '6px 10px',
                 background: '#fef2f2',
                 border: '1px solid #fecaca',
             }}
             message={
                 <div>
-                    <span style={{ color: '#991b1b', fontSize: 13, fontWeight: 500 }}>
+                    <span style={{ color: '#991b1b', fontSize: 12.5, fontWeight: 500 }}>
                         {message}
                     </span>
                     {trace ? (
@@ -153,12 +155,13 @@ export function Notice({ children }: { children: ReactNode }) {
             type="info"
             showIcon
             style={{
-                marginBottom: 16,
-                borderRadius: 6,
+                marginBottom: 8,
+                borderRadius: 5,
+                padding: '6px 10px',
                 background: '#f8fafc',
                 border: '1px solid #e2e8f0',
             }}
-            message={<span style={{ fontSize: 13, color: '#334155' }}>{children}</span>}
+            message={<span style={{ fontSize: 12.5, color: '#334155' }}>{children}</span>}
         />
     );
 }
@@ -444,7 +447,7 @@ export function Pager({
 }) {
     const current = Math.floor(offset / pageSize) + 1;
     return (
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
             <Pagination
                 current={current}
                 pageSize={pageSize}
@@ -505,47 +508,47 @@ export function StatSummary({
         <Card
             size="small"
             style={{
-                borderRadius: 8,
+                borderRadius: 6,
                 border: '1px solid #e2e8f0',
                 background: '#ffffff',
                 boxShadow: '0 1px 2px 0 rgba(15, 23, 42, 0.03)',
             }}
-            bodyStyle={{ padding: '14px 18px' }}
+            bodyStyle={{ padding: '8px 12px' }}
         >
             <div
                 style={{
                     display: 'flex',
                     justifyContent: 'space-between',
                     alignItems: 'center',
-                    marginBottom: 8,
+                    marginBottom: 3,
                 }}
             >
-                <span style={{ fontSize: 12, fontWeight: 500, color: '#64748b' }}>{title}</span>
+                <span style={{ fontSize: 11.5, fontWeight: 500, color: '#64748b' }}>{title}</span>
                 {prefix ? (
                     <div
                         style={{
-                            width: 26,
-                            height: 26,
-                            borderRadius: 6,
+                            width: 20,
+                            height: 20,
+                            borderRadius: 4,
                             background: '#f8fafc',
                             border: '1px solid #e2e8f0',
                             color: '#475569',
                             display: 'grid',
                             placeItems: 'center',
-                            fontSize: 13,
+                            fontSize: 11,
                         }}
                     >
                         {prefix}
                     </div>
                 ) : null}
             </div>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
                 <span
                     style={{
                         color: '#0f172a',
                         fontWeight: 700,
-                        fontSize: typeof value === 'number' || String(value).length <= 4 ? 24 : 18,
-                        letterSpacing: '-0.5px',
+                        fontSize: typeof value === 'number' || String(value).length <= 4 ? 19 : 15,
+                        letterSpacing: '-0.4px',
                         fontFamily:
                             typeof value === 'string' && value.includes('_')
                                 ? 'monospace'

@@ -92,15 +92,15 @@ export default function Assets() {
                 <Space align="center" size={12}>
                     <div
                         style={{
-                            width: 38,
-                            height: 38,
-                            borderRadius: 8,
+                            width: 28,
+                            height: 28,
+                            borderRadius: 5,
                             background: '#f8fafc',
                             border: '1px solid #e2e8f0',
                             color: '#475569',
                             display: 'grid',
                             placeItems: 'center',
-                            fontSize: 18,
+                            fontSize: 14,
                             flexShrink: 0,
                         }}
                     >
@@ -220,7 +220,7 @@ export default function Assets() {
 
             <ErrorNotice error={listing.error || upload.error || cancel.error} />
 
-            <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
+            <Row gutter={[8, 8]} style={{ marginBottom: 10 }}>
                 <Col xs={24} sm={8}>
                     <StatSummary
                         title="视频总数"
@@ -250,7 +250,7 @@ export default function Assets() {
             </Notice>
 
             {upload.isPending ? (
-                <Card style={{ marginBottom: 20, borderColor: '#e2e8f0', background: '#ffffff' }}>
+                <Card style={{ marginBottom: 10, borderColor: '#e2e8f0', background: '#ffffff' }}>
                     <Space direction="vertical" style={{ width: '100%' }} size={12}>
                         <div
                             style={{
@@ -318,7 +318,7 @@ export default function Assets() {
                     onClose={() => setSelected(null)}
                     width={720}
                 >
-                    <div className="video-preview-box" style={{ marginBottom: 16 }}>
+                    <div className="video-preview-box" style={{ marginBottom: 10 }}>
                         <video
                             controls
                             preload="metadata"
@@ -334,7 +334,7 @@ export default function Assets() {
                         bordered
                         size="small"
                         column={1}
-                        style={{ marginTop: 16, marginBottom: 20 }}
+                        style={{ marginTop: 10, marginBottom: 12 }}
                         labelStyle={{ width: 120, fontWeight: 500, background: '#f8fafc' }}
                     >
                         <Descriptions.Item label="文件名称">{selected.filename}</Descriptions.Item>

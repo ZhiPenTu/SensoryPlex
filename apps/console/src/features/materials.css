@@ -3,14 +3,14 @@
     margin: 0 auto;
 }
 .material-search {
-    margin-bottom: 20px;
+    margin-bottom: 10px;
     overflow: hidden;
 }
 .material-search-line {
     display: flex;
-    gap: 14px;
+    gap: 8px;
     align-items: center;
-    padding: 18px 22px;
+    padding: 10px 14px;
 }
 .material-search-line > svg {
     flex-shrink: 0;
@@ -31,7 +31,7 @@
     display: flex;
     gap: 10px;
     align-items: center;
-    padding: 15px 0;
+    padding: 8px 0;
     cursor: pointer;
     color: var(--ink);
     font-size: 12px;
@@ -44,8 +44,8 @@
 .material-filter-grid {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 18px;
-    margin-bottom: 14px;
+    gap: 10px;
+    margin-bottom: 8px;
 }
 .material-filter-grid label {
     margin: 0;
@@ -61,7 +61,7 @@
     display: flex;
     align-items: center;
     gap: 18px;
-    padding: 12px 22px;
+    padding: 8px 14px;
     background: #fafcfb;
     border-top: 1px solid var(--line);
 }
@@ -133,8 +133,8 @@
     gap: 16px;
     align-items: center;
     justify-content: space-between;
-    padding: 14px 20px;
-    margin-bottom: 18px;
+    padding: 8px 14px;
+    margin-bottom: 10px;
     flex-wrap: wrap;
 }
 .material-revisions > span {
@@ -161,8 +161,8 @@
     padding: 7px;
 }
 .material-overview {
-    padding: 22px 24px;
-    margin-bottom: 22px;
+    padding: 12px 14px;
+    margin-bottom: 10px;
 }
 .material-overview .badge + .badge {
     margin-left: 7px;
@@ -201,9 +201,9 @@
 .material-review-layout {
     display: grid;
     grid-template-columns: minmax(0, 1.5fr) minmax(320px, 1fr);
-    gap: 22px;
+    gap: 12px;
     align-items: start;
-    margin-bottom: 22px;
+    margin-bottom: 12px;
 }
 .material-viewer-column {
     min-width: 0;
@@ -304,7 +304,7 @@
     border: 0;
     border-top: 1px solid var(--line);
     border-radius: 0;
-    padding: 16px 18px;
+    padding: 8px 12px;
     font-weight: 400;
     white-space: normal;
 }
@@ -338,16 +338,16 @@
     overflow-wrap: anywhere;
 }
 .material-evidence {
-    padding: 24px;
+    padding: 12px 14px;
     min-width: 0;
 }
 .material-evidence h2 {
     margin-top: 12px;
 }
 .material-observation-body {
-    margin: 20px 0;
-    font-size: 14px;
-    line-height: 1.9;
+    margin: 8px 0;
+    font-size: 12.5px;
+    line-height: 1.6;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
 }
@@ -388,7 +388,7 @@
     display: grid;
     grid-template-columns: 1fr auto;
     gap: 10px;
-    padding: 16px 24px;
+    padding: 8px 14px;
     border-top: 1px solid var(--line);
     font-size: 12px;
 }
@@ -461,10 +461,10 @@
     gap: 8px;
     flex: 0 1 320px;
     min-width: 220px;
-    height: 40px;
-    padding: 0 12px;
+    height: 30px;
+    padding: 0 8px;
     border: 1px solid #d9d9d9;
-    border-radius: 8px;
+    border-radius: 5px;
     background: #ffffff;
     color: #1668dc;
 }

@@ -241,9 +241,9 @@ export default function Materials() {
             />
 
             <form key={params.toString()} onSubmit={handleSearchSubmit}>
-                <Card style={{ marginBottom: 20 }} bodyStyle={{ padding: 18 }}>
+                <Card style={{ marginBottom: 10 }} bodyStyle={{ padding: 10 }}>
                     <div
-                        style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}
+                        style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}
                     >
                         <div className="material-video-picker">
                             <VideoCameraOutlined />
@@ -267,21 +267,18 @@ export default function Materials() {
                             placeholder="输入关键词检索画面文字 (OCR)、语音转写、视觉描述或语义意图…"
                             defaultValue={params.get('q') || ''}
                             maxLength={2000}
-                            size="large"
                             allowClear
                             style={{ flex: 1 }}
                         />
                         <Button
                             type="primary"
                             htmlType="submit"
-                            size="large"
                             loading={result.isFetching}
                             style={{ minWidth: 100 }}
                         >
                             检索素材
                         </Button>
                         <Button
-                            size="large"
                             icon={<FilterOutlined />}
                             type={advancedOpen ? 'dashed' : 'default'}
                             onClick={() => setAdvancedOpen(!advancedOpen)}
@@ -298,7 +295,7 @@ export default function Materials() {
                                 borderTop: '1px solid #f1f5f9',
                             }}
                         >
-                            <Row gutter={[16, 12]}>
+                            <Row gutter={[8, 8]}>
                                 <Col xs={24} sm={8}>
                                     <div>
                                         <Text type="secondary" style={{ fontSize: 12 }}>
@@ -435,10 +432,10 @@ export default function Materials() {
                     display: 'flex',
                     justifyContent: 'space-between',
                     alignItems: 'center',
-                    marginBottom: 16,
+                    marginBottom: 10,
                     padding: '0 4px',
                     flexWrap: 'wrap',
-                    gap: 12,
+                    gap: 8,
                 }}
             >
                 <Space size={12} align="center">
@@ -964,7 +961,7 @@ export default function Materials() {
                         </div>
                     ) : (
                         /* ── 全量切片平铺卡片视图 ────────────────────────────────────────── */
-                        <Row gutter={[16, 16]}>
+                        <Row gutter={[8, 8]}>
                             {values.map((item) => (
                                 <Col
                                     xs={24}
@@ -982,11 +979,11 @@ export default function Materials() {
                                                 height: '100%',
                                                 display: 'flex',
                                                 flexDirection: 'column',
-                                                borderRadius: 10,
+                                                borderRadius: 6,
                                                 borderColor: '#e2e8f0',
                                             }}
                                             bodyStyle={{
-                                                padding: 16,
+                                                padding: 10,
                                                 flex: 1,
                                                 display: 'flex',
                                                 flexDirection: 'column',
@@ -1129,7 +1126,7 @@ export default function Materials() {
                     onClose={() => setPreviewAsset(null)}
                     width={760}
                 >
-                    <div className="video-preview-box" style={{ marginBottom: 16 }}>
+                    <div className="video-preview-box" style={{ marginBottom: 10 }}>
                         <video
                             key={`${previewAsset.asset.id}-${previewAsset.seekMs ?? 0}`}
                             ref={previewRef}

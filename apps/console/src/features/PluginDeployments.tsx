@@ -203,7 +203,7 @@ export default function PluginDeployments() {
         {
             title: '部署操作',
             key: 'operation',
-            width: 220,
+            width: 190,
             render: (_: unknown, row: PluginDeploymentOperation) => (
                 <Space direction="vertical" size={2}>
                     <Space size={6}>
@@ -233,7 +233,7 @@ export default function PluginDeployments() {
         {
             title: '目标',
             key: 'target',
-            width: 220,
+            width: 180,
             render: (_: unknown, row: PluginDeploymentOperation) => (
                 <Space direction="vertical" size={2}>
                     <Text style={{ fontSize: 12 }}>{row.node_id}</Text>
@@ -313,7 +313,7 @@ export default function PluginDeployments() {
         {
             title: '操作',
             key: 'actions',
-            width: 210,
+            width: 170,
             render: (_: unknown, row: PluginDeploymentOperation) => (
                 <Space size={4} wrap>
                     <Button size="small" onClick={() => setDetail(row)}>
@@ -356,7 +356,7 @@ export default function PluginDeployments() {
 
     return (
         <div>
-            <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+            <Row gutter={[8, 8]} style={{ marginBottom: 10 }}>
                 <Col xs={24} sm={8}>
                     <StatSummary title="已认证首方制品" value={verifiedReleases.length} />
                 </Col>
@@ -371,7 +371,7 @@ export default function PluginDeployments() {
             <Alert
                 type="info"
                 showIcon
-                style={{ marginBottom: 16 }}
+                style={{ marginBottom: 10, padding: '6px 10px', fontSize: 12 }}
                 message="热部署 = 版本化蓝绿切换：候选实例通过 Describe → 身份/摘要核对 → ValidateConfig → Start → 连续三次 Health=ready 之后，才会切换 active 指针；切换前失败一律保留旧 active。列表里的「当前 active」永远读槽位实时指针，不按本次操作的历史推断。"
             />
 
@@ -389,17 +389,17 @@ export default function PluginDeployments() {
             {canManage ? (
                 <div
                     style={{
-                        padding: 14,
-                        marginBottom: 16,
+                        padding: '8px 12px',
+                        marginBottom: 10,
                         background: '#f8fafc',
                         border: '1px solid #e2e8f0',
-                        borderRadius: 8,
+                        borderRadius: 6,
                     }}
                 >
-                    <Text strong style={{ fontSize: 13, display: 'block', marginBottom: 10 }}>
+                    <Text strong style={{ fontSize: 12.5, display: 'block', marginBottom: 6 }}>
                         选择已认证 release 发起部署 / 升级
                     </Text>
-                    <Row gutter={[12, 12]} align="bottom">
+                    <Row gutter={[8, 8]} align="bottom">
                         <Col xs={24} md={6}>
                             <Text type="secondary" style={{ fontSize: 12 }}>
                                 目标节点
@@ -493,12 +493,12 @@ export default function PluginDeployments() {
                 <Alert
                     type="warning"
                     showIcon
-                    style={{ marginBottom: 16 }}
+                    style={{ marginBottom: 10 }}
                     message="当前账户没有 plugins:manage 权限，只能查看部署状态。"
                 />
             )}
 
-            <Space style={{ marginBottom: 12 }}>
+            <Space style={{ marginBottom: 8 }}>
                 <Button
                     size="small"
                     icon={<ReloadOutlined />}

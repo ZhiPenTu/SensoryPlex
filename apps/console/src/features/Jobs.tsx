@@ -116,15 +116,15 @@ export default function Jobs() {
                 <Space align="start" size={12}>
                     <div
                         style={{
-                            width: 36,
-                            height: 36,
-                            borderRadius: 8,
+                            width: 28,
+                            height: 28,
+                            borderRadius: 5,
                             background: '#f8fafc',
                             border: '1px solid #e2e8f0',
                             color: '#475569',
                             display: 'grid',
                             placeItems: 'center',
-                            fontSize: 16,
+                            fontSize: 13,
                             flexShrink: 0,
                             marginTop: 2,
                         }}
@@ -255,7 +255,7 @@ export default function Jobs() {
                 }
             />
 
-            <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
+            <Row gutter={[8, 8]} style={{ marginBottom: 10 }}>
                 <Col xs={24} sm={6}>
                     <StatSummary
                         title="任务总数"
@@ -395,16 +395,16 @@ export default function Jobs() {
                                 style={{
                                     fontSize: 12,
                                     color: '#64748b',
-                                    marginBottom: 20,
-                                    padding: '8px 12px',
+                                    marginBottom: 10,
+                                    padding: '6px 10px',
                                     background: '#f8fafc',
-                                    borderRadius: 6,
+                                    borderRadius: 5,
                                 }}
                             >
                                 提示：保存任务草稿后，点击列表中【开始处理】即可派发给当前可用算力节点执行。
                             </div>
 
-                            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12 }}>
+                            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
                                 <Button onClick={() => setOpen(false)}>取消</Button>
                                 <Button
                                     type="primary"

@@ -225,7 +225,7 @@ export default function Plugins() {
                 }
             />
 
-            <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
+            <Row gutter={[8, 8]} style={{ marginBottom: 10 }}>
                 <Col xs={24} sm={6}>
                     <StatSummary
                         title="已登记插件规范"
@@ -260,7 +260,7 @@ export default function Plugins() {
             </Row>
 
             {batchNotice ? (
-                <Alert type="success" showIcon message={batchNotice} style={{ marginBottom: 16 }} />
+                <Alert type="success" showIcon message={batchNotice} style={{ marginBottom: 10 }} />
             ) : null}
 
             <ErrorNotice
@@ -273,7 +273,10 @@ export default function Plugins() {
                 }
             />
 
-            <Card bodyStyle={{ padding: '0 20px 20px' }}>
+            <Card
+                styles={{ body: { padding: '0 12px 12px' } }}
+                bodyStyle={{ padding: '0 12px 12px' }}
+            >
                 <Tabs
                     activeKey={tab}
                     onChange={setTab}
@@ -291,7 +294,7 @@ export default function Plugins() {
                                     {catalog.isPending ? (
                                         <Loading tip="正在载入插件目录…" />
                                     ) : (
-                                        <Row gutter={[16, 16]}>
+                                        <Row gutter={[8, 8]}>
                                             {catalogItems.map((plugin) => (
                                                 <Col xs={24} md={12} key={plugin.id}>
                                                     <Card
@@ -304,7 +307,7 @@ export default function Plugins() {
                                                             flexDirection: 'column',
                                                         }}
                                                         bodyStyle={{
-                                                            padding: 18,
+                                                            padding: 12,
                                                             flex: 1,
                                                             display: 'flex',
                                                             flexDirection: 'column',
@@ -315,7 +318,7 @@ export default function Plugins() {
                                                                 display: 'flex',
                                                                 justifyContent: 'space-between',
                                                                 alignItems: 'flex-start',
-                                                                marginBottom: 10,
+                                                                marginBottom: 6,
                                                             }}
                                                         >
                                                             <div>
@@ -354,8 +357,8 @@ export default function Plugins() {
                                                         <Paragraph
                                                             type="secondary"
                                                             style={{
-                                                                fontSize: 13,
-                                                                marginBottom: 12,
+                                                                fontSize: 12,
+                                                                marginBottom: 8,
                                                                 flex: 1,
                                                             }}
                                                         >
@@ -363,7 +366,7 @@ export default function Plugins() {
                                                                 '按官方契约提供的高性能模型处理组件。'}
                                                         </Paragraph>
 
-                                                        <div style={{ marginBottom: 16 }}>
+                                                        <div style={{ marginBottom: 8 }}>
                                                             <Space size={[4, 4]} wrap>
                                                                 <Tag color="cyan">
                                                                     版本: {plugin.version}
@@ -393,11 +396,11 @@ export default function Plugins() {
                                                         <div
                                                             style={{
                                                                 marginTop: 'auto',
-                                                                paddingTop: 12,
+                                                                paddingTop: 8,
                                                                 borderTop: '1px solid #f1f5f9',
                                                                 display: 'flex',
                                                                 justifyContent: 'flex-end',
-                                                                gap: 8,
+                                                                gap: 6,
                                                             }}
                                                         >
                                                             <Button

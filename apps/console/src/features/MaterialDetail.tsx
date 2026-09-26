@@ -152,7 +152,7 @@ export default function MaterialDetail() {
                     {/* 版本切换卡片 */}
                     <Card
                         size="small"
-                        style={{ marginBottom: 20, borderRadius: 8, background: '#f8fafc' }}
+                        style={{ marginBottom: 10, borderRadius: 6, background: '#f8fafc' }}
                         bodyStyle={{
                             display: 'flex',
                             justifyContent: 'space-between',
@@ -241,7 +241,7 @@ export default function MaterialDetail() {
                                 </span>
                             </div>
                         }
-                        style={{ marginBottom: 20 }}
+                        style={{ marginBottom: 10 }}
                     >
                         <Descriptions bordered size="small" column={{ xs: 1, sm: 2, md: 4 }}>
                             <Descriptions.Item label="来源流 ID">
@@ -283,7 +283,7 @@ export default function MaterialDetail() {
                     </Card>
 
                     {/* 核心双栏：左侧播放器与来源，右侧观测记录与证据 */}
-                    <Row gutter={[20, 20]} style={{ marginBottom: 20 }}>
+                    <Row gutter={[10, 10]} style={{ marginBottom: 10 }}>
                         <Col xs={24} lg={12}>
                             <MaterialPlayer
                                 material={item}
@@ -348,8 +348,8 @@ export default function MaterialDetail() {
                                         </Text>
                                     </div>
                                 }
-                                style={{ marginBottom: 20 }}
-                                bodyStyle={{ padding: 12 }}
+                                style={{ marginBottom: 10 }}
+                                bodyStyle={{ padding: 10 }}
                             >
                                 <div
                                     style={{
@@ -472,10 +472,10 @@ function ObservationDetail({ observation: obs }: { observation: Observation }) {
                 style={{
                     fontSize: 14,
                     lineHeight: 1.7,
-                    padding: '12px 16px',
+                    padding: '8px 12px',
                     background: '#f8fafc',
-                    borderRadius: 8,
-                    marginBottom: 16,
+                    borderRadius: 5,
+                    marginBottom: 10,
                     border: '1px solid #e2e8f0',
                     color: '#0f172a',
                     whiteSpace: 'pre-wrap',
@@ -488,7 +488,7 @@ function ObservationDetail({ observation: obs }: { observation: Observation }) {
                 bordered
                 size="small"
                 column={{ xs: 1, sm: 2 }}
-                style={{ marginBottom: 16 }}
+                style={{ marginBottom: 10 }}
             >
                 <Descriptions.Item label="质量评估状态">
                     <Tag color="green">{statusNames[obs.quality_state] || obs.quality_state}</Tag>

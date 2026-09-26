@@ -2,7 +2,7 @@
 .alignment-panel {
     border-top: 1px solid #e2e8f0;
     background: #ffffff;
-    padding: 18px 20px 16px;
+    padding: 8px 12px 6px;
 }
 .alignment-head {
     display: flex;
@@ -10,7 +10,7 @@
     align-items: center;
     gap: 12px;
     flex-wrap: wrap;
-    margin-bottom: 14px;
+    margin-bottom: 6px;
 }
 .alignment-flow {
     display: flex;
@@ -69,7 +69,7 @@
 }
 .alignment-ruler {
     position: relative;
-    height: 30px;
+    height: 22px;
     border-bottom: 1px solid #e2e8f0;
 }
 .alignment-tick-label {
@@ -109,7 +109,7 @@
 }
 .alignment-track {
     position: relative;
-    height: 24px;
+    height: 18px;
     background: #f8fafc;
     border: 1px solid #f1f5f9;
     border-radius: 5px;
@@ -158,17 +158,17 @@
     color: #94a3b8;
 }
 .alignment-readout {
-    margin-top: 14px;
-    padding-top: 12px;
+    margin-top: 6px;
+    padding-top: 6px;
     border-top: 1px dashed #e2e8f0;
 }
 .alignment-readout-head {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    gap: 10px;
+    gap: 6px;
     flex-wrap: wrap;
-    margin-bottom: 10px;
+    margin-bottom: 6px;
 }
 .alignment-readout-grid {
     display: grid;
@@ -177,9 +177,9 @@
 }
 .alignment-readout-cell {
     min-width: 0;
-    padding: 10px 12px;
+    padding: 6px 8px;
     border: 1px solid #e2e8f0;
-    border-radius: 8px;
+    border-radius: 5px;
     background: #fcfdff;
 }
 .alignment-readout-title {

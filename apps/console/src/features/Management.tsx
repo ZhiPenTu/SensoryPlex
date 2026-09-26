@@ -482,7 +482,7 @@ export function Access() {
                             </div>
                         </div>
                     }
-                    style={{ marginBottom: 20 }}
+                    style={{ marginBottom: 10 }}
                 />
             ) : null}
 
@@ -1017,7 +1017,7 @@ export function System() {
                 description="各模块能力状态透明度报告，基础进程在线不代表业务闭环已达生产 Golden Path。"
             />
 
-            <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
+            <Row gutter={[8, 8]} style={{ marginBottom: 10 }}>
                 <Col xs={24} sm={8}>
                     <StatSummary
                         title="契约 Schema 版本"
@@ -1052,12 +1052,12 @@ export function System() {
                         <span style={{ fontWeight: 650, fontSize: 15 }}>端侧多模态能力矩阵</span>
                     </Space>
                 }
-                bodyStyle={{ padding: 16 }}
+                bodyStyle={{ padding: 10 }}
             >
                 {query.isPending ? (
                     <Loading tip="正在检测系统能力接口…" />
                 ) : caps.length ? (
-                    <Row gutter={[16, 16]}>
+                    <Row gutter={[8, 8]}>
                         {caps.map((c) => (
                             <Col xs={24} sm={12} md={8} key={c.name}>
                                 <Card

@@ -185,7 +185,7 @@ export default function Nodes() {
                 }
             />
 
-            <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
+            <Row gutter={[8, 8]} style={{ marginBottom: 10 }}>
                 <Col xs={24} sm={6}>
                     <StatSummary
                         title="活跃计算节点"
@@ -249,7 +249,7 @@ export default function Nodes() {
                         </Space>
                     }
                     style={{
-                        marginBottom: 20,
+                        marginBottom: 10,
                         border: '1px solid #e2e8f0',
                         borderLeft: '4px solid #d97706',
                         background: '#ffffff',
@@ -525,10 +525,10 @@ export default function Nodes() {
                                 showIcon
                                 message="接入令牌生成成功"
                                 description="请使用该凭据在目标计算节点上执行接入命令，节点随后将在上方候选列表中出现。"
-                                style={{ marginBottom: 16 }}
+                                style={{ marginBottom: 10, padding: '6px 10px' }}
                             />
 
-                            <div style={{ marginBottom: 16 }}>
+                            <div style={{ marginBottom: 10 }}>
                                 <Text
                                     strong
                                     style={{ fontSize: 12, display: 'block', marginBottom: 4 }}
@@ -625,16 +625,16 @@ export default function Nodes() {
                                 style={{
                                     fontSize: 12,
                                     color: '#64748b',
-                                    marginBottom: 20,
-                                    padding: '8px 12px',
+                                    marginBottom: 10,
+                                    padding: '6px 10px',
                                     background: '#f8fafc',
-                                    borderRadius: 6,
+                                    borderRadius: 5,
                                 }}
                             >
                                 令牌为一次性接入凭据，Worker 启动首次入网后将自动换取安全长效会话。
                             </div>
 
-                            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12 }}>
+                            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
                                 <Button onClick={() => setTokenModalOpen(false)}>取消</Button>
                                 <Button
                                     type="primary"

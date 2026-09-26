@@ -203,7 +203,7 @@ function Login({ onLogin }: { onLogin: (identity: Identity) => void }) {
                         <Title level={3} style={{ margin: 0, fontWeight: 700 }}>
                             登录工作台
                         </Title>
-                        <Text type="secondary" style={{ fontSize: 13 }}>
+                        <Text type="secondary" style={{ fontSize: 12 }}>
                             使用当前边缘计算节点的本地账户验证继续。
                         </Text>
                     </div>
@@ -480,12 +480,12 @@ function Layout() {
                             SensoryPlex
                         </Text>
                         <span className="breadcrumb-divider">/</span>
-                        <Text strong style={{ fontSize: 14 }}>
+                        <Text strong style={{ fontSize: 13 }}>
                             {current?.label || '控制台'}
                         </Text>
                     </div>
 
-                    <Space size={16}>
+                    <Space size={10}>
                         <Link to="/system" className="environment">
                             <span className="status-dot" />
                             <span>边缘推理就绪</span>
@@ -495,7 +495,7 @@ function Layout() {
 
                         <Dropdown menu={{ items: userMenuItems }} placement="bottomRight">
                             <Avatar
-                                size={30}
+                                size={26}
                                 style={{
                                     backgroundColor: '#1e293b',
                                     color: '#94a3b8',
