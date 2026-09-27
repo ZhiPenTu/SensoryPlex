@@ -203,6 +203,60 @@ impl FrameSignature {
         }
         Some(Self { cells })
     }
+
+    /// 从一帧 RGBA 数据构造"画面文字"通道的粗网格签名：每个网格内水平相邻像素的
+    /// 平均亮度梯度。
+    ///
+    /// 它只是**确定性特征**，不是 OCR：文字、表格线、UI 边框都会抬高这个值。它的用途是
+    /// 让"画面文字变了"成为独立的触发通道，而不是把每一帧都送进 OCR。判别阈值属于
+    /// Policy，必须由真实样本标定；这里不承诺它对某类内容一定敏感。
+    pub fn edge_energy_from_rgba(bytes: &[u8], width: u32, height: u32) -> Option<Self> {
+        if width == 0 || height == 0 {
+            return None;
+        }
+        let expected = width as usize * height as usize * 4;
+        if bytes.len() < expected {
+            return None;
+        }
+        let cell_w = width as usize / SIGNATURE_GRID;
+        let cell_h = height as usize / SIGNATURE_GRID;
+        if cell_w < 2 || cell_h == 0 {
+            return None;
+        }
+        let step_x = (cell_w / SIGNATURE_CELL_SAMPLES).max(1);
+        let step_y = (cell_h / SIGNATURE_CELL_SAMPLES).max(1);
+        let luma = |x: usize, y: usize| -> i32 {
+            let index = (y * width as usize + x) * 4;
+            let r = bytes[index] as i32;
+            let g = bytes[index + 1] as i32;
+            let b = bytes[index + 2] as i32;
+            (77 * r + 150 * g + 29 * b) >> 8
+        };
+        let mut cells = [0u8; SIGNATURE_GRID * SIGNATURE_GRID];
+        for row in 0..SIGNATURE_GRID {
+            for col in 0..SIGNATURE_GRID {
+                let base_x = col * cell_w;
+                let base_y = row * cell_h;
+                let mut sum = 0u32;
+                let mut count = 0u32;
+                let mut y = base_y;
+                while y < base_y + cell_h {
+                    let mut x = base_x;
+                    // 梯度需要右邻像素，因此最后一个像素不参与。
+                    while x + 1 < base_x + cell_w {
+                        sum += luma(x, y).abs_diff(luma(x + 1, y));
+                        count += 1;
+                        x += step_x;
+                    }
+                    y += step_y;
+                }
+                // 单元格内没有可比较的相邻像素时梯度显式记为 0，不伪造一个均值。
+                let mean = sum.checked_div(count).unwrap_or(0);
+                cells[row * SIGNATURE_GRID + col] = mean.min(255) as u8;
+            }
+        }
+        Some(Self { cells })
+    }
 }
 
 /// 一次采样运行的计数器。每一个被观察的帧都会被精确地计入一次。

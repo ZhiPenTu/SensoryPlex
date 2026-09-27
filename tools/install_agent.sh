@@ -269,6 +269,9 @@ if [[ ${DAEMON} -eq 1 ]]; then
         PLIST_DIR="${HOME}/Library/LaunchAgents"
         PLIST_FILE="${PLIST_DIR}/org.sensoryplex.agent.${NODE_ID}.plist"
         mkdir -p "${PLIST_DIR}"
+        # launchd 只给最小 PATH；Agent 要拉起 Runtime，而 Runtime 依赖宿主 ffprobe/ffmpeg，
+        # 缺 PATH 时会在"取媒体信息"这一步直接失败成 media_tool_missing。
+        AGENT_PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         cat << PLIST_EOF > "${PLIST_FILE}"
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -288,6 +291,15 @@ if [[ ${DAEMON} -eq 1 ]]; then
         <string>--main-url</string>
         <string>${MAIN_URL}</string>
     </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>${HOME}</string>
+        <key>PATH</key>
+        <string>${AGENT_PATH}</string>
+        <key>LANG</key>
+        <string>en_US.UTF-8</string>
+    </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>

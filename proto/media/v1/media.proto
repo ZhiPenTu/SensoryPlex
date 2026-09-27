@@ -192,6 +192,127 @@ message SamplingReport {
   // with the reason `backpressure_throttled`; this counter is that same suppression, seen from
   // the sampling side. It is never a silent drop and never a success.
   uint64 skipped_backpressure_throttled = 17;
+  // Frames the adaptive sampler would have skipped but that the semantic evidence plan retained
+  // as an event window frame or an evidence baseline anchor. They are part of `kept`, and
+  // `kept + kept_evidence_window` is the number of video descriptors this run handed off.
+  // Zero means the semantic plan added nothing — never that the run had no semantic plan.
+  uint64 kept_evidence_window = 18;
+}
+
+// ---- 语义覆盖：全帧判别与事件证据窗口 ------------------------------------------
+//
+// 这套账本的目的是把"采样密度"问题拆成两件可分别验收的事：
+// 1. **输入完整性**：每一个被解码且可用的视频帧都有一条 `FrameCharacterization`，
+//    要么被选中交接，要么带稳定原因被跳过，绝不存在没有记录的帧；
+// 2. **语义覆盖**：VLM/OCR 的实际输入间隔由 `EvidenceWindow` 与基线锚点共同约束，
+//    静态画面不会超过 `max_semantic_gap_ms`，变化画面则由事件窗口覆盖。
+//
+// 报告只带摘要与有界预览；完整的逐帧账本写进独立 artifact，路径在 `frame_ledger_path`
+// 里给出。两者描述同一批帧，不能相加。
+
+// 这一帧被判别成什么。判别发生在解码后、交接前，对所有可用帧都执行。
+enum FrameDecision {
+  FRAME_DECISION_UNSPECIFIED = 0;
+  FRAME_DECISION_FIRST_FRAME = 1;
+  FRAME_DECISION_CONTENT_CHANGE = 2;
+  // 画面文字区域（水平梯度能量）发生变化，独立于整帧亮度变化。
+  FRAME_DECISION_TEXT_CHANGE = 3;
+  // 静态画面的到期复查：相邻两次语义锚点不超过 `max_semantic_gap_ms`。
+  FRAME_DECISION_STATIC_HEARTBEAT = 4;
+  FRAME_DECISION_NO_CHANGE = 5;
+}
+
+// 这一帧在证据计划里的角色。未选中的帧仍然有判别结论，只是不进模型。
+enum FrameSelection {
+  FRAME_SELECTION_UNSPECIFIED = 0;
+  // 静态复查锚点：保证长时间无变化时语义间隔有上界。
+  FRAME_SELECTION_BASELINE_ANCHOR = 1;
+  // 事件窗口的锚点帧，即真正触发窗口的那一帧。
+  FRAME_SELECTION_EVENT_ANCHOR = 2;
+  // 变化之前保留的上下文帧，让下游能看到"变化前"的状态。
+  FRAME_SELECTION_EVENT_PRE_CONTEXT = 3;
+  // 变化之后保留的上下文帧，让下游能看到动作的走向。
+  FRAME_SELECTION_EVENT_POST_CONTEXT = 4;
+  // 已判别、也已被相邻锚点/窗口的时间范围覆盖，因此不需要单独送模型。
+  FRAME_SELECTION_NOT_SELECTED = 5;
+}
+
+// 一个可用视频帧的判别记录。`buffer_id` 为空表示这一帧没有交接给数据面。
+message FrameCharacterization {
+  string buffer_id = 1;
+  // 该轨道上的第几个可用帧，从 1 开始；与 `time_range.start_ms` 一起定位这一帧。
+  uint64 frame_index = 2;
+  edge.material.common.v1.TimeRange time_range = 3;
+  // 与上一个可用帧的感知差异（0..=255）。第一帧固定为 0，不是"没有变化"的结论。
+  uint32 signature_delta = 4;
+  // 与上一个可用帧的文字梯度差异（0..=255）。像素布局不支持时为 0，并置
+  // `signature_available=false`，读取方不得把 0 读成"文字没变"。
+  uint32 text_signature_delta = 5;
+  bool signature_available = 6;
+  FrameDecision decision = 7;
+  FrameSelection selection = 8;
+  // 该帧所属的事件窗口；没有窗口时为空字符串。
+  string evidence_window_id = 9;
+  // 未选中时的稳定原因码（no_change_yet / rate_limited / ...）；选中时为空。
+  string skip_reason = 10;
+}
+
+// 一个事件证据窗口：锚点帧加上前后有界数量的上下文帧。
+//
+// 窗口是给下游插件的输入单位。这里的 `frame_buffer_ids` 全部指向同一次运行已经交接的
+// descriptor，窗口本身不携带任何字节，也不构成新的读取授权。
+message EvidenceWindow {
+  string window_id = 1;
+  edge.material.common.v1.TimeRange time_range = 2;
+  int64 anchor_ms = 3;
+  // content_change | text_change | first_frame
+  string trigger = 4;
+  // 按时间顺序排列的帧引用，最多 `pre + 1 + post` 个。
+  repeated string frame_buffer_ids = 5;
+  uint32 context_before = 6;
+  uint32 context_after = 7;
+  // 窗口里真正交接成功的帧数；小于上面长度时说明有帧被显式拒绝（原因见运行日志的
+  // pre_context_evictions / retain 拒绝码），绝不能被读成"窗口本来就是这么小"。
+  uint32 handed_off_frames = 8;
+}
+
+// 视频轨道的语义覆盖账本。`characterized_frames` 必须等于同一轨道上被采样器观测到的帧数。
+message SemanticCoverageReport {
+  string track_kind = 1; // video
+  int64 max_semantic_gap_ms = 2;
+  uint32 evidence_context_frames = 3;
+  uint32 evidence_pre_frames = 4;
+  uint32 change_threshold = 5;
+  uint32 text_change_threshold = 6;
+  // 可用帧总数：每一帧都在逐帧账本里恰好出现一次。
+  uint64 characterized_frames = 7;
+  uint64 selected_baseline_anchor = 8;
+  uint64 selected_event_anchor = 9;
+  uint64 selected_event_pre_context = 10;
+  uint64 selected_event_post_context = 11;
+  // 已判别但不需要单独送模型的帧：它们被相邻锚点/窗口的时间范围覆盖。
+  uint64 covered_without_model_refresh = 12;
+  uint64 windows = 13;
+  uint64 windows_listed_limit = 14;
+  // 有界预览；`windows_listed_limit` 说明这里最多重复了多少个窗口。
+  repeated EvidenceWindow listed_windows = 15;
+  // 相邻两个已选中语义输入之间的最大时间间隔。它是这条轨道真实的语义刷新上界证据。
+  int64 max_selected_gap_ms = 16;
+  // 变化触发但超出事件预算而被抑制的帧数。抑制是有界行为，必须显式计数。
+  uint64 suppressed_event_keeps = 17;
+  // 预上下文帧无法进入保留环（尺寸/容量）而被丢弃的次数。
+  uint64 pre_context_evictions = 18;
+  // 完整逐帧账本的 artifact 路径；为空表示这次运行没有写出账本，不是"账本为空"。
+  string frame_ledger_path = 19;
+  // Number of per-frame records written to the ledger artifact. Window records live in the
+  // same file but are described by `windows`, so this counter can be re-counted line by line.
+  uint64 frame_ledger_entries = 20;
+  // 判别结果按 `decision` 的计数，形如 `content_change=12`，用于与逐帧账本对账。
+  repeated string decision_counts = 21;
+  // 选中结果按 `selection` 的计数，形如 `event_anchor=12`。
+  repeated string selection_counts = 22;
+  // 未选中原因按原因码的计数，形如 `event_rate_limited=3`。它与逐帧账本一一对应。
+  repeated string skip_reason_counts = 23;
 }
 
 // Real data-plane accounting for one replay. All zeros means this build never decoded.
@@ -224,6 +345,9 @@ message DecodedDataPlane {
   // Tracks the source contained but ADR-009 refused. They produce no descriptor and no track
   // stat: this list is the only place they exist, and it is required.
   repeated RejectedTrack rejected_tracks = 16;
+  // 视频轨道的语义覆盖账本（全帧判别 + 事件证据窗口）。为空表示这次运行没有跑语义覆盖
+  // 判别（例如未启用策略或没有可用视频帧），绝不能读成"每一帧都没变"。
+  repeated SemanticCoverageReport semantic_coverage = 17;
 }
 
 // One bounded queue's water marks. `capacity` and `peak` are always counts of the same unit

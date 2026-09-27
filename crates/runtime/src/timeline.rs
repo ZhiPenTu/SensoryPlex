@@ -36,7 +36,7 @@ use sensoryplex_runtime::{
 };
 
 /// 单次运行产出的素材窗口上限。超限即拒绝，不做"只处理前 N 个"的静默截断。
-const MAX_MATERIAL_WINDOWS: usize = 512;
+const MAX_MATERIAL_WINDOWS: usize = 7200;
 
 const TIMELINE_USAGE: &str = "usage: sensoryplex-runtime timeline <pipeline.yaml> <media-path> \
 --report <replay.pb> --worker-report <ai-worker.json> --material-dir <dir> --out <timeline.json>";

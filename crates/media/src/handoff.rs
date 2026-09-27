@@ -5,6 +5,9 @@
 //! 字节永远不进入控制消息，descriptor 里也永远只有不透明句柄。
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
 
 use sensoryplex_sdk::common::{BufferDescriptor, BufferFormat, BufferLocator, TimeRange};
 use sensoryplex_sdk::{validate_range, ContractError};
@@ -36,6 +39,9 @@ pub const MAX_LEASE_TTL_MS: u32 = 60_000;
 pub const DEFAULT_RETAIN_ARENA_BYTES: usize = 64 * 1024 * 1024;
 /// 与进程内交接一致：单条 buffer 覆盖的区间不超一分钟。
 const MAX_BUFFER_INTERVAL_MS: i64 = 60_000;
+/// 等待重试的轮询间隔。消费者腾出一个槽位只是一次租约往返，不需要更细的粒度；
+/// 太细的轮询会把锁争用变成噪声，太粗则会把"消费者已经腾出空间"这件事发现得太晚。
+const RETAIN_WAIT_POLL_MS: u64 = 5;
 
 /// 保留式交接的开关与上限。关闭时沿用进程内自校验路径（签发 → 校验 → 释放），
 /// 打开时字节会留在共享内存里，等真正的第二个进程来领取 lease。
@@ -71,6 +77,30 @@ impl RetainPolicy {
             arena_capacity_bytes,
             retained_limit,
         })
+    }
+
+    /// 打开保留式交接的**共享**数据面。`Ok(None)` 表示本策略没有开启保留，调用方走的仍是
+    /// 进程内自校验路径。
+    ///
+    /// 句柄必须在解码开始之前就建好：跨进程消费者要能和解码**并发**地领料，否则整段解码
+    /// 期间没有人在排空保留表，任何长媒体都会把它顶满。这正是"生产者先起服务"的原因。
+    ///
+    /// `wait_timeout_ms` 是单个被拒帧愿意等待消费者的毫秒数；0 表示不等（只记拒绝）。
+    pub fn open(
+        &self,
+        arena_id: &str,
+        wait_timeout_ms: i64,
+    ) -> Result<Option<Arc<SharedHandoff>>, MediaError> {
+        if !self.enabled {
+            return Ok(None);
+        }
+        let plane = BufferHandoff::new(
+            arena_id,
+            self.arena_capacity_bytes,
+            Some(&crate::shm::run_seed()),
+            self.retained_limit,
+        )?;
+        Ok(Some(SharedHandoff::new(plane, wait_timeout_ms)))
     }
 }
 
@@ -295,7 +325,11 @@ impl BufferHandoff {
     ///
     /// 记录 `kind` 是必要的：保留表是所有 buffer 种类共用的，只有按种类拆开，
     /// `dropped_total` 才能被读成"谁被挡住了"，而不是一个无从解释的总数。
-    fn reject_retain(&mut self, kind: &str, reason: &str) -> MediaError {
+    /// 容量类拒绝的完整记账：总拒绝数、原因表、写侧原因表与按种类拆分同时更新。
+    ///
+    /// 它是**唯一**写这些计数的地方。等待重试路径在最后一次放弃时也走这里，因此
+    /// `offered_total = retained_total + retain_rejections` 这条恒等式不会因为重试而破。
+    pub fn note_retain_rejection(&mut self, kind: &str, reason: &str) {
         self.retain_rejections += 1;
         self.count_rejection(reason);
         self.count_retain_rejection(reason);
@@ -303,6 +337,19 @@ impl BufferHandoff {
             .retain_rejection_kinds
             .entry(kind.to_string())
             .or_insert(0) += 1;
+    }
+
+    /// 把一次保留请求记进 `offered_total`。等待重试路径只在这里记一次，重试本身不重复计数。
+    pub fn note_offered(&mut self) {
+        self.offered_total += 1;
+    }
+
+    /// 保留拒绝。`count = false` 时完全不进统计：等待重试期间的中间拒绝不是
+    /// "一次被档住的保留请求"，只有最终放弃那一次才计入。
+    fn reject_retain_counted(&mut self, kind: &str, reason: &str, count: bool) -> MediaError {
+        if count {
+            self.note_retain_rejection(kind, reason);
+        }
         MediaError::DescriptorRejected(reason.to_string())
     }
 
@@ -349,21 +396,52 @@ impl BufferHandoff {
     ) -> Result<RetainedBuffer, MediaError> {
         // 先记"提出了多少次保留请求"，成功与否后面再看：调用方需要的是
         // `offered_total = retained_total + retain_rejections` 这条恒等式。
-        self.offered_total += 1;
+        self.note_offered();
+        self.retain_inner(buffer_id, kind, stream_id, time_range, format, bytes, true)
+    }
+
+    /// 只做保留尝试、**不记 `offered_total`** 的变体。它供等待重试路径使用：
+    /// 同一帧被重试 N 次仍然只是一次"保留请求"，重试期间的中间拒绝也不进统计。
+    pub fn retain_without_offering(
+        &mut self,
+        buffer_id: &str,
+        kind: &str,
+        stream_id: &str,
+        time_range: TimeRange,
+        format: BufferFormat,
+        bytes: &[u8],
+    ) -> Result<RetainedBuffer, MediaError> {
+        self.retain_inner(buffer_id, kind, stream_id, time_range, format, bytes, false)
+    }
+
+    fn retain_inner(
+        &mut self,
+        buffer_id: &str,
+        kind: &str,
+        stream_id: &str,
+        time_range: TimeRange,
+        format: BufferFormat,
+        bytes: &[u8],
+        count: bool,
+    ) -> Result<RetainedBuffer, MediaError> {
         if bytes.is_empty() {
-            return Err(self.reject_retain(kind, "empty_buffer_payload"));
+            return Err(self.reject_retain_counted(kind, "empty_buffer_payload", count));
         }
         if buffer_id.is_empty() || kind.is_empty() || stream_id.is_empty() {
-            return Err(self.reject_retain(kind, "missing_buffer_identity"));
+            return Err(self.reject_retain_counted(kind, "missing_buffer_identity", count));
         }
         if validate_range(&time_range).is_err() {
-            return Err(self.reject_retain(kind, "invalid_half_open_time_range"));
+            return Err(self.reject_retain_counted(kind, "invalid_half_open_time_range", count));
         }
         if time_range.end_ms - time_range.start_ms > MAX_BUFFER_INTERVAL_MS {
-            return Err(self.reject_retain(kind, "buffer_interval_longer_than_a_minute"));
+            return Err(self.reject_retain_counted(
+                kind,
+                "buffer_interval_longer_than_a_minute",
+                count,
+            ));
         }
         if self.retained.len() >= self.limit {
-            return Err(self.reject_retain(kind, "handoff_backlog_full"));
+            return Err(self.reject_retain_counted(kind, "handoff_backlog_full", count));
         }
         // 第二重有界：单一 kind 不得超过自己的配额。少了这一条，先到的种类（实时流里是
         // 每 21 ms 一个的音频块）会把整张表占满，另一类此后一帧也进不来。
@@ -374,23 +452,19 @@ impl BufferHandoff {
             .count()
             >= retained_kind_limit(self.limit)
         {
-            return Err(self.reject_retain(kind, "handoff_kind_quota_full"));
+            return Err(self.reject_retain_counted(kind, "handoff_kind_quota_full", count));
         }
         if self.retained.iter().any(|held| held.buffer_id == buffer_id) {
-            return Err(self.reject_retain(kind, "duplicate_buffer_id"));
+            return Err(self.reject_retain_counted(kind, "duplicate_buffer_id", count));
         }
         let offset = match self.arena.allocate(bytes.len()) {
             Ok(offset) => offset,
             Err(error) => {
                 // arena 是第二重上限。它被触及时同样要出现在原因表里：调用方需要
                 // 看到"拒绝"这件事，而不是只看到保留表还有空位。
-                self.retain_rejections += 1;
-                self.count_rejection("arena_capacity_exceeded");
-                self.count_retain_rejection("arena_capacity_exceeded");
-                *self
-                    .retain_rejection_kinds
-                    .entry(kind.to_string())
-                    .or_insert(0) += 1;
+                if count {
+                    self.note_retain_rejection(kind, "arena_capacity_exceeded");
+                }
                 return Err(error);
             }
         };
@@ -593,6 +667,224 @@ fn is_capacity_rejection(reason: &str) -> bool {
 
 fn contract_code(error: ContractError) -> String {
     error.0.to_string()
+}
+
+/// 只有"有界容量"造成的拒绝才值得等待：契约违规（标识缺失、区间非法、重复 buffer_id）
+/// 等多久都不会变好，必须立刻向上报错。
+fn capacity_reason(error: &MediaError) -> Option<String> {
+    match error {
+        MediaError::ArenaCapacityExceeded { .. } => Some("arena_capacity_exceeded".to_string()),
+        MediaError::DescriptorRejected(reason) if is_capacity_rejection(reason) => {
+            Some(reason.clone())
+        }
+        _ => None,
+    }
+}
+
+/// 保留式数据面的共享句柄：**解码路径**与 **gRPC 服务**共用同一份 `BufferHandoff`。
+///
+/// 为什么必须共享：保留表是有界的（保留条数 + arena 字节）。如果消费者只能在解码结束之后
+/// 才开始领料，那么整段解码期间没有任何人在排空它，任何长媒体都会把表顶满，从那一刻起
+/// 每一帧都只能记成 `data_plane_retention_rejected`。共享句柄让生产者与消费者并发，
+/// 保留失败于是变成**真背压**：生产者等消费者腾出空间，而不是静默丢帧。
+///
+/// 等待是有上界的，而且只在三个条件同时成立时才发生：容量类拒绝、消费者确实调用过数据面、
+/// 这次运行还没为等待付出过完整预算。消费者不在场时等待只会把解码拖住，所以直接记拒绝。
+pub struct SharedHandoff {
+    plane: Mutex<BufferHandoff>,
+    /// 是否已经有过消费者调用。没等到消费者和"消费者走了"是两种不同的情况。
+    consumer: AtomicBool,
+    /// 消费者最后一次调用的墙钟时间（unix ms）。
+    last_activity_ms: AtomicI64,
+    /// 单个被拒帧愿意等待消费者的毫秒数；0 表示不等待。
+    wait_timeout_ms: i64,
+    /// 是否已经为等待付出过一次完整预算。它让一次运行的总延迟有上界：
+    /// 消费者如果真的跟不上，后面每一帧只会立刻记拒绝，而不是每帧各等一个预算。
+    wait_exhausted: AtomicBool,
+}
+
+impl std::fmt::Debug for SharedHandoff {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SharedHandoff")
+            .field("plane", &self.debug_view())
+            .finish()
+    }
+}
+
+impl SharedHandoff {
+    /// 调试视图只打印可读的计数：数据面里是字节，不该出现在日志或 panic 消息里。
+    fn debug_view(&self) -> String {
+        match self.stats() {
+            Ok(stats) => format!(
+                "retained={} retained_limit={} retained_total={} released={} expired={} retain_rejected={} consumer_connected={}",
+                stats.retained,
+                stats.retained_limit,
+                stats.retained_total,
+                stats.released_total,
+                stats.expired_total,
+                stats.retain_rejections,
+                self.consumer_connected(),
+            ),
+            Err(error) => format!("unavailable: {error}"),
+        }
+    }
+
+    pub fn new(plane: BufferHandoff, wait_timeout_ms: i64) -> Arc<Self> {
+        Arc::new(Self {
+            plane: Mutex::new(plane),
+            consumer: AtomicBool::new(false),
+            last_activity_ms: AtomicI64::new(crate::now_unix_ms()),
+            wait_timeout_ms,
+            wait_exhausted: AtomicBool::new(false),
+        })
+    }
+
+    /// 取数据面。锁中毒是内部错误，必须显式失败，不能当成"暂时没有数据"。
+    pub fn plane(&self) -> Result<MutexGuard<'_, BufferHandoff>, MediaError> {
+        self.plane
+            .lock()
+            .map_err(|_| MediaError::IoFailed("handoff_plane_poisoned".into()))
+    }
+
+    /// 一次消费者调用到达：消费者在场，且刚刚活动过。
+    pub fn mark_consumer_active(&self) {
+        self.last_activity_ms
+            .store(crate::now_unix_ms(), Ordering::Relaxed);
+        self.consumer.store(true, Ordering::Relaxed);
+    }
+
+    pub fn consumer_connected(&self) -> bool {
+        self.consumer.load(Ordering::Relaxed)
+    }
+
+    pub fn last_activity_ms(&self) -> i64 {
+        self.last_activity_ms.load(Ordering::Relaxed)
+    }
+
+    // --- 只读视图：服务、报告与测试共用，返回值而不是借用，避免把锁交出去 ---
+
+    pub fn stats(&self) -> Result<HandoffStats, MediaError> {
+        Ok(self.plane()?.stats())
+    }
+
+    pub fn list(&self) -> Result<Vec<RetainedBuffer>, MediaError> {
+        Ok(self.plane()?.list().to_vec())
+    }
+
+    pub fn segment_name(&self) -> Result<Option<String>, MediaError> {
+        Ok(self.plane()?.segment_name().map(str::to_string))
+    }
+
+    pub fn arena_capacity_bytes(&self) -> Result<u64, MediaError> {
+        Ok(self.plane()?.arena_capacity_bytes())
+    }
+
+    pub fn depth(&self) -> Result<u64, MediaError> {
+        Ok(self.plane()?.depth())
+    }
+
+    pub fn limit(&self) -> Result<u64, MediaError> {
+        Ok(self.plane()?.limit())
+    }
+
+    pub fn deepest_kind(&self) -> Result<u64, MediaError> {
+        Ok(self.plane()?.deepest_kind())
+    }
+
+    pub fn arena_used_bytes(&self) -> Result<u64, MediaError> {
+        Ok(self.plane()?.arena().used_bytes() as u64)
+    }
+
+    pub fn retained_by_kind(&self) -> Result<BTreeMap<String, u64>, MediaError> {
+        Ok(self.plane()?.retained_by_kind())
+    }
+
+    pub fn retain_rejections_by_kind(&self) -> Result<BTreeMap<String, u64>, MediaError> {
+        Ok(self.plane()?.retain_rejections_by_kind().clone())
+    }
+
+    /// 在锁内读一次数据面状态。背压水位这类"同一时刻的一组读数"必须一次性取走，
+    /// 分开取会把不同时刻的数字拼成一个不存在的状态。
+    pub fn observe<R>(&self, read: impl FnOnce(&BufferHandoff) -> R) -> Result<R, MediaError> {
+        let plane = self.plane()?;
+        Ok(read(&plane))
+    }
+
+    // --- 消费侧：gRPC 服务与测试共用 ---
+
+    pub fn acquire(
+        &self,
+        buffer_id: &str,
+        window: Option<(u64, u64)>,
+        ttl_ms: u32,
+        now_ms: i64,
+    ) -> Result<LeasedBuffer, MediaError> {
+        self.plane()?.acquire(buffer_id, window, ttl_ms, now_ms)
+    }
+
+    pub fn release(&self, lease_id: &str, now_ms: i64) -> Result<String, MediaError> {
+        self.plane()?.release(lease_id, now_ms)
+    }
+
+    pub fn expire(&self, now_ms: i64) -> Result<usize, MediaError> {
+        Ok(self.plane()?.expire(now_ms))
+    }
+
+    // --- 生产侧：解码路径的保留入口 ---
+
+    /// 流式生产中的保留入口。它把"容量类拒绝"从**终态**改成**背压信号**：
+    /// 消费者在场时期待它腾出空间后重试，而不是当场放弃。
+    pub fn retain_or_reject(
+        &self,
+        buffer_id: &str,
+        kind: &str,
+        stream_id: &str,
+        time_range: TimeRange,
+        format: BufferFormat,
+        bytes: &[u8],
+    ) -> Result<Option<RetainedBuffer>, MediaError> {
+        // 一次调用在统计里就是一次"保留请求"；重试不重复计数。
+        self.plane()?.note_offered();
+        let deadline_ms = if self.wait_timeout_ms > 0 && !self.wait_exhausted.load(Ordering::Relaxed)
+        {
+            Some(crate::now_unix_ms().saturating_add(self.wait_timeout_ms))
+        } else {
+            None
+        };
+        loop {
+            let attempt = self.plane()?.retain_without_offering(
+                buffer_id,
+                kind,
+                stream_id,
+                time_range,
+                // 重试是同一个保留请求，因此布局要在每一轮重新给一份，而不是被搬走。
+                format.clone(),
+                bytes,
+            );
+            let error = match attempt {
+                Ok(held) => return Ok(Some(held)),
+                Err(error) => error,
+            };
+            let Some(reason) = capacity_reason(&error) else {
+                // 契约违规：等多久都不会变好。
+                return Err(error);
+            };
+            let wait_until = deadline_ms.filter(|_| self.consumer_connected());
+            let Some(wait_until) = wait_until else {
+                // 没有消费者（或本次运行不允许等待）：这仍然是一次被记录的拒绝。
+                self.plane()?.note_retain_rejection(kind, &reason);
+                return Ok(None);
+            };
+            if crate::now_unix_ms() >= wait_until {
+                // 预算用尽：把这一次记成拒绝，并停止后续等待，避免总延迟随帧数增长。
+                self.wait_exhausted.store(true, Ordering::Relaxed);
+                self.plane()?.note_retain_rejection(kind, &reason);
+                return Ok(None);
+            }
+            std::thread::sleep(Duration::from_millis(RETAIN_WAIT_POLL_MS));
+        }
+    }
 }
 
 #[cfg(test)]

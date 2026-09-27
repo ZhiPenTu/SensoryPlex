@@ -68,7 +68,13 @@ def _bounded_int(value: Any, *, default: int, lower: int, upper: int, code: str)
 
 
 def _policy(raw: object) -> dict[str, int]:
-    """策略进入 Revision 摘要；1 秒 Coverage 与采样阈值不再依赖全局 YAML。"""
+    """策略进入 Revision 摘要；1 秒 Coverage 与采样阈值不再依赖全局 YAML。
+
+    `evidence_*` 一组是**全帧判别 + 事件证据窗口**的参数：每个可用视频帧都要被判别一次，
+    静态画面的语义刷新上界由 `evidence_max_gap_ms` 给出，窗口上下文决定下游看到的前后帧数。
+    `evidence_retention_bytes` 是数据面为一次运行保留证据帧的共享内存上限，超限是显式失败，
+    不是"少送几帧"。
+    """
     value = raw if isinstance(raw, dict) else {}
     window_ms = _bounded_int(
         value.get("window_ms"),
@@ -106,6 +112,55 @@ def _policy(raw: object) -> dict[str, int]:
             lower=1_000,
             upper=MAX_POLICY_INTERVAL_MS,
             code="invalid_multimodal_vlm_sample_interval",
+        ),
+        "evidence_max_gap_ms": _bounded_int(
+            value.get("evidence_max_gap_ms"),
+            default=1_000,
+            lower=100,
+            upper=60_000,
+            code="invalid_multimodal_evidence_max_gap",
+        ),
+        "evidence_context_before": _bounded_int(
+            value.get("evidence_context_before"),
+            default=2,
+            lower=0,
+            upper=4,
+            code="invalid_multimodal_evidence_context_before",
+        ),
+        "evidence_context_after": _bounded_int(
+            value.get("evidence_context_after"),
+            default=2,
+            lower=0,
+            upper=4,
+            code="invalid_multimodal_evidence_context_after",
+        ),
+        "evidence_change_threshold": _bounded_int(
+            value.get("evidence_change_threshold"),
+            default=8,
+            lower=1,
+            upper=128,
+            code="invalid_multimodal_evidence_change_threshold",
+        ),
+        "evidence_text_change_threshold": _bounded_int(
+            value.get("evidence_text_change_threshold"),
+            default=12,
+            lower=1,
+            upper=255,
+            code="invalid_multimodal_evidence_text_change_threshold",
+        ),
+        "evidence_min_event_interval_ms": _bounded_int(
+            value.get("evidence_min_event_interval_ms"),
+            default=100,
+            lower=20,
+            upper=5_000,
+            code="invalid_multimodal_evidence_min_event_interval",
+        ),
+        "evidence_retention_bytes": _bounded_int(
+            value.get("evidence_retention_bytes"),
+            default=2 * 1024**3,
+            lower=64 * 1024**2,
+            upper=8 * 1024**3,
+            code="invalid_multimodal_evidence_retention_bytes",
         ),
     }
 

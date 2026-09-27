@@ -64,18 +64,100 @@ Console Job ──────────────────────�
 | --- | --- | --- | --- | --- |
 | `decode_sample` | 文件 → `media.video_frame` | `data_plane_local` | 必需 | 基线 1 fps，场景变化可补帧；每一次保留/跳过都记录原因 |
 | `audio_segment` | 文件 → `media.audio_segment` | `data_plane_local` | 必需 | 6 秒段、500 ms overlap；实际值进入 revision 配置 hash |
-| `ocr_fast` | 视频帧 → `observation.ocr_blocks` | `data_plane_local` | 快路径必需 | PP-OCR，按采样帧处理 |
+| `ocr_fast` | 视频帧 → `observation.ocr_blocks` | `data_plane_local` | 快路径必需 | PP-OCR，按**锚点帧**处理：文字变化触发 + 静态 1 秒复查，见 §4.2 |
 | `asr_fast` | 音频段 → `observation.asr_segment` | `data_plane_local` | 条件必需 | MLX Whisper；仅有可解码音轨且 VAD 判为含语音的段要求文字结果 |
-| `vlm_enrich` | 场景候选帧 → `observation.vision.scene_description` | `data_plane_local` | 可选慢路径 | 场景切换加低频关键帧，不要求每秒推理；Ollama/model 版本与 prompt 均锁定 |
+| `vlm_enrich` | 证据窗口 → `observation.vision.scene_description` | `data_plane_local` | 可选慢路径 | 变化触发的前后文窗口（pre + anchor + post，最多 9 帧）+ 静态基线锚点，间隔上界 `evidence_max_gap_ms`（默认 1 秒）；Ollama/model 版本与 prompt 均锁定 |
 | `timeline_fusion` | Observation + 覆盖状态 → MaterialUnit / TimelineWindow | 本机控制逻辑 | 必需 | 1 秒展示格；仅真实 Observation 进入素材 |
 | `embedding` | 可嵌入 Observation → `text_embedding` | `object_ref_allowed` | 依现有索引策略 | 复用 BGE 与常驻 index，不把向量写入插件 |
 
 ### 4.1 必需、条件必需、可选的精确语义
 
-- **OCR：** 若采样策略将该帧送入 OCR，OCR 任务必须有成功或失败终态。识别到零个文字块是成功 Observation 的业务内容，不是“任务没有跑”。
+- **OCR：** 若语义计划把该帧选为锚点（文字变化或 1 秒静态复查），OCR 任务必须有成功或失败终态。识别到零个文字块是成功 Observation 的业务内容，不是“任务没有跑”。
 - **ASR：** 无音轨时窗口为 `not_applicable:no_audio_track`；有音轨但 VAD 无语音时为 `not_applicable:no_speech_detected`；两种情况都不创建假转写。VAD 判有语音后，ASR 超时或模型不可用必须是 `failed:<reason>`，不能降成“未观测”。ASR 输出沿用真实段/词级锚点；映射到 1 秒格时只关联，不截断或篡改原 Observation 的 `[start_ms,end_ms)`。
-- **VLM：** 默认是慢路径。未被场景/采样策略选中的秒格是 `not_sampled_by_policy`；被选中但尚未完成是 `queued/running`；模型未部署、Ollama 不可用或调用失败必须显示可操作 reason code。它不因 1 秒窗口而被强制跑十次。
+- **VLM：** 默认是慢路径。未被语义计划覆盖的秒格是 `not_sampled_by_policy`；被选中但尚未完成是 `queued/running`；模型未部署、Ollama 不可用或调用失败必须显示可操作 reason code。它是**窗口制**的：变化触发的前后文窗口与静态复查锚点决定"哪些帧进模型"，因此既不会漏掉变化，也不会被 1 秒窗口逼着跑全帧。窗口是记账与归还单位，单位内的每一帧各发一次 `Process`——首方 VLM 插件自报 `supports.batch=false` / `maxBatchSize=1`，一次塞进整窗会被插件以 `invalid_batch_size` 拒绝（真实样本实测）。
 - **Fusion：** 快路径缺失使相应 MaterialUnit 为 `partial` 或 `failed`；VLM 慢路径只影响 enrichment 状态。Run 的 `succeeded` 只表示所有必需任务以及可选任务的最终处置已完成，绝不等价于“每个秒格都有三个模型输出”。
+
+### 4.2 语义覆盖：全帧判别 + 有界事件证据窗口
+
+固定的“每 N 秒抽一帧”不是覆盖：它对静态画面重复付费，又恰好漏掉两次采样之间的变化。v2 因此把
+视频输入单位改成**全帧判别 + 有界证据窗口**，由 Runtime 在解码路径上完成；执行器只消费结论，
+不重新采样、不猜窗口。参数全部来自不可变 Revision，越界即拒绝、不夹取。
+
+1. **输入完整性（每一帧都有结论）**：每个被解码且可用的视频帧都恰好被判别一次，判别结果是
+   `first_frame` / `content_change` / `text_change` / `static_heartbeat` / `no_change`；处置只能是
+   选中（基线锚点、事件锚点、事件前上下文、事件后上下文）或**带稳定原因**被覆盖
+   （`no_change_yet`、`event_rate_limited`、`event_budget_exhausted`、`missing_signature`、
+   `non_monotonic_pts`）。逐帧账本写进独立 artifact（`SemanticCoverageReport.frame_ledger_path`）；
+   报告只带聚合计数与有界窗口预览，`frame_ledger_entries` 只统计帧记录，窗口记录条数由
+   `windows` 描述，两者不能相加。
+2. **语义刷新上界**：静态画面相邻两次语义输入不得超过 `evidence_max_gap_ms`（默认与用户选定值
+   均为 1000 ms），由 `static_heartbeat` 基线锚点保证；变化画面由事件窗口覆盖。
+3. **事件窗口有界**：窗口 = 变化前的预上下文（默认 2 帧）+ 锚点 + 变化后的后上下文（默认 2 帧），
+   因此单次请求最多 9 帧；事件之间还有 `evidence_min_event_interval_ms` 下限与每次运行的窗口硬上限。
+   超限是显式计数（`suppressed_event_keeps`、`event_budget_exhausted`），绝不静默降级成“没有变化”。
+4. **变化判别是混合的**：确定性的整帧亮度签名差（`evidence_change_threshold`）抓画面变化，
+   水平梯度“文字感”签名差（`evidence_text_change_threshold`）抓字幕/文字变化，两者都不需要模型。
+5. **下游输入单位随模态而不同**（执行器只按 Runtime 的结论分组）：
+
+   | 模态 | 输入单位 | 依据 |
+   | --- | --- | --- |
+   | VLM | 每个证据窗口（外加没有窗口的基线锚点）是一个**单位**，单位内每一帧各一次 `Process` | 窗口给的是变化前后的**上下文帧集合**；静态画面按 `evidence_max_gap_ms` 继续刷新。首方插件 `supports.batch=false`，批大小是插件的自报能力，执行器不替它放大 |
+   | OCR | 只送锚点帧 | 前后上下文对文字识别没有增量；文字变化本身已触发锚点 |
+   | ASR | 有序音频段 | 与视频采样无关：有可解码音轨即整段转写 |
+
+6. **交接与保留都是有界的，而且背压是真的**：窗口帧经同机共享内存数据面交接，保留面由
+   `evidence_retention_bytes`（默认 2 GiB）与 `handoff-retained-limit` 共同约束。数据面服务在
+   **解码开始之前**就在线，执行器在解码进行中按窗口增量领料、立刻归还；容量类拒绝在消费者
+   在场时按 `handoff-wait-timeout-ms` 有界重试，而不是当场判死。因容量被拒的帧显式记
+   `data_plane_retention_rejected`，不进入任何窗口引用。
+7. **降级必须诚实**：锚点帧被拒（或窗口的锚点帧从未交接）时，整个窗口作为**被拒单位**登记，
+   已经交接的上下文帧立刻归还，对应秒格在覆盖层里是
+   `not_observed:data_plane_retention_rejected`；既不让整条 Task 以 `evidence_window_empty`
+   失败，也不把它读成"画面没变化"。这是"最细粒度全帧证据"与"有界保留面"之间的取舍：缺的
+   是**可复核的一段**，不是一条被伪装成成功的任务。
+8. **异步与失败语义**：文件任务按窗口异步派发，单个窗口失败按有界重试重派；重试耗尽才让整个
+   Execution 失败。账本说交接成功、保留表却已经没有这一帧（`data_plane_buffer_missing`）算
+   可重试的传输层失败，不算业务内容。恢复只依赖原始视频与内容摘要，不持久化原始帧或 PCM。
+
+### 4.3 三级证据边界（不得互相顶替）
+
+| 层级 | 它证明了什么 | 现在到哪一步 |
+| --- | --- | --- |
+| 输入完整性 | 每一个被解码的视频帧都在逐帧账本里恰好出现一次，结论明确且可逐行复核 | 已用真实授权样本核对（§9） |
+| 语义覆盖 | 相邻语义输入的间隔 ≤ `evidence_max_gap_ms` + 一个观测到的帧间隔；变化被有界窗口覆盖 | 已用真实授权样本核对（`max_selected_gap_ms = 1000`，§9） |
+| 模型完整性 | 每个窗口/锚点都真的得到模型输出，且输出语义可用 | **未验收**：链路与输入单位已验证，输出质量与“每帧都有可用描述”都不是本层承诺 |
+
+### 4.4 真实样本核对：有界保留面的两种真实结局
+
+同一份 1080p / 20 s（H.264 + AAC）授权样本，用同一套 `orchestrated_v2` 执行器与首方插件
+各跑了一次完整 Execution，只改不可变 Revision 里的保留面大小：
+
+| 运行 | 保留面 | 观测到的结果 | 判读 |
+| --- | --- | --- | --- |
+| 正常 | `handoff_arena_bytes = 2147483648`（默认 2 GiB） | 三个消费节点 `retain_rejected=0`；`evidence.anchors=40`、`characterized_frames=600`、`ledger_entries=600`、`windows=19`、`requests=84`、`max_selected_gap_ms=1000`；Execution `succeeded` | 全帧账本与语义覆盖在同一份样本上闭环，交接与保留没有丢弃 |
+| 受压 | `handoff_arena_bytes = 134217728`（128 MiB） | 数据面 `backpressure state=saturated`、`retain_rejected=243`（`arena_capacity_exceeded`，其中 `video_frame` 59 帧）；执行器记 `retention_rejected_frames=59` / `retention_rejected_units=27`，**跳过**这些单位后仍 `succeeded`（VLM 24 次、OCR 8 次请求） | 容量拒绝是**真的**背压而不是判死；降级被显式记账，没有被伪装成“画面没变” |
+
+受压运行的降级一路落到覆盖层（`timeline_window_state`）：20 个 1 秒窗里 17 个带
+`data_plane_retention_rejected`（16 个 OCR 与 VLM 同时被拒、1 个只拒 OCR）、2 个三模态
+`observed`、1 个 `selected_without_observation`；**没有**任何 `evidence_window_empty`，
+也没有 `runtime_replay_failed`。Timeline 侧如实给出 `windows_with_observations=4` /
+`windows_empty=16` / `materials=4`（全部 `partial`）。
+
+两次运行同时是 A′ 的证据：三个消费节点日志都写着
+`handoff_ready … concurrent_with_decode=true` 与
+`handoff_shutdown reason=plane_drained consumer_seen=true retained=0`，`handoff_stats` 满足
+`retained_total = retained + released + expired` 与 `offered = retained_total + retain_rejected`。
+
+**本轮修掉的一个真实缺陷**：受压运行第一次尝试时 Timeline 以 `worker_report_invalid_digest`
+失败——被拒帧的账目把 `buffer_id` / `source_digest` 写成空串，被 Timeline 的账本构建读成
+“Runtime 真的签发过这条描述符”。修正是让被拒帧只留时间范围与原因码、不凑描述符三元组，
+并加契约测试固定该形状；修复后同一样本的受压运行整条 Execution 变成 `completed`。
+
+**仍未解决（不在本轮范围）**：1 秒窗格下 6 秒音频段是跨窗观测，Timeline 按既有语义显式
+拒绝（`observation_crosses_window`，不裁剪），所以这 4 条 ASR Observation 只体现在覆盖层
+（`asr: observed`），不进入任何 MaterialUnit（素材保持 `pending_enrichments:["asr_segment"]`）。
+这是 ADR-028 的既有取舍，不是本轮引入，但“最细粒度 1 秒窗格 + 6 秒音频段”的组合需要一次
+显式决策。
 
 ## 5. 契约、存储与 API 改造
 
@@ -209,6 +291,9 @@ Python/API/Console 底座验证必须在 `api`、`console` 容器内执行；Rus
 | --- | --- | --- |
 | 发布拒绝 | 图环、错误 modality、未认证 digest、无界重试、raw buffer 跨机 | API 集成测试 + `make multimodal-pipeline-check` |
 | 正常三模态 | 有声视频真实产生 OCR/ASR/VLM，三者均有回执和锚点 | `make multimodal-execution-check MEDIA=...` |
+| 全帧判别与语义覆盖 | 真实授权样本的每一帧都有结论（`选中 + 带原因覆盖 == 判别帧数`）、相邻语义输入 ≤ `evidence_max_gap_ms` + 一个帧间隔、逐帧账本行数与报告计数逐项一致 | `uv run --frozen python tools/verify_replay.py --media <授权样本>`（默认启用全帧判别，`--without-evidence` 只跑抽帧对照） |
+| 输入分组与请求预算 | 证据窗口 / 锚点是一个单位，单位内每帧各一次 `Process`（首方插件 `maxBatchSize=1`；单位 ≤ 9 帧）；请求数 = 真正送模型的帧数且 ≤ 任务预算；被有界数据面拒绝的单位记 `data_plane_retention_rejected` 并跳过该单位，账本说交接成功而保留表已经没有这一帧则是可重试的 `data_plane_buffer_missing` | `pytest tests/contracts/test_task_executor.py`（契约）+ 真实样本计划核对（§4.4：受压运行跳过 27 个被拒单位后仍 `succeeded`） |
+| 真背压与增量消费 | 数据面在解码**之前**在线，执行器边解码边领料、立刻归还；长媒体在保留面有界时不再从某一帧起必然被拒，`handoff_stats` 里的 `retain_rejected` / `residency_max_ms` / `consumer_seen` 可复核 | Runtime 集成检查 + 真实授权样本 `replay` 报告（§4.4：两种保留面各一次完整 Execution） |
 | 无音轨/静音 | `no_audio_track`、`no_speech_detected` 不产生伪转写 | 同一检查的两份真实样本 |
 | VLM 不可用 | 模型/endpoint 未就绪时预检或 Task 失败可见，不能变成 0 条成功 | API + Executor 契约测试 |
 | 失败/重试 | 临时插件失败、有界重试、耗尽后失败；不可重试不重投 | Executor/Orchestration 集成测试 |
@@ -231,4 +316,3 @@ Python/API/Console 底座验证必须在 `api`、`console` 容器内执行；Rus
 - [ ] Material/搜索按 execution/PipelineRevision 隔离，历史结果可显式查看但不默认混合。
 - [ ] 数据库迁移、Proto 生成、API/Console/Rust/宿主模型验证与真实浏览器验收全部通过。
 - [ ] 真实授权媒体经上传、调度、三模态、融合、入库、索引、检索和 Range 回看完成端到端验证，并如实记录仍未覆盖的平台或模型范围。
-

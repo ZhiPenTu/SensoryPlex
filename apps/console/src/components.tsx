@@ -284,6 +284,47 @@ const statusConfig: Record<string, StatusStyle> = {
         border: '#bfdbfe',
         icon: <SyncOutlined spin />,
     },
+    running: {
+        label: '执行中',
+        bg: '#eff6ff',
+        text: '#1d4ed8',
+        border: '#bfdbfe',
+        icon: <SyncOutlined spin />,
+    },
+    assigned: {
+        label: '已下发',
+        bg: '#eff6ff',
+        text: '#1d4ed8',
+        border: '#bfdbfe',
+    },
+    task_pending: {
+        label: '等待前置',
+        bg: '#fffbeb',
+        text: '#b45309',
+        border: '#fde68a',
+        icon: <ClockCircleFilled />,
+    },
+    blocked: {
+        label: '已阻塞',
+        bg: '#fffbeb',
+        text: '#b45309',
+        border: '#fde68a',
+        icon: <ExclamationCircleFilled />,
+    },
+    retry_wait: {
+        label: '等待重试',
+        bg: '#fffbeb',
+        text: '#b45309',
+        border: '#fde68a',
+        icon: <ClockCircleFilled />,
+    },
+    succeeded_with_partial_enrichment: {
+        label: '部分补全完成',
+        bg: '#ecfdf5',
+        text: '#047857',
+        border: '#a7f3d0',
+        icon: <CheckCircleFilled />,
+    },
 
     // 警告 / 待办 / 审批 (Warm Amber)
     pending: {

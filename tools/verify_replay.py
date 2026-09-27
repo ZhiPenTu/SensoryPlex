@@ -6,9 +6,11 @@
 
 import argparse
 import hashlib
+import json
 import re
 import subprocess
 import tempfile
+from collections import Counter
 from pathlib import Path
 
 from edge_material_sdk.generated.media.v1 import media_pb2
@@ -27,6 +29,29 @@ QUEUE_CAPACITY = re.compile(r"^\s*queue_capacity:\s*(\d+)\s*$", re.MULTILINE)
 # 两条独立实现描述同一段 presentation 时间轴：ffprobe 的 anchor 与 GStreamer 的
 # decode 路径。毫秒级舍入可能不一致，因此区间比较时保留一定 slack。
 TIMELINE_TOLERANCE_MS = 1
+# 语义覆盖账本里允许出现的枚举取值。报告自报一个未知值就是契约漂移，必须当场失败。
+EVIDENCE_DECISIONS = {
+    "first_frame",
+    "content_change",
+    "text_change",
+    "static_heartbeat",
+    "no_change",
+}
+EVIDENCE_SELECTIONS = {
+    "baseline_anchor",
+    "event_anchor",
+    "event_pre_context",
+    "event_post_context",
+    "not_selected",
+}
+EVIDENCE_TRIGGERS = {"content_change", "text_change"}
+EVIDENCE_SKIP_REASONS = {
+    "no_change_yet",
+    "event_rate_limited",
+    "event_budget_exhausted",
+    "missing_signature",
+    "non_monotonic_pts",
+}
 # Codec pre-skip（Opus `initial_padding=312` = 6.5 ms）在流的最开始两端放置方式不同，
 # 因此第一个音频样本最多可以相差一帧 codec 帧（Opus 为 20 ms）。该偏移会作为一项
 # 信息输出，而不是被强行 assert 掉；像 166 ms edit-list 那样的真实错位会远大于此，
@@ -173,9 +198,13 @@ def check_decoded_plane(report) -> None:
     sampling = check_sampling(decoded, anchors_by_track)
     # 被抽帧跳过的帧仍然是"解码到的一帧"：samples 只数交接，跳过数必须补回来，
     # 才能与 ffprobe 口径的锚点计数对齐。若两者不等，说明有一条路径漏计了帧。
-    assert samples + sampling["skipped"] == report.decoded_items, (
+    # 语义覆盖会额外交接两类帧：被采样器跳过后又作为事件证据交接的帧，以及先被丢弃、
+    # 后被追认成"变化前上下文"的帧。它们让 `samples` 相对锚点数多算一次，多出来的部分
+    # 恰好是 `kept_evidence_window`；没有语义计划时它是 0，等式退化成原来的口径。
+    extra_handoffs = sampling["evidence_window"]
+    assert samples + sampling["skipped"] == report.decoded_items + extra_handoffs, (
         f"handed off {samples} + sampled out {sampling['skipped']} != "
-        f"decoded items {report.decoded_items}"
+        f"decoded items {report.decoded_items} + evidence-window keeps {extra_handoffs}"
     )
 
     # 每个被接受的样本恰好生成一个 buffer，每段音频额外生成一个 segment。
@@ -199,6 +228,7 @@ def check_decoded_plane(report) -> None:
 
     check_segments(decoded, anchors_by_track)
     check_evidence(decoded)
+    check_semantic_coverage(decoded, sampling)
     return offsets
 
 
@@ -211,7 +241,15 @@ def check_sampling(decoded, anchors_by_track: dict) -> dict:
     video = next((track for track in decoded.tracks if track.track_kind == "video"), None)
     if video is None:
         assert not decoded.sampling, "a track that was never decoded cannot report sampling"
-        return {"skipped": 0}
+        assert not decoded.semantic_coverage, "no video track means no semantic coverage ledger"
+        return {
+            "skipped": 0,
+            "evidence_window": 0,
+            "observed": 0,
+            "kept": 0,
+            "max_frame_interval_ms": 0,
+            "max_gap_ms": 0,
+        }
     assert decoded.sampling, "a decoded video track must report its sampling accounting"
     assert len(decoded.sampling) == 1, "only the video track is sampled"
     sampling = decoded.sampling[0]
@@ -235,8 +273,11 @@ def check_sampling(decoded, anchors_by_track: dict) -> dict:
     assert sampling.kept == (
         sampling.kept_first_frame + sampling.kept_content_change + sampling.kept_static_heartbeat
     ), "every keep needs exactly one reason"
-    assert sampling.kept == video.samples, (
-        f"sampling kept {sampling.kept} but the video track handed off {video.samples}"
+    # 语义覆盖会额外交接事件窗口帧与预上下文帧；没有语义计划时这一项恒为 0，
+    # 于是等式退化成原来的"采样保留 == 交接帧数"。
+    assert sampling.kept + sampling.kept_evidence_window == video.samples, (
+        f"sampling kept {sampling.kept} + evidence-window keeps "
+        f"{sampling.kept_evidence_window} but the video track handed off {video.samples}"
     )
     # 两条独立路径必须看到同样多的视频帧：ffprobe 的锚点数与解码器交给采样器的帧数。
     # 对不上就说明有一侧漏了帧，"覆盖率"也就无从谈起。
@@ -245,10 +286,18 @@ def check_sampling(decoded, anchors_by_track: dict) -> dict:
         f"the probe reported {len(video_anchors)} video anchors but the decoder sampled "
         f"{sampling.observed} frames"
     )
-    # 抽帧跳过也计入轨道的丢弃总数：跳过不是"没解码到这一帧"，而是"没交接这一帧"。
-    assert video.dropped_samples >= skipped, (
-        f"track dropped {video.dropped_samples} < sampler skipped {skipped}"
-    )
+    if decoded.semantic_coverage:
+        # 预上下文帧先被丢弃、后被追认交接，因此在"丢弃"与"交接"两边都会出现。
+        # 有语义计划时只能要求每个观测帧都被解释成其中至少一种，不能要求两边互斥。
+        assert video.dropped_samples + video.samples >= sampling.observed, (
+            f"dropped {video.dropped_samples} + handed off {video.samples} "
+            f"< observed {sampling.observed}"
+        )
+    else:
+        # 抽帧跳过也计入轨道的丢弃总数：跳过不是"没解码到这一帧"，而是"没交接这一帧"。
+        assert video.dropped_samples >= skipped, (
+            f"track dropped {video.dropped_samples} < sampler skipped {skipped}"
+        )
     for reason, field in SAMPLER_SKIP_COUNTERS.items():
         count = getattr(sampling, field)
         if count:
@@ -265,7 +314,189 @@ def check_sampling(decoded, anchors_by_track: dict) -> dict:
         f"max gap {sampling.max_gap_ms}ms is not bounded by hold "
         f"{sampling.static_hold_ms}ms + frame interval {sampling.max_frame_interval_ms}ms"
     )
-    return {"skipped": skipped}
+    return {
+        "skipped": skipped,
+        "evidence_window": sampling.kept_evidence_window,
+        "observed": sampling.observed,
+        "kept": sampling.kept,
+        "max_frame_interval_ms": sampling.max_frame_interval_ms,
+        "max_gap_ms": sampling.max_gap_ms,
+    }
+
+
+def parse_counter_entries(entries, label: str) -> dict:
+    """把 `name=count` 形式的聚合计数解析成字典；解析不了就失败，不做兜底。"""
+    parsed: dict[str, int] = {}
+    for entry in entries:
+        name, separator, count = entry.partition("=")
+        assert separator == "=" and name, f"{label} entry {entry!r} is not name=count"
+        assert name not in parsed, f"{label} repeats {name}"
+        parsed[name] = int(count)
+    return parsed
+
+
+def check_semantic_coverage(decoded, sampling: dict) -> None:
+    """语义覆盖账本必须同时证明两件事：输入完整性与语义刷新上界。
+
+    它和采样报告描述同一批帧，因此判别帧数必须等于采样器观测到的帧数；每个被判别帧都要
+    有结论（选中或带原因被覆盖）；静态画面的相邻语义输入不得超过 `max_semantic_gap_ms`
+    加一个观测到的帧间隔。窗口只引用这次运行真的交接过的 buffer，绝不携带字节。
+    """
+    if not decoded.semantic_coverage:
+        assert sampling["evidence_window"] == 0, (
+            "kept_evidence_window is non-zero but there is no semantic coverage report"
+        )
+        return
+    assert len(decoded.semantic_coverage) == 1, "only the video track carries a coverage ledger"
+    coverage = decoded.semantic_coverage[0]
+    assert coverage.track_kind == "video", coverage.track_kind
+
+    selected = (
+        coverage.selected_baseline_anchor
+        + coverage.selected_event_anchor
+        + coverage.selected_event_pre_context
+        + coverage.selected_event_post_context
+    )
+    assert coverage.characterized_frames == sampling["observed"], (
+        f"coverage characterized {coverage.characterized_frames} frames but the sampler "
+        f"observed {sampling['observed']}"
+    )
+    assert coverage.characterized_frames > 0, "a decoded video track must characterize its frames"
+    assert selected + coverage.covered_without_model_refresh == coverage.characterized_frames, (
+        "every characterized frame must be either selected or explicitly covered"
+    )
+    assert selected >= sampling["evidence_window"], (
+        f"selected {selected} < evidence-window keeps {sampling['evidence_window']}"
+    )
+
+    assert 100 <= coverage.max_semantic_gap_ms <= 60_000, coverage.max_semantic_gap_ms
+    assert coverage.evidence_pre_frames <= coverage.evidence_context_frames, (
+        "pre context cannot exceed the whole context window"
+    )
+    post_frames = coverage.evidence_context_frames - coverage.evidence_pre_frames
+    frame_interval = sampling["max_frame_interval_ms"]
+    assert coverage.max_selected_gap_ms <= (
+        coverage.max_semantic_gap_ms + frame_interval + TIMELINE_TOLERANCE_MS
+    ), (
+        f"max selected gap {coverage.max_selected_gap_ms}ms exceeds the policy bound "
+        f"{coverage.max_semantic_gap_ms}ms + frame interval {frame_interval}ms"
+    )
+
+    decisions = parse_counter_entries(coverage.decision_counts, "decision_counts")
+    selections = parse_counter_entries(coverage.selection_counts, "selection_counts")
+    skips = parse_counter_entries(coverage.skip_reason_counts, "skip_reason_counts")
+    assert set(decisions) <= EVIDENCE_DECISIONS, decisions
+    assert set(selections) <= EVIDENCE_SELECTIONS, selections
+    assert set(skips) <= EVIDENCE_SKIP_REASONS, skips
+    assert sum(decisions.values()) == coverage.characterized_frames, (
+        "decision counters must cover every characterized frame"
+    )
+    assert sum(selections.values()) == coverage.characterized_frames, (
+        "selection counters must cover every characterized frame"
+    )
+    assert sum(skips.values()) == coverage.covered_without_model_refresh, (
+        "skip reasons must account for exactly the covered-without-refresh frames"
+    )
+    assert selections.get("baseline_anchor", 0) == coverage.selected_baseline_anchor
+    assert selections.get("event_anchor", 0) == coverage.selected_event_anchor
+    assert selections.get("event_pre_context", 0) == coverage.selected_event_pre_context
+    assert selections.get("event_post_context", 0) == coverage.selected_event_post_context
+    assert selections.get("not_selected", 0) == coverage.covered_without_model_refresh
+
+    assert len(coverage.listed_windows) == min(coverage.windows, coverage.windows_listed_limit), (
+        "listed windows must be the bounded preview of the window count"
+    )
+    window_ids = set()
+    for window in coverage.listed_windows:
+        assert window.window_id, "a window must carry its identifier"
+        assert window.window_id not in window_ids, f"duplicate window id {window.window_id}"
+        window_ids.add(window.window_id)
+        assert window.trigger in EVIDENCE_TRIGGERS, window.trigger
+        assert window.context_before <= coverage.evidence_pre_frames
+        assert window.context_after <= post_frames
+        assert window.time_range.start_ms <= window.anchor_ms < window.time_range.end_ms, (
+            f"window {window.window_id} anchor is outside its half-open interval"
+        )
+        assert len(window.frame_buffer_ids) == window.handed_off_frames, (
+            "handed_off_frames must equal the number of buffer references"
+        )
+        assert window.handed_off_frames <= (window.context_before + 1 + window.context_after), (
+            "a window cannot hold more frames than its bounded context allows"
+        )
+    check_frame_ledger(coverage)
+
+
+def check_frame_ledger(coverage) -> None:
+    """逐帧账本是"输入完整性"的落盘证据：每一帧恰好一行，且聚合计数必须与它一致。
+
+    没有账本路径时不能声称有账本条目；给了路径但文件读不到、行数对不上、聚合计数对不上，
+    都让验收失败——否则"每一帧都有记录"只是一句无法复核的话。
+    """
+    path = coverage.frame_ledger_path
+    if not path:
+        assert coverage.frame_ledger_entries == 0, (
+            "a report without a ledger path cannot claim ledger entries"
+        )
+        return
+    ledger = Path(path)
+    assert ledger.is_file(), f"the reported frame ledger {path} does not exist"
+    frames: list[dict] = []
+    windows: list[dict] = []
+    for line in ledger.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        record = json.loads(line)
+        if record.get("record_type") == "frame":
+            frames.append(record)
+        elif record.get("record_type") == "window":
+            windows.append(record)
+        else:
+            raise AssertionError(f"unknown ledger record_type {record.get('record_type')!r}")
+
+    assert len(frames) == coverage.frame_ledger_entries, (
+        f"ledger holds {len(frames)} frames but the report claims "
+        f"{coverage.frame_ledger_entries} entries"
+    )
+    assert len(frames) == coverage.characterized_frames, (
+        f"ledger holds {len(frames)} frames but the report characterized "
+        f"{coverage.characterized_frames}"
+    )
+    indexes = [frame["frame_index"] for frame in frames]
+    assert indexes == list(range(1, len(frames) + 1)), (
+        "the ledger must record every frame exactly once, in order"
+    )
+    assert len(windows) == coverage.windows, (
+        f"ledger holds {len(windows)} windows but the report claims {coverage.windows}"
+    )
+
+    decisions = Counter(frame["decision"] for frame in frames)
+    selections = Counter(frame["selection"] for frame in frames)
+    skips = Counter(frame["skip_reason"] for frame in frames if frame["skip_reason"])
+    assert dict(decisions) == parse_counter_entries(coverage.decision_counts, "decision_counts")
+    assert dict(selections) == parse_counter_entries(coverage.selection_counts, "selection_counts")
+    # 账本里出现 `data_plane_retention_rejected` 时，说明这一帧是被数据面容量拒绝的，
+    # 不是被证据计划跳过的，因此它不是聚合跳过计数的一部分。
+    known_skips = {
+        reason: count for reason, count in skips.items() if reason in EVIDENCE_SKIP_REASONS
+    }
+    assert set(skips) - EVIDENCE_SKIP_REASONS <= {"data_plane_retention_rejected"}, skips
+    assert known_skips == parse_counter_entries(coverage.skip_reason_counts, "skip_reason_counts")
+
+    # 未选中的帧绝不能带 buffer 引用：账本里的"没选中"和"交接了"不能同时成立。
+    for frame in frames:
+        if frame["selection"] == "not_selected":
+            assert not frame["buffer_id"], (
+                f"frame {frame['frame_index']} is not selected yet carries {frame['buffer_id']}"
+            )
+    handed = {frame["buffer_id"] for frame in frames if frame["buffer_id"]}
+    for window in windows:
+        for buffer_id in window["frame_buffer_ids"]:
+            assert buffer_id in handed, (
+                f"window {window['window_id']} references {buffer_id} which is not in the ledger"
+            )
+    for window, listed in zip(windows, coverage.listed_windows, strict=True):
+        assert window["window_id"] == listed.window_id
+        assert window["frame_buffer_ids"] == list(listed.frame_buffer_ids)
 
 
 def describe_sampling(decoded) -> str:
@@ -282,10 +513,26 @@ def describe_sampling(decoded) -> str:
         f"content_change={sampling.kept_content_change},"
         f"static_heartbeat={sampling.kept_static_heartbeat}"
     )
+    evidence = ""
+    if decoded.semantic_coverage:
+        coverage = decoded.semantic_coverage[0]
+        selected = (
+            coverage.selected_baseline_anchor
+            + coverage.selected_event_anchor
+            + coverage.selected_event_pre_context
+            + coverage.selected_event_post_context
+        )
+        evidence = (
+            f" evidence=characterized {coverage.characterized_frames} "
+            f"selected {selected} "
+            f"covered {coverage.covered_without_model_refresh} "
+            f"windows={coverage.windows} max_selected_gap_ms={coverage.max_selected_gap_ms}"
+        )
     return (
         f"sampling=kept {sampling.kept}/{sampling.observed} ({kept}) "
         f"skipped[{skipped or 'none'}] max_gap_ms={sampling.max_gap_ms} "
-        f"bound={sampling.max_keeps_bound}"
+        f"bound={sampling.max_keeps_bound} evidence_windows={sampling.kept_evidence_window}"
+        f"{evidence}"
     )
 
 
@@ -398,6 +645,11 @@ def main() -> None:
     parser.add_argument("--pipeline", type=Path, default=PIPELINE)
     parser.add_argument("--report", type=Path, default=None)
     parser.add_argument(
+        "--without-evidence",
+        action="store_true",
+        help="replay without the semantic-coverage plan (only checks the adaptive sampler)",
+    )
+    parser.add_argument(
         "--verify-only",
         action="store_true",
         help="check an existing --report instead of replaying the media again",
@@ -414,6 +666,14 @@ def main() -> None:
         return
     with tempfile.TemporaryDirectory() as workspace:
         report_path = args.report or Path(workspace) / "replay-report.pb"
+        evidence_flags = []
+        if not args.without_evidence:
+            # 全帧判别是这份验收的一部分：没有它就只验了抽帧速率，验不到语义覆盖。
+            evidence_flags = [
+                "--evidence",
+                "--evidence-ledger",
+                str(Path(workspace) / "replay.evidence.jsonl"),
+            ]
         subprocess.run(
             [
                 str(runtime_binary()),
@@ -422,11 +682,14 @@ def main() -> None:
                 str(media),
                 "--report",
                 str(report_path),
+                *evidence_flags,
             ],
             check=True,
         )
         report = parse_report(report_path)
-    finish(report, media, args.pipeline)
+        # 账本检查要按报告里的路径重新读文件，所以必须在临时工作目录还存在时完成校验，
+        # 否则"每一帧都有落盘记录"会被误判成"账本不存在"。
+        finish(report, media, args.pipeline)
 
 
 def finish(report, media: Path, pipeline: Path) -> None:

@@ -157,6 +157,14 @@ export function Pipelines() {
         },
     });
 
+    const publish = useMutation({
+        mutationFn: (id: string) => post(`/admin/v1/pipelines/${id}:publish`),
+        onSuccess: () => {
+            message.success('方案已成功发布');
+            void cache.invalidateQueries({ queryKey: ['pipelines'] });
+        },
+    });
+
     const archive = useMutation({
         mutationFn: (id: string) => post(`/admin/v1/pipelines/${id}:archive`),
         onSuccess: () => {
@@ -270,22 +278,40 @@ export function Pipelines() {
             render: (_: unknown, row: (typeof items)[0]) => (
                 <Space size={8}>
                     {row.state === 'draft' ? (
-                        <Popconfirm
-                            title="确定归档此方案草稿？"
-                            onConfirm={() => archive.mutate(row.id)}
-                            okText="归档"
-                            cancelText="取消"
-                        >
-                            <Button
-                                size="small"
-                                danger
-                                type="text"
-                                icon={<FolderOutlined />}
-                                loading={archive.isPending}
+                        <>
+                            <Popconfirm
+                                title="确定发布此处理方案？发布后不可变，可直接用于任务编排。"
+                                onConfirm={() => publish.mutate(row.id)}
+                                okText="发布"
+                                cancelText="取消"
                             >
-                                归档
-                            </Button>
-                        </Popconfirm>
+                                <Button
+                                    size="small"
+                                    type="link"
+                                    icon={<CheckCircleOutlined />}
+                                    loading={publish.isPending}
+                                    style={{ padding: 0 }}
+                                >
+                                    发布
+                                </Button>
+                            </Popconfirm>
+                            <Popconfirm
+                                title="确定归档此方案草稿？"
+                                onConfirm={() => archive.mutate(row.id)}
+                                okText="归档"
+                                cancelText="取消"
+                            >
+                                <Button
+                                    size="small"
+                                    danger
+                                    type="text"
+                                    icon={<FolderOutlined />}
+                                    loading={archive.isPending}
+                                >
+                                    归档
+                                </Button>
+                            </Popconfirm>
+                        </>
                     ) : null}
                 </Space>
             ),
@@ -319,7 +345,7 @@ export function Pipelines() {
             </Notice>
 
             <ErrorNotice
-                error={listing.error || configs.error || archive.error || validate.error || save.error}
+                error={listing.error || configs.error || archive.error || publish.error || validate.error || save.error}
             />
 
             <Card bodyStyle={{ padding: 0 }}>

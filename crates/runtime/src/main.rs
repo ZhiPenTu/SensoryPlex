@@ -1,12 +1,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
-use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use prost::Message;
 use sensoryplex_media::backpressure::BackpressurePolicy;
-use sensoryplex_media::handoff::{BufferHandoff, HandoffStats, RetainPolicy};
+use sensoryplex_media::evidence::{
+    EvidencePolicy, LedgerHandle, DEFAULT_CHANGE_THRESHOLD, DEFAULT_CONTEXT_FRAMES,
+    DEFAULT_MAX_SEMANTIC_GAP_MS, DEFAULT_MIN_EVENT_INTERVAL_MS, DEFAULT_TEXT_CHANGE_THRESHOLD,
+};
+use sensoryplex_media::handoff::{HandoffStats, RetainPolicy, SharedHandoff};
 use sensoryplex_media::live::{LiveConfig, LiveStats};
 use sensoryplex_media::sampler::SamplingPolicy;
 use sensoryplex_media::segment::{MAX_AUDIO_SEGMENT_MS, MIN_AUDIO_SEGMENT_MS};
@@ -27,6 +31,7 @@ use tonic::{Request, Response, Status};
 use crate::handoff_service::{HandoffService, DEFAULT_HANDOFF_TTL_MS};
 
 mod handoff_service;
+mod media_ledger;
 mod timeline;
 
 /// 大于该阈值的间隔会被计入时间轴断层（discontinuity），不会被平滑掉。
@@ -52,6 +57,9 @@ fn replay_blockers() -> Vec<String> {
 
 /// 将文件解码为已校验的 descriptor。未启用 GStreamer feature 的构建没有解码器，
 /// 会通过 `replay_blockers` 显式说明，而不是返回空 data plane。
+///
+/// `plane` 是**解码之前**就已经打开的共享保留面（见 `HandoffRunner::start`）：它必须由
+/// 调用方创建，服务端才能在解码期间就开始把字节交给消费者。
 #[cfg(feature = "gstreamer")]
 #[allow(clippy::type_complexity)]
 fn decode_pass(
@@ -59,21 +67,19 @@ fn decode_pass(
     stream_id: &str,
     arena_id: &str,
     args: &ResolvedRunArgs,
-) -> Result<(Option<DecodedDataPlane>, Option<BufferHandoff>, bool), String> {
-    // 保留策略在这里成型，而不是在调用方：replay 与 ingest 必须走同一条装配路径。
-    let handoff = match &args.handoff {
-        Some(config) => RetainPolicy::shared(config.arena_bytes, config.retained_limit)
-            .map_err(|error| error.to_string())?,
-        None => RetainPolicy::default(),
-    };
+    plane: Option<Arc<SharedHandoff>>,
+) -> Result<(Option<DecodedDataPlane>, Option<Arc<SharedHandoff>>, bool), String> {
     let run = sensoryplex_media::decode::DecodeRun {
         decode: sensoryplex_media::decode::DecodeConfig::default(),
         max_samples: args.max_points,
         audio_segment_ms: args.audio_segment_ms,
         audio_overlap_ms: args.audio_overlap_ms,
         sampling: args.sampling,
-        handoff,
+        handoff: plane,
         backpressure: args.backpressure,
+        evidence: args.evidence,
+        ledger: args.ledger.clone(),
+        ledger_path: args.ledger_path.clone(),
     };
     sensoryplex_media::decode::decode_file(Path::new(media), stream_id, arena_id, &run)
         .map(|outcome| (Some(outcome.plane), outcome.handoff, outcome.truncated))
@@ -87,7 +93,8 @@ fn decode_pass(
     _stream_id: &str,
     _arena_id: &str,
     args: &ResolvedRunArgs,
-) -> Result<(Option<DecodedDataPlane>, Option<BufferHandoff>, bool), String> {
+    _plane: Option<Arc<SharedHandoff>>,
+) -> Result<(Option<DecodedDataPlane>, Option<Arc<SharedHandoff>>, bool), String> {
     validate_run_args(args)?;
     Ok((None, None, false))
 }
@@ -121,13 +128,29 @@ fn validate_run_args(args: &ResolvedRunArgs) -> Result<(), String> {
         RetainPolicy::shared(config.arena_bytes, config.retained_limit)
             .map_err(|error| error.to_string())?;
     }
+    // 语义覆盖策略与账本必须成对出现：只有策略没有账本时"每一帧都有记录"无法复核，
+    // 只有账本没有策略时更不知道每帧该按什么判。缺 GStreamer 的构建同样要拒绝这种组合，
+    // 不能把非法配置报成"只是没有解码器"。
+    match (&args.evidence, &args.ledger, &args.ledger_path) {
+        (Some(policy), _, _) => {
+            if !(sensoryplex_media::evidence::MIN_MAX_SEMANTIC_GAP_MS
+                ..=sensoryplex_media::evidence::MAX_MAX_SEMANTIC_GAP_MS)
+                .contains(&policy.max_semantic_gap_ms)
+            {
+                return Err("evidence_max_gap_ms out of range".into());
+            }
+        }
+        (None, None, None) => {}
+        (None, _, _) => return Err("an evidence ledger requires --evidence".into()),
+    }
     Ok(())
 }
 
-const REPLAY_USAGE: &str = "usage: sensoryplex-runtime replay <pipeline.yaml> <media-path> --report <report.pb> [--max-points N] [--audio-segment-ms N] [--audio-overlap-ms N] [--sampling-min-interval-ms N] [--sampling-static-hold-ms N] [--sampling-change-threshold N] [--backpressure-degraded-percent N] [--backpressure-throttle-factor N] [--backpressure-throttle-cap-ms N] [--handoff-listen 127.0.0.1:PORT] [--handoff-arena-bytes N] [--handoff-retained-limit N] [--handoff-ttl-ms N] [--handoff-wait-timeout-ms N] [--handoff-idle-timeout-ms N]";
+const REPLAY_USAGE: &str = "usage: sensoryplex-runtime replay <pipeline.yaml> <media-path> --report <report.pb> [--max-points N] [--audio-segment-ms N] [--audio-overlap-ms N] [--sampling-min-interval-ms N] [--sampling-static-hold-ms N] [--sampling-change-threshold N] [--backpressure-degraded-percent N] [--backpressure-throttle-factor N] [--backpressure-throttle-cap-ms N] [--evidence] [--evidence-max-gap-ms N] [--evidence-context-before N] [--evidence-context-after N] [--evidence-change-threshold N] [--evidence-text-change-threshold N] [--evidence-min-event-interval-ms N] [--evidence-ledger <path>] [--handoff-listen 127.0.0.1:PORT] [--handoff-arena-bytes N] [--handoff-retained-limit N] [--handoff-ttl-ms N] [--handoff-wait-timeout-ms N] [--handoff-idle-timeout-ms N]";
 
 /// 跨进程交接的服务端配置。只有在显式给出 `--handoff-listen` 时才存在：
 /// 不保留字节的运行仍然是合法运行，但它不算"消费方已验证"。
+#[derive(Clone)]
 struct HandoffArgs {
     listen: std::net::SocketAddr,
     ttl_ms: u32,
@@ -175,6 +198,20 @@ struct MediaRunArgs {
     handoff_ttl_ms: u32,
     handoff_wait_timeout_ms: u64,
     handoff_idle_timeout_ms: u64,
+    /// 是否启用语义覆盖判别。`false` 时报告里不会出现语义账本，
+    /// 因此"没有语义账本"永远不会被读成"每一帧都没变"。
+    evidence_enabled: bool,
+    evidence_max_gap_ms: i64,
+    evidence_context_before: u32,
+    evidence_context_after: u32,
+    evidence_change_threshold: u32,
+    evidence_text_change_threshold: u32,
+    evidence_min_event_interval_ms: i64,
+    /// 逐帧账本输出路径。`None` 表示只保留报告里的计数与有界预览。
+    evidence_ledger: Option<String>,
+    /// 是否出现过任何 `--evidence-*` 取值。它让"给了子选项却没开开关"变成显式错误，
+    /// 而不是被静默忽略。
+    evidence_touched: bool,
 }
 
 /// 已校验、可直接交给解码路径的运行参数。
@@ -185,6 +222,9 @@ struct ResolvedRunArgs {
     sampling: SamplingPolicy,
     backpressure: BackpressurePolicy,
     handoff: Option<HandoffArgs>,
+    evidence: Option<EvidencePolicy>,
+    ledger: Option<LedgerHandle>,
+    ledger_path: Option<String>,
 }
 
 impl ResolvedRunArgs {
@@ -225,6 +265,15 @@ impl MediaRunArgs {
             handoff_ttl_ms: DEFAULT_HANDOFF_TTL_MS,
             handoff_wait_timeout_ms: DEFAULT_HANDOFF_WAIT_TIMEOUT_MS,
             handoff_idle_timeout_ms: DEFAULT_HANDOFF_IDLE_TIMEOUT_MS,
+            evidence_enabled: false,
+            evidence_max_gap_ms: DEFAULT_MAX_SEMANTIC_GAP_MS,
+            evidence_context_before: DEFAULT_CONTEXT_FRAMES,
+            evidence_context_after: DEFAULT_CONTEXT_FRAMES,
+            evidence_change_threshold: DEFAULT_CHANGE_THRESHOLD,
+            evidence_text_change_threshold: DEFAULT_TEXT_CHANGE_THRESHOLD,
+            evidence_min_event_interval_ms: DEFAULT_MIN_EVENT_INTERVAL_MS,
+            evidence_ledger: None,
+            evidence_touched: false,
         }
     }
 
@@ -277,6 +326,39 @@ impl MediaRunArgs {
             }
             "--handoff-idle-timeout-ms" => {
                 self.handoff_idle_timeout_ms = parse_arg(flag, args.get(index + 1))?;
+            }
+            // 语义覆盖是布尔开关：它没有取值，因此消费到 `index + 1`，不是 `index + 2`。
+            "--evidence" => {
+                self.evidence_enabled = true;
+                return Ok(Some(index + 1));
+            }
+            "--evidence-max-gap-ms" => {
+                self.evidence_touched = true;
+                self.evidence_max_gap_ms = parse_arg(flag, args.get(index + 1))?;
+            }
+            "--evidence-context-before" => {
+                self.evidence_touched = true;
+                self.evidence_context_before = parse_arg(flag, args.get(index + 1))?;
+            }
+            "--evidence-context-after" => {
+                self.evidence_touched = true;
+                self.evidence_context_after = parse_arg(flag, args.get(index + 1))?;
+            }
+            "--evidence-change-threshold" => {
+                self.evidence_touched = true;
+                self.evidence_change_threshold = parse_arg(flag, args.get(index + 1))?;
+            }
+            "--evidence-text-change-threshold" => {
+                self.evidence_touched = true;
+                self.evidence_text_change_threshold = parse_arg(flag, args.get(index + 1))?;
+            }
+            "--evidence-min-event-interval-ms" => {
+                self.evidence_touched = true;
+                self.evidence_min_event_interval_ms = parse_arg(flag, args.get(index + 1))?;
+            }
+            "--evidence-ledger" => {
+                self.evidence_touched = true;
+                self.evidence_ledger = Some(parse_arg(flag, args.get(index + 1))?);
             }
             _ => return Ok(None),
         }
@@ -347,6 +429,32 @@ impl MediaRunArgs {
                 })
             }
         };
+        // 语义覆盖策略与账本：两者必须一起决定，因为"有账本却没有策略"或
+        // "有策略却不落账本"都会让"每一帧都有记录"这句话无法核对。
+        let (evidence, ledger, ledger_path) = if self.evidence_enabled {
+            let policy = EvidencePolicy::new(
+                self.evidence_max_gap_ms,
+                self.evidence_context_before,
+                self.evidence_context_after,
+                self.evidence_change_threshold,
+                self.evidence_text_change_threshold,
+                self.evidence_min_event_interval_ms,
+            )
+            .map_err(|error| error.to_string())?;
+            match &self.evidence_ledger {
+                Some(path) => {
+                    let sink = crate::media_ledger::JsonlLedgerSink::open(path)?;
+                    let handle = LedgerHandle::new(Arc::new(sink));
+                    (Some(policy), Some(handle), Some(path.clone()))
+                }
+                None => (Some(policy), None, None),
+            }
+        } else {
+            if self.evidence_touched {
+                return Err("--evidence-* options require --evidence".into());
+            }
+            (None, None, None)
+        };
         Ok(ResolvedRunArgs {
             max_points: self.max_points,
             audio_segment_ms: self.audio_segment_ms,
@@ -354,6 +462,9 @@ impl MediaRunArgs {
             sampling,
             backpressure,
             handoff,
+            evidence,
+            ledger,
+            ledger_path,
         })
     }
 }
@@ -411,7 +522,7 @@ impl ReplayArgs {
     }
 }
 
-const INGEST_USAGE: &str = "usage: sensoryplex-runtime ingest <pipeline.yaml> --report <report.pb> [--duration-ms N] [--stall-threshold-ms N] [--max-stalls N] [--max-points N] [--audio-segment-ms N] [--sampling-min-interval-ms N] [--sampling-static-hold-ms N] [--sampling-change-threshold N] [--backpressure-degraded-percent N] [--backpressure-throttle-factor N] [--backpressure-throttle-cap-ms N] [--handoff-listen 127.0.0.1:PORT] [--handoff-arena-bytes N] [--handoff-retained-limit N] [--handoff-ttl-ms N] [--handoff-wait-timeout-ms N] [--handoff-idle-timeout-ms N]";
+const INGEST_USAGE: &str = "usage: sensoryplex-runtime ingest <pipeline.yaml> --report <report.pb> [--duration-ms N] [--stall-threshold-ms N] [--max-stalls N] [--max-points N] [--audio-segment-ms N] [--sampling-min-interval-ms N] [--sampling-static-hold-ms N] [--sampling-change-threshold N] [--backpressure-degraded-percent N] [--backpressure-throttle-factor N] [--backpressure-throttle-cap-ms N] [--evidence] [--evidence-max-gap-ms N] [--evidence-ledger <path>] [--handoff-listen 127.0.0.1:PORT] [--handoff-arena-bytes N] [--handoff-retained-limit N] [--handoff-ttl-ms N] [--handoff-wait-timeout-ms N] [--handoff-idle-timeout-ms N]";
 
 /// 单次实时接入的参数。URI 不在命令行上：它只从环境变量读（见 `ingest`）。
 struct LiveArgs {
@@ -509,7 +620,7 @@ async fn replay(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         Ok(result) => result,
         Err(MediaError::UnsupportedSource(reason)) => {
             report.blockers.push(reason);
-            std::fs::write(&args.report, report.encode_to_vec())?;
+            write_report_atomically(&args.report, report.encode_to_vec())?;
             return Err(std::io::Error::other("media_source_not_implemented").into());
         }
         Err(error) => return Err(error.into()),
@@ -541,8 +652,19 @@ async fn replay(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     // 上面的锚点来自 ffprobe。本步骤对同一文件再做解码，使报告携带真实的 descriptor、
     // 真实的 lease 与真实的 arena；若做不到则给出明确原因。
     let (arena_id, stream_id) = arena_identity(&description);
+    // 数据面必须在解码**之前**打开并起服务端：消费者要能和生产者并发领料（见 HandoffRunner）。
+    let handoff_plane =
+        open_handoff_plane(&args.run, &arena_id).map_err(std::io::Error::other)?;
+    let runner =
+        HandoffRunner::start(&args.run, handoff_plane.clone()).map_err(std::io::Error::other)?;
     let retained;
-    match decode_pass(&args.media, &stream_id, &arena_id, &args.run) {
+    match decode_pass(
+        &args.media,
+        &stream_id,
+        &arena_id,
+        &args.run,
+        handoff_plane,
+    ) {
         Ok((plane, handoff, decode_truncated)) => {
             report.decoded = plane;
             retained = handoff;
@@ -551,6 +673,8 @@ async fn replay(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Err(reason) => {
+            // 生产者失败：立刻收尾服务端，不让它替一个已经失败的运行继续等消费者。
+            runner.producer_failed();
             // 解码尝试失败本身就是证据，不是沉默：写入报告中，
             // 然后让命令失败，避免任何调用方把它误判为通过。
             report.decoded = Some(DecodedDataPlane {
@@ -558,12 +682,12 @@ async fn replay(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                 ..Default::default()
             });
             report.blockers.push("decode_failed".into());
-            std::fs::write(&args.report, report.encode_to_vec())?;
+            write_report_atomically(&args.report, report.encode_to_vec())?;
             return Err(std::io::Error::other(format!("decode_failed: {reason}")).into());
         }
     }
 
-    std::fs::write(&args.report, report.encode_to_vec())?;
+    write_report_atomically(&args.report, report.encode_to_vec())?;
     let plane = report.decoded.as_ref();
     // 交接是否真的跑过，必须在同一行里说清楚：没跑过就不能被读成"消费方已验证"。
     let handoff_note = match (&retained, &args.run.handoff) {
@@ -600,19 +724,33 @@ async fn replay(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("{}", media_queue.describe());
     println!("{}", describe_backpressure(plane));
-    match (retained, &args.run.handoff) {
-        (Some(handoff), Some(config)) => serve_handoff(handoff, config).await?,
+    match (&retained, &args.run.handoff) {
+        // 报告已经落盘，消费者据此知道"账本完整"；现在收尾服务端并核对释放/过期账。
+        (Some(_), Some(_)) => runner.producer_finished().map_err(std::io::Error::other)?,
         // 声明要暴露数据面，却拿不到保留的字节：这是失败，不是"跳过"。
         (None, Some(config)) => {
+            runner.producer_failed();
             return Err(format!(
                 "handoff_requested_but_no_decoded_bytes: this build cannot serve {}",
                 config.listen
             )
             .into())
         }
-        (_, None) => {}
+        (_, None) => runner.producer_finished().map_err(std::io::Error::other)?,
     }
     Ok(())
+}
+
+/// 报告用"写临时文件 + 原子改名"落盘。
+///
+/// 报告先于服务端收尾落盘，是并发消费者判断"逐帧账本已经完整、可以把保留项一次还干净"
+/// 的唯一凭据（见 `HandoffRunner`）。就地覆写会让读到半个文件的消费者把一次完整运行误判成
+/// 账本缺行，因此这里必须是改名而不是原地写。
+fn write_report_atomically(path: &str, bytes: Vec<u8>) -> std::io::Result<()> {
+    let path = std::path::Path::new(path);
+    let staging = path.with_extension("partial");
+    std::fs::write(&staging, bytes)?;
+    std::fs::rename(&staging, path)
 }
 
 /// 把常驻分级读进一次媒体运行，并按 pipeline 声明值与实际保留窗口做准入（ADR-019）。
@@ -751,8 +889,20 @@ async fn ingest(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         args.live.max_stalls
     );
 
+    // 与 replay 同一口径：数据面先起，消费者才能与拉流并发领料。
+    let handoff_plane =
+        open_handoff_plane(&args.run, &arena_id).map_err(std::io::Error::other)?;
+    let runner =
+        HandoffRunner::start(&args.run, handoff_plane.clone()).map_err(std::io::Error::other)?;
     let retained;
-    match live_pass(&uri, &stream_id, &arena_id, &args.run, &args.live) {
+    match live_pass(
+        &uri,
+        &stream_id,
+        &arena_id,
+        &args.run,
+        &args.live,
+        handoff_plane,
+    ) {
         Ok((plane, handoff, stats, truncated)) => {
             report.source = Some(live_description(&uri_secret_ref, &stream_id, Some(&plane)));
             report.stream = Some(live_stream_stats(&uri_secret_ref, &args.live, &stats));
@@ -766,7 +916,7 @@ async fn ingest(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                 report
                     .blockers
                     .push("live_window_produced_no_samples".into());
-                std::fs::write(&args.report, report.encode_to_vec())?;
+                write_report_atomically(&args.report, report.encode_to_vec())?;
                 return Err(std::io::Error::other(format!(
                     "live_window_produced_no_samples: window_ms={} elapsed_ms={}",
                     args.live.duration_ms, stats.elapsed_ms
@@ -775,6 +925,7 @@ async fn ingest(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Err(reason) => {
+            runner.producer_failed();
             // 拉流失败本身就是证据，不是沉默：写进报告，然后让命令失败，
             // 避免任何调用方把它误判为通过。
             report.decoded = Some(DecodedDataPlane {
@@ -782,12 +933,12 @@ async fn ingest(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                 ..Default::default()
             });
             report.blockers.push("live_ingest_failed".into());
-            std::fs::write(&args.report, report.encode_to_vec())?;
+            write_report_atomically(&args.report, report.encode_to_vec())?;
             return Err(std::io::Error::other(format!("live_ingest_failed: {reason}")).into());
         }
     }
 
-    std::fs::write(&args.report, report.encode_to_vec())?;
+    write_report_atomically(&args.report, report.encode_to_vec())?;
     let plane = report.decoded.as_ref();
     let stats = report.stream.as_ref();
     println!(
@@ -808,17 +959,18 @@ async fn ingest(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("{}", media_queue.describe());
     println!("{}", describe_backpressure(report.decoded.as_ref()));
-    match (retained, &args.run.handoff) {
-        (Some(handoff), Some(config)) => serve_handoff(handoff, config).await?,
+    match (&retained, &args.run.handoff) {
+        (Some(_), Some(_)) => runner.producer_finished().map_err(std::io::Error::other)?,
         // 声明要暴露数据面，却拿不到保留的字节：这是失败，不是"跳过"。
         (None, Some(config)) => {
+            runner.producer_failed();
             return Err(format!(
                 "handoff_requested_but_no_decoded_bytes: this build cannot serve {}",
                 config.listen
             )
             .into())
         }
-        (_, None) => {}
+        (_, None) => runner.producer_finished().map_err(std::io::Error::other)?,
     }
     Ok(())
 }
@@ -833,20 +985,19 @@ fn live_pass(
     arena_id: &str,
     args: &ResolvedRunArgs,
     live: &LiveConfig,
-) -> Result<(DecodedDataPlane, Option<BufferHandoff>, LiveStats, bool), String> {
-    let handoff = match &args.handoff {
-        Some(config) => RetainPolicy::shared(config.arena_bytes, config.retained_limit)
-            .map_err(|error| error.to_string())?,
-        None => RetainPolicy::default(),
-    };
+    plane: Option<Arc<SharedHandoff>>,
+) -> Result<(DecodedDataPlane, Option<Arc<SharedHandoff>>, LiveStats, bool), String> {
     let run = sensoryplex_media::decode::DecodeRun {
         decode: sensoryplex_media::decode::DecodeConfig::default(),
         max_samples: args.max_points,
         audio_segment_ms: args.audio_segment_ms,
         audio_overlap_ms: args.audio_overlap_ms,
         sampling: args.sampling,
-        handoff,
+        handoff: plane,
         backpressure: args.backpressure,
+        evidence: args.evidence,
+        ledger: args.ledger.clone(),
+        ledger_path: args.ledger_path.clone(),
     };
     let outcome = sensoryplex_media::decode::decode_live(uri, stream_id, arena_id, &run, live)
         .map_err(|error| error.to_string())?;
@@ -866,7 +1017,8 @@ fn live_pass(
     _arena_id: &str,
     args: &ResolvedRunArgs,
     _live: &LiveConfig,
-) -> Result<(DecodedDataPlane, Option<BufferHandoff>, LiveStats, bool), String> {
+    _plane: Option<Arc<SharedHandoff>>,
+) -> Result<(DecodedDataPlane, Option<Arc<SharedHandoff>>, LiveStats, bool), String> {
     validate_run_args(args)?;
     Err("gstreamer_decode_not_implemented".into())
 }
@@ -992,21 +1144,203 @@ fn observed_tracks(plane: &DecodedDataPlane) -> Vec<MediaTrack> {
         .collect()
 }
 
+/// 打开本次运行的共享保留面（在解码**之前**调用）。
+///
+/// 返回 `Ok(None)` 表示这次运行不保留字节：进程内自校验路径仍然是合法运行，
+/// 只是没有跨进程消费者，报告里也不会声称有人在消费。
+fn open_handoff_plane(
+    run: &ResolvedRunArgs,
+    arena_id: &str,
+) -> Result<Option<Arc<SharedHandoff>>, String> {
+    let policy = match &run.handoff {
+        Some(config) => RetainPolicy::shared(config.arena_bytes, config.retained_limit)
+            .map_err(|error| error.to_string())?,
+        None => RetainPolicy::default(),
+    };
+    let wait_timeout_ms = run
+        .handoff
+        .as_ref()
+        .map_or(0, |config| config.wait_timeout_ms as i64);
+    policy
+        .open(arena_id, wait_timeout_ms)
+        .map_err(|error| error.to_string())
+}
+
+/// 数据面的收尾判据。生产者与消费者是两个方向，服务端必须能分辨
+/// "生产者还在跑（消费者还可以随时接上）"与"生产者已经结束（没消费者就该收摊了）"。
+struct HandoffControl {
+    producer_done: AtomicBool,
+    producer_failed: AtomicBool,
+    /// 生产者结束的时刻；没有消费者时等待从这个时刻起算，而不是从服务端起算。
+    done_at_ms: AtomicI64,
+}
+
+impl HandoffControl {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            producer_done: AtomicBool::new(false),
+            producer_failed: AtomicBool::new(false),
+            done_at_ms: AtomicI64::new(0),
+        })
+    }
+
+    /// 生产者成功结束：账本与报告已经落盘，不会再有新的保留。
+    fn finish(&self) {
+        self.done_at_ms
+            .store(sensoryplex_media::now_unix_ms(), Ordering::Relaxed);
+        self.producer_done.store(true, Ordering::Release);
+    }
+
+    /// 生产者失败：服务端立刻收尾。失败原因由生产者上报更权威，服务端的对账结论不覆盖它。
+    fn fail(&self) {
+        self.done_at_ms
+            .store(sensoryplex_media::now_unix_ms(), Ordering::Relaxed);
+        self.producer_failed.store(true, Ordering::Release);
+    }
+
+    fn producer_done(&self) -> bool {
+        self.producer_done.load(Ordering::Acquire)
+    }
+
+    fn producer_failed(&self) -> bool {
+        self.producer_failed.load(Ordering::Acquire)
+    }
+
+    fn done_at_ms(&self) -> i64 {
+        self.done_at_ms.load(Ordering::Relaxed)
+    }
+}
+
+/// 服务端的收尾判据。四种理由必须分开，不能合并成一个"超时"：
+/// - `ProducerFailed`：生产者失败，继续等消费者只是替一个已经死掉的运行拖时间；
+/// - `PlaneDrained`：消费者在场、生产者已结束、保留表被清空——交接真的跑完了，
+///   立刻收摊，消费者不必在"还干净了"之后再陪一次空闲超时；
+/// - `ConsumerIdle`：消费者在场却长时间没有任何调用，它已经离开；
+/// - `NoConsumerWaitExpired`：从来没有消费者，从生产者结束那一刻起给的预算已经用完。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HandoffShutdown {
+    ProducerFailed,
+    PlaneDrained,
+    ConsumerIdle,
+    NoConsumerWaitExpired,
+}
+
+impl HandoffShutdown {
+    /// 收尾理由的稳定文本形式：它进日志，因此不能被读成"这次跑成功了没有"。
+    fn label(self) -> &'static str {
+        match self {
+            Self::ProducerFailed => "producer_failed",
+            Self::PlaneDrained => "plane_drained",
+            Self::ConsumerIdle => "consumer_idle",
+            Self::NoConsumerWaitExpired => "no_consumer_wait_expired",
+        }
+    }
+}
+
+/// 收尾判据本身是纯函数：它是"什么时候能收摊"的唯一权威，因此必须能被逐项断言，
+/// 而不是藏在一个 50ms 的循环里靠时间碰运气。
+fn handoff_shutdown(
+    control: &HandoffControl,
+    consumer_seen: bool,
+    retained: u64,
+    last_activity_ms: i64,
+    now_ms: i64,
+    idle_timeout_ms: i64,
+    wait_timeout_ms: i64,
+) -> Option<HandoffShutdown> {
+    if control.producer_failed() {
+        return Some(HandoffShutdown::ProducerFailed);
+    }
+    if !consumer_seen {
+        return if control.producer_done() && now_ms - control.done_at_ms() >= wait_timeout_ms {
+            Some(HandoffShutdown::NoConsumerWaitExpired)
+        } else {
+            None
+        };
+    }
+    if control.producer_done() && retained == 0 {
+        return Some(HandoffShutdown::PlaneDrained);
+    }
+    if now_ms - last_activity_ms >= idle_timeout_ms {
+        return Some(HandoffShutdown::ConsumerIdle);
+    }
+    None
+}
+
+/// 生产者 + 并发数据面服务端的生命周期。
+///
+/// 顺序不能颠倒：**服务端先起**，否则整段解码期间没有任何人在排空保留表，长媒体从某一帧
+/// 起每一帧都只能被拒；生产者结束之后**先落盘报告**（消费者靠它判断"账本已经完整"），
+/// 再收尾服务端并核对释放/过期账。
+struct HandoffRunner {
+    control: Arc<HandoffControl>,
+    server: Option<std::thread::JoinHandle<Result<(), String>>>,
+}
+
+impl HandoffRunner {
+    /// 起服务端。`plane` 为 `None`（本次运行不保留字节）时它只是一个空跑的收尾句柄。
+    fn start(run: &ResolvedRunArgs, plane: Option<Arc<SharedHandoff>>) -> Result<Self, String> {
+        let control = HandoffControl::new();
+        let (Some(config), Some(plane)) = (run.handoff.clone(), plane) else {
+            return Ok(Self {
+                control,
+                server: None,
+            });
+        };
+        let server_control = Arc::clone(&control);
+        let server = std::thread::spawn(move || -> Result<(), String> {
+            // 服务端有自己的 current-thread runtime：它不借主线程的运行时，
+            // 因此解码可以在主线程上同步跑完，而服务端一直在线。
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| format!("handoff_runtime_build_failed: {error}"))?;
+            runtime
+                .block_on(serve_handoff(plane, &config, server_control))
+                .map_err(|error| error.to_string())
+        });
+        Ok(Self {
+            control,
+            server: Some(server),
+        })
+    }
+
+    /// 生产者成功收尾：通知服务端不再有新保留，并把它自己的对账结论上抛。
+    fn producer_finished(self) -> Result<(), String> {
+        self.control.finish();
+        match self.server {
+            Some(server) => server
+                .join()
+                .map_err(|_| "handoff_server_panicked".to_string())?,
+            None => Ok(()),
+        }
+    }
+
+    /// 生产者失败：收尾服务端，但不让它的结论覆盖更权威的解码失败原因。
+    fn producer_failed(self) {
+        self.control.fail();
+        if let Some(server) = self.server {
+            let _ = server.join();
+        }
+    }
+}
+
 /// 把保留的字节交给独立进程。服务期间数据面一直存活；服务结束后必须能对上账：
 /// 每条保留的 buffer 要么被消费者释放，要么因 TTL 过期被回收。
+///
+/// 服务端与解码是**并发**的（见 `HandoffRunner`）：只有消费者在解码期间就能领料，
+/// 有界保留面才不是对长媒体的硬性截断。
 async fn serve_handoff(
-    plane: BufferHandoff,
+    plane: Arc<SharedHandoff>,
     config: &HandoffArgs,
+    control: Arc<HandoffControl>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let retained = plane.stats();
-    let segment = plane.segment_name().unwrap_or_default().to_string();
-    let capacity = plane.arena_capacity_bytes();
-    let plane = Arc::new(Mutex::new(plane));
     let service = HandoffService::new(Arc::clone(&plane), config.ttl_ms);
-    let last_activity = service.last_activity_ms();
-    let connected = service.connected();
+    let retained = plane.stats()?;
+    let segment = plane.segment_name()?.unwrap_or_default();
+    let capacity = plane.arena_capacity_bytes()?;
     println!(
-        "handoff_ready listen={} segment={} arena_capacity_bytes={} retained={} retained_limit={} retained_kind_limit={} offered={} retain_rejected={} rejection_reasons={} residency_samples={}",
+        "handoff_ready listen={} segment={} arena_capacity_bytes={} retained={} retained_limit={} retained_kind_limit={} offered={} retain_rejected={} rejection_reasons={} residency_samples={} concurrent_with_decode=true wait_timeout_ms={}",
         config.listen,
         segment,
         capacity,
@@ -1017,22 +1351,34 @@ async fn serve_handoff(
         retained.retain_rejections,
         describe_rejections(&retained),
         // 就绪时还没有消费者，因此等待时间一定是 0 个样本——它必须带样本数一起读。
-        retained.residency_samples
+        retained.residency_samples,
+        // 服务端在解码之前就起来了，因此"等第一个消费者"的预算是从解码结束那一刻起算的。
+        config.wait_timeout_ms,
     );
-    // 两种收尾条件必须分开：等不到消费者（从启动算起）与消费者已离开（从最后一次调用算起）。
-    let started_ms = sensoryplex_media::now_unix_ms();
+    // 收尾判据由 `handoff_shutdown` 这个纯函数给出，这里只按节奏采样并把理由记下来：
+    // 日志必须能分辨"消费者把数据面还干净了"与"消费者跑了"，两者都收摊但含义相反。
     let wait_timeout_ms = config.wait_timeout_ms as i64;
     let idle_timeout_ms = config.idle_timeout_ms as i64;
-    let watch_connected = Arc::clone(&connected);
+    let watch_plane = Arc::clone(&plane);
+    let shutdown_reason = Arc::new(std::sync::Mutex::new("not_recorded"));
+    let reason_slot = Arc::clone(&shutdown_reason);
     let shutdown = async move {
         loop {
             tokio::time::sleep(Duration::from_millis(50)).await;
-            let now = sensoryplex_media::now_unix_ms();
-            if watch_connected.load(Ordering::Relaxed) {
-                if now - last_activity.load(Ordering::Relaxed) >= idle_timeout_ms {
-                    break;
+            let reason = handoff_shutdown(
+                &control,
+                watch_plane.consumer_connected(),
+                // 读不到保留表深度时不能当成"已经清空"：那会把一次失败包装成正常收尾。
+                watch_plane.depth().unwrap_or(u64::MAX),
+                watch_plane.last_activity_ms(),
+                sensoryplex_media::now_unix_ms(),
+                idle_timeout_ms,
+                wait_timeout_ms,
+            );
+            if let Some(reason) = reason {
+                if let Ok(mut slot) = reason_slot.lock() {
+                    *slot = reason.label();
                 }
-            } else if now - started_ms >= wait_timeout_ms {
                 break;
             }
         }
@@ -1042,13 +1388,10 @@ async fn serve_handoff(
         .serve_with_shutdown(config.listen, shutdown)
         .await?;
 
-    let consumer_seen = connected.load(Ordering::Relaxed);
-    let mut plane = plane
-        .lock()
-        .map_err(|_| "handoff_plane_poisoned".to_string())?;
+    let consumer_seen = plane.consumer_connected();
     // 关闭前先结算过期，否则"迟到的消费者"会让账面对不上。
-    plane.expire(sensoryplex_media::now_unix_ms());
-    let stats = plane.stats();
+    plane.expire(sensoryplex_media::now_unix_ms())?;
+    let stats = plane.stats()?;
     println!(
         "handoff_stats consumer_seen={} retained={} retained_limit={} retained_total={} retained_peak={} retained_kind_peak={} retained_by_kind={} retained_kind_limit={} offered={} released={} expired={} retain_rejected={} request_rejected={} rejection_reasons={} residency_samples={} residency_max_ms={} residency_total_ms={} arena_live_slabs={} arena_used_bytes={} arena_capacity_bytes={}",
         consumer_seen,
@@ -1070,12 +1413,20 @@ async fn serve_handoff(
         stats.residency_total_ms,
         stats.arena_live_slabs,
         stats.arena_used_bytes,
-        plane.arena_capacity_bytes(),
+        plane.arena_capacity_bytes()?,
     );
     let accounted = stats
         .released_total
         .saturating_add(stats.expired_total)
         .saturating_add(stats.retained);
+    let settled = shutdown_reason
+        .lock()
+        .map(|slot| *slot)
+        .unwrap_or("not_recorded");
+    println!(
+        "handoff_shutdown reason={} consumer_seen={} retained_total={} released={} expired={} retained={}",
+        settled, consumer_seen, stats.retained_total, stats.released_total, stats.expired_total, stats.retained
+    );
     if !consumer_seen {
         return Err(format!(
             "handoff_consumer_never_connected: retained_total={} still_retained={}",
@@ -1342,6 +1693,78 @@ mod tests {
     }
 
     #[test]
+    fn evidence_options_are_opt_in_and_bounded() {
+        // 默认关闭：没有 `--evidence` 就没有语义账本。
+        let plain = ReplayArgs::parse(&replay_args(&[])).expect("valid replay arguments");
+        assert!(plain.run.evidence.is_none());
+        assert!(plain.run.ledger.is_none());
+
+        let parsed = ReplayArgs::parse(&replay_args(&["--evidence"])).expect("evidence on");
+        let policy = parsed.run.evidence.expect("policy exists once enabled");
+        assert_eq!(policy.max_semantic_gap_ms, DEFAULT_MAX_SEMANTIC_GAP_MS);
+        assert_eq!(policy.pre_frames, DEFAULT_CONTEXT_FRAMES);
+        assert_eq!(policy.post_frames, DEFAULT_CONTEXT_FRAMES);
+        assert!(
+            parsed.run.ledger.is_none(),
+            "no --evidence-ledger means no ledger"
+        );
+        assert!(parsed.run.ledger_path.is_none());
+
+        // 越界一律拒绝，绝不夹取到"看起来合理"的范围。
+        for argv in [
+            vec!["--evidence", "--evidence-max-gap-ms", "50"],
+            vec!["--evidence", "--evidence-max-gap-ms", "120000"],
+            vec!["--evidence", "--evidence-context-before", "9"],
+            vec!["--evidence", "--evidence-context-after", "9"],
+            vec!["--evidence", "--evidence-change-threshold", "0"],
+            vec!["--evidence", "--evidence-change-threshold", "200"],
+            vec!["--evidence", "--evidence-text-change-threshold", "0"],
+            vec!["--evidence", "--evidence-min-event-interval-ms", "10"],
+        ] {
+            assert!(
+                ReplayArgs::parse(&replay_args(&argv)).is_err(),
+                "{argv:?} must be rejected instead of clamped"
+            );
+        }
+        // 给了子选项却没开开关：显式错误，而不是静默忽略。
+        assert!(ReplayArgs::parse(&replay_args(&["--evidence-max-gap-ms", "5000"])).is_err());
+        assert!(ReplayArgs::parse(&replay_args(&["--evidence-ledger", "ledger.jsonl"])).is_err());
+
+        // 账本必须和策略一起给出，并真的落盘。
+        let ledger_path = std::env::temp_dir().join(format!(
+            "sensoryplex-evidence-ledger-{}.jsonl",
+            std::process::id()
+        ));
+        let ledger_path = ledger_path.to_string_lossy().to_string();
+        let with_ledger = ReplayArgs::parse(&replay_args(&[
+            "--evidence",
+            "--evidence-max-gap-ms",
+            "5000",
+            "--evidence-ledger",
+            &ledger_path,
+        ]))
+        .expect("evidence with a ledger path");
+        assert_eq!(
+            with_ledger
+                .run
+                .evidence
+                .expect("policy")
+                .max_semantic_gap_ms,
+            5000
+        );
+        assert!(with_ledger.run.ledger.is_some());
+        assert_eq!(
+            with_ledger.run.ledger_path.as_deref(),
+            Some(ledger_path.as_str())
+        );
+        assert!(
+            Path::new(&ledger_path).is_file(),
+            "the ledger file is created up front"
+        );
+        let _ = std::fs::remove_file(&ledger_path);
+    }
+
+    #[test]
     fn observed_tracks_never_invents_a_track_without_evidence() {
         let plane = DecodedDataPlane {
             tracks: vec![
@@ -1429,5 +1852,76 @@ mod tests {
         assert_eq!(proto.stall_events[0].gap_ms, 4_731);
         assert_eq!(proto.stall_events[0].pts_jump_ms, 4_722);
         assert!(proto.recovered && proto.ended_by_deadline);
+    }
+
+    /// 直接构造收尾判据的输入，避免用真实时钟去碰一个 50ms 的循环。
+    fn shutdown_control(done: bool, failed: bool, done_at_ms: i64) -> HandoffControl {
+        HandoffControl {
+            producer_done: std::sync::atomic::AtomicBool::new(done),
+            producer_failed: std::sync::atomic::AtomicBool::new(failed),
+            done_at_ms: std::sync::atomic::AtomicI64::new(done_at_ms),
+        }
+    }
+
+    #[test]
+    fn handoff_shutdown_stops_as_soon_as_the_consumer_emptied_the_plane() {
+        let control = shutdown_control(true, false, 0);
+        assert_eq!(
+            handoff_shutdown(&control, true, 0, 0, 10, 60_000, 30_000),
+            Some(HandoffShutdown::PlaneDrained),
+            "消费者把保留表还干净之后，服务端不该再等一次空闲超时"
+        );
+    }
+
+    #[test]
+    fn handoff_shutdown_does_not_read_an_empty_plane_as_drained_while_producing() {
+        // 生产者还在跑：保留表此刻为空只说明"还没有新帧"，不是"交接跑完了"。
+        let control = shutdown_control(false, false, 0);
+        assert_eq!(
+            handoff_shutdown(&control, true, 0, 0, 10, 60_000, 30_000),
+            None
+        );
+    }
+
+    #[test]
+    fn handoff_shutdown_distinguishes_a_working_consumer_from_one_that_left() {
+        let control = shutdown_control(true, false, 0);
+        assert_eq!(
+            handoff_shutdown(&control, true, 3, 5_000, 10_000, 60_000, 30_000),
+            None,
+            "消费者还在调用数据面时不能收尾"
+        );
+        assert_eq!(
+            handoff_shutdown(&control, true, 3, 5_000, 65_000, 60_000, 30_000),
+            Some(HandoffShutdown::ConsumerIdle)
+        );
+    }
+
+    #[test]
+    fn handoff_shutdown_waits_for_a_consumer_only_after_the_producer_ended() {
+        let running = shutdown_control(false, false, 0);
+        assert_eq!(
+            handoff_shutdown(&running, false, 5, 0, 600_000, 60_000, 30_000),
+            None,
+            "生产者还在解码时，没消费者也不该收尾"
+        );
+        let done = shutdown_control(true, false, 1_000);
+        assert_eq!(
+            handoff_shutdown(&done, false, 5, 0, 30_999, 60_000, 30_000),
+            None
+        );
+        assert_eq!(
+            handoff_shutdown(&done, false, 5, 0, 31_000, 60_000, 30_000),
+            Some(HandoffShutdown::NoConsumerWaitExpired)
+        );
+    }
+
+    #[test]
+    fn handoff_shutdown_records_a_failed_producer_ahead_of_any_timeout() {
+        let control = shutdown_control(false, true, 0);
+        assert_eq!(
+            handoff_shutdown(&control, true, 900, 0, 10, 60_000, 30_000),
+            Some(HandoffShutdown::ProducerFailed)
+        );
     }
 }

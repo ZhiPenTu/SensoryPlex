@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Button, Card, Col, Input, Row, Segmented, Space, Tag, Timeline, Typography } from 'antd';
+import { Button, Card, Col, Drawer, Input, Row, Segmented, Space, Tag, Typography } from 'antd';
 import {
     SearchOutlined,
     ReloadOutlined,
@@ -14,6 +14,8 @@ import {
     PlayCircleOutlined,
     BarsOutlined,
     AppstoreOutlined,
+    AimOutlined,
+    UnorderedListOutlined,
 } from '@ant-design/icons';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
@@ -75,7 +77,7 @@ export default function Materials() {
     const [formError, setFormError] = useState<Error | null>(null);
     const [viewMode, setViewMode] = useState<'timeline' | 'grid'>('timeline');
     const [expandedStreams, setExpandedStreams] = useState<Record<string, boolean>>({});
-    const [detailsOpen, setDetailsOpen] = useState<Record<string, boolean>>({});
+    const [viewingSliceGroup, setViewingSliceGroup] = useState<VideoGroup | null>(null);
     const [previewAsset, setPreviewAsset] = useState<{ asset: Upload; seekMs?: number } | null>(
         null,
     );
@@ -433,13 +435,6 @@ export default function Materials() {
 
             <ErrorNotice error={formError || validationError || result.error} />
 
-            {values.length >= Number(params.get('limit') || 20) ? (
-                <div className="alignment-limit-note">
-                    当前返回 {values.length}{' '}
-                    条时间轴单元，已达到显示上限；长视频可能只覆盖部分区间，请缩小时间范围或提高显示上限后再读取时间轴。
-                </div>
-            ) : null}
-
             {/* 列表控制栏：视图切换与聚合统计 */}
             <div
                 style={{
@@ -656,6 +651,13 @@ export default function Materials() {
                                                 ) : null}
                                                 <Button
                                                     size="small"
+                                                    icon={<UnorderedListOutlined />}
+                                                    onClick={() => setViewingSliceGroup(group)}
+                                                >
+                                                    切片明细 ({group.materials.length})
+                                                </Button>
+                                                <Button
+                                                    size="small"
                                                     type="text"
                                                     icon={
                                                         expanded ? <UpOutlined /> : <DownOutlined />
@@ -667,307 +669,27 @@ export default function Materials() {
                                             </Space>
                                         </div>
 
-                                        {/* 时间线列表展示 */}
+                                        {/* 时间线列表展示（时间轴总线置于底部，切片明细通过独立抽屉入口查看） */}
                                         {expanded ? (
-                                            <>
-                                                {/* 多模态时间轴对齐：观测事实与素材单元共用同一条毫秒时间轴 */}
-                                                <AlignmentTimeline
-                                                    materials={group.materials}
-                                                    startMs={group.startMs}
-                                                    endMs={group.endMs}
-                                                    detailHref={(materialUnitId) =>
-                                                        `/materials/${encodeURIComponent(materialUnitId)}?${searchParamsOnly(params)}`
-                                                    }
-                                                    onLocate={(ms) =>
-                                                        setPreviewAsset(
-                                                            group.asset
-                                                                ? { asset: group.asset, seekMs: ms }
-                                                                : null,
-                                                        )
-                                                    }
-                                                />
-
-                                                <div className="alignment-details-toggle">
-                                                    <Button
-                                                        type="text"
-                                                        size="small"
-                                                        icon={
-                                                            detailsOpen[group.streamId] ? (
-                                                                <UpOutlined />
-                                                            ) : (
-                                                                <DownOutlined />
-                                                            )
-                                                        }
-                                                        onClick={() =>
-                                                            setDetailsOpen((prev) => ({
-                                                                ...prev,
-                                                                [group.streamId]:
-                                                                    !prev[group.streamId],
-                                                            }))
-                                                        }
-                                                    >
-                                                        {detailsOpen[group.streamId]
-                                                            ? '收起切片明细'
-                                                            : `展开 ${group.materials.length} 条切片明细`}
-                                                    </Button>
-                                                    <Text type="secondary" style={{ fontSize: 12 }}>
-                                                        时间轴对齐已在面板中呈现，逐条切片明细默认省略。
-                                                    </Text>
-                                                </div>
-
-                                                {detailsOpen[group.streamId] ? (
-                                                    <div
-                                                        style={{
-                                                            padding: '0 24px 8px 24px',
-                                                            background: '#ffffff',
-                                                        }}
-                                                    >
-                                                        <Timeline
-                                                            mode="left"
-                                                            items={group.materials.map(
-                                                                (item, idx) => {
-                                                                    const startStr = formatTime(
-                                                                        item.time_range?.start_ms,
-                                                                    );
-                                                                    const endStr = formatTime(
-                                                                        item.time_range?.end_ms,
-                                                                    );
-                                                                    const textExcerpt =
-                                                                        item.observations
-                                                                            .map((o) =>
-                                                                                payloadText(
-                                                                                    o.payload,
-                                                                                    400,
-                                                                                ),
-                                                                            )
-                                                                            .filter(Boolean)
-                                                                            .join(' ') || '';
-
-                                                                    return {
-                                                                        color:
-                                                                            item.status ===
-                                                                                'fast_ready' ||
-                                                                            item.status ===
-                                                                                'enriched'
-                                                                                ? '#10b981'
-                                                                                : '#1668dc',
-                                                                        label: (
-                                                                            <div
-                                                                                style={{
-                                                                                    paddingRight: 16,
-                                                                                }}
-                                                                            >
-                                                                                <div
-                                                                                    className="mono"
-                                                                                    style={{
-                                                                                        fontSize: 12,
-                                                                                        fontWeight: 600,
-                                                                                        color: '#0f172a',
-                                                                                    }}
-                                                                                >
-                                                                                    {startStr}
-                                                                                </div>
-                                                                                <div
-                                                                                    className="mono"
-                                                                                    style={{
-                                                                                        fontSize: 11,
-                                                                                        color: '#64748b',
-                                                                                    }}
-                                                                                >
-                                                                                    至 {endStr}
-                                                                                </div>
-                                                                                <Tag
-                                                                                    style={{
-                                                                                        marginTop: 4,
-                                                                                        marginRight: 0,
-                                                                                        fontSize: 10,
-                                                                                        background:
-                                                                                            '#f1f5f9',
-                                                                                        color: '#475569',
-                                                                                        border: 'none',
-                                                                                    }}
-                                                                                >
-                                                                                    #{idx + 1}
-                                                                                </Tag>
-                                                                            </div>
-                                                                        ),
-                                                                        children: (
-                                                                            <Card
-                                                                                size="small"
-                                                                                style={{
-                                                                                    borderRadius: 8,
-                                                                                    borderColor:
-                                                                                        '#e2e8f0',
-                                                                                    background:
-                                                                                        '#fafcfc',
-                                                                                    marginBottom: 16,
-                                                                                }}
-                                                                                bodyStyle={{
-                                                                                    padding: 14,
-                                                                                }}
-                                                                            >
-                                                                                <div
-                                                                                    style={{
-                                                                                        display:
-                                                                                            'flex',
-                                                                                        justifyContent:
-                                                                                            'space-between',
-                                                                                        alignItems:
-                                                                                            'center',
-                                                                                        marginBottom: 8,
-                                                                                        flexWrap:
-                                                                                            'wrap',
-                                                                                        gap: 6,
-                                                                                    }}
-                                                                                >
-                                                                                    <Space size={8}>
-                                                                                        <Tag
-                                                                                            color={
-                                                                                                statusTagColor[
-                                                                                                    item
-                                                                                                        .status
-                                                                                                ] ||
-                                                                                                'default'
-                                                                                            }
-                                                                                            style={{
-                                                                                                margin: 0,
-                                                                                                fontWeight: 500,
-                                                                                            }}
-                                                                                        >
-                                                                                            {statusNames[
-                                                                                                item
-                                                                                                    .status
-                                                                                            ] ||
-                                                                                                item.status}
-                                                                                        </Tag>
-                                                                                        <Tag
-                                                                                            color="purple"
-                                                                                            style={{
-                                                                                                margin: 0,
-                                                                                                fontSize: 10,
-                                                                                            }}
-                                                                                        >
-                                                                                            v
-                                                                                            {
-                                                                                                item.revision
-                                                                                            }
-                                                                                        </Tag>
-                                                                                        {[
-                                                                                            ...new Set(
-                                                                                                item.observations.map(
-                                                                                                    (
-                                                                                                        o,
-                                                                                                    ) =>
-                                                                                                        o.modality,
-                                                                                                ),
-                                                                                            ),
-                                                                                        ].map(
-                                                                                            (m) => (
-                                                                                                <Tag
-                                                                                                    key={
-                                                                                                        m
-                                                                                                    }
-                                                                                                    color="cyan"
-                                                                                                    style={{
-                                                                                                        fontSize: 10,
-                                                                                                        margin: 0,
-                                                                                                        borderRadius: 4,
-                                                                                                    }}
-                                                                                                >
-                                                                                                    {modalityNames[
-                                                                                                        m
-                                                                                                    ] ||
-                                                                                                        m}
-                                                                                                </Tag>
-                                                                                            ),
-                                                                                        )}
-                                                                                    </Space>
-
-                                                                                    <Link
-                                                                                        to={`/materials/${encodeURIComponent(item.material_unit_id)}?${searchParamsOnly(params)}`}
-                                                                                    >
-                                                                                        <Button
-                                                                                            type="link"
-                                                                                            size="small"
-                                                                                            icon={
-                                                                                                <ArrowRightOutlined />
-                                                                                            }
-                                                                                            style={{
-                                                                                                padding: 0,
-                                                                                            }}
-                                                                                        >
-                                                                                            切片回放与详情
-                                                                                        </Button>
-                                                                                    </Link>
-                                                                                </div>
-
-                                                                                <div
-                                                                                    style={{
-                                                                                        background:
-                                                                                            '#ffffff',
-                                                                                        padding:
-                                                                                            '10px 12px',
-                                                                                        borderRadius: 6,
-                                                                                        border: '1px solid #f1f5f9',
-                                                                                        color: textExcerpt
-                                                                                            ? '#1e293b'
-                                                                                            : '#94a3b8',
-                                                                                        fontSize: 13,
-                                                                                        lineHeight: 1.6,
-                                                                                    }}
-                                                                                >
-                                                                                    {textExcerpt ||
-                                                                                        '（该时间段未提取到文字观测事实）'}
-                                                                                </div>
-
-                                                                                {item.tags
-                                                                                    .length ? (
-                                                                                    <div
-                                                                                        style={{
-                                                                                            marginTop: 8,
-                                                                                        }}
-                                                                                    >
-                                                                                        <Space
-                                                                                            size={[
-                                                                                                4,
-                                                                                                4,
-                                                                                            ]}
-                                                                                            wrap
-                                                                                        >
-                                                                                            {item.tags.map(
-                                                                                                (
-                                                                                                    tag,
-                                                                                                ) => (
-                                                                                                    <Tag
-                                                                                                        key={
-                                                                                                            tag
-                                                                                                        }
-                                                                                                        style={{
-                                                                                                            fontSize: 10,
-                                                                                                            margin: 0,
-                                                                                                            background:
-                                                                                                                '#f8fafc',
-                                                                                                        }}
-                                                                                                    >
-                                                                                                        #
-                                                                                                        {
-                                                                                                            tag
-                                                                                                        }
-                                                                                                    </Tag>
-                                                                                                ),
-                                                                                            )}
-                                                                                        </Space>
-                                                                                    </div>
-                                                                                ) : null}
-                                                                            </Card>
-                                                                        ),
-                                                                    };
-                                                                },
-                                                            )}
-                                                        />
-                                                    </div>
-                                                ) : null}
-                                            </>
+                                            <AlignmentTimeline
+                                                materials={group.materials}
+                                                startMs={group.startMs}
+                                                endMs={group.endMs}
+                                                detailHref={(materialUnitId) =>
+                                                    `/materials/${encodeURIComponent(materialUnitId)}?${searchParamsOnly(params)}`
+                                                }
+                                                onLocate={(ms) =>
+                                                    setPreviewAsset(
+                                                        group.asset
+                                                            ? { asset: group.asset, seekMs: ms }
+                                                            : null,
+                                                    )
+                                                }
+                                                onOpenDetails={() => setViewingSliceGroup(group)}
+                                                asset={group.asset}
+                                                streamId={group.streamId}
+                                                streamTitle={group.title}
+                                            />
                                         ) : null}
                                     </Card>
                                 );
@@ -1175,6 +897,261 @@ export default function Materials() {
                     </div>
                 </Modal>
             ) : null}
+            {/* 视频切片明细抽屉（侧边栏滑出，主卡片不再展开冗长列表） */}
+            <Drawer
+                title={
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <UnorderedListOutlined style={{ color: '#0284c7', fontSize: 16 }} />
+                        <span style={{ fontSize: 15, fontWeight: 600 }}>切片明细清单</span>
+                        {viewingSliceGroup ? (
+                            <Tag color="geekblue" style={{ margin: 0, fontFamily: 'monospace' }}>
+                                {viewingSliceGroup.materials.length} 条时间轴切片
+                            </Tag>
+                        ) : null}
+                    </div>
+                }
+                open={Boolean(viewingSliceGroup)}
+                onClose={() => setViewingSliceGroup(null)}
+                width={620}
+                styles={{
+                    header: {
+                        borderBottom: '1px solid #e2e8f0',
+                        padding: '16px 20px',
+                    },
+                    body: {
+                        padding: '16px 20px',
+                        background: '#f8fafc',
+                    },
+                }}
+            >
+                {viewingSliceGroup ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                        {/* 顶部视频母带上下文概要 */}
+                        <div
+                            style={{
+                                padding: '12px 14px',
+                                borderRadius: 8,
+                                background: '#ffffff',
+                                border: '1px solid #e2e8f0',
+                                display: 'flex',
+                                flexDirection: 'column',
+                                gap: 6,
+                            }}
+                        >
+                            <div
+                                style={{
+                                    display: 'flex',
+                                    justifyContent: 'space-between',
+                                    alignItems: 'center',
+                                    gap: 8,
+                                }}
+                            >
+                                <Text strong style={{ fontSize: 14, color: '#0f172a' }}>
+                                    {viewingSliceGroup.title}
+                                </Text>
+                                {viewingSliceGroup.asset ? (
+                                    <Button
+                                        size="small"
+                                        type="primary"
+                                        icon={<PlayCircleOutlined />}
+                                        onClick={() => {
+                                            setPreviewAsset({ asset: viewingSliceGroup.asset! });
+                                        }}
+                                    >
+                                        原片全量回放
+                                    </Button>
+                                ) : null}
+                            </div>
+                            <Space size={12} wrap style={{ fontSize: 11, color: '#64748b' }}>
+                                <span className="mono">ID: {viewingSliceGroup.streamId}</span>
+                                <span style={{ color: '#059669' }}>
+                                    覆盖: {formatTime(viewingSliceGroup.startMs.toString())} ~{' '}
+                                    {formatTime(viewingSliceGroup.endMs.toString())}
+                                </span>
+                                {viewingSliceGroup.asset ? (
+                                    <span>大小: {bytes(viewingSliceGroup.asset.size_bytes)}</span>
+                                ) : null}
+                            </Space>
+                        </div>
+
+                        {/* 切片列表卡片 */}
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                            {viewingSliceGroup.materials.map((item, idx) => {
+                                const startStr = formatTime(item.time_range?.start_ms);
+                                const endStr = formatTime(item.time_range?.end_ms);
+                                const textExcerpt =
+                                    item.observations
+                                        .map((o) => payloadText(o.payload, 400))
+                                        .filter(Boolean)
+                                        .join(' ') || '';
+
+                                return (
+                                    <div
+                                        key={item.material_unit_id}
+                                        style={{
+                                            background: '#ffffff',
+                                            border: '1px solid #e2e8f0',
+                                            borderRadius: 8,
+                                            padding: 14,
+                                            display: 'flex',
+                                            flexDirection: 'column',
+                                            gap: 10,
+                                            boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.03)',
+                                        }}
+                                    >
+                                        {/* 切片头 */}
+                                        <div
+                                            style={{
+                                                display: 'flex',
+                                                justifyContent: 'space-between',
+                                                alignItems: 'center',
+                                                flexWrap: 'wrap',
+                                                gap: 6,
+                                            }}
+                                        >
+                                            <Space size={8} align="center">
+                                                <Tag
+                                                    style={{
+                                                        fontFamily: 'monospace',
+                                                        fontWeight: 700,
+                                                        margin: 0,
+                                                        background: '#f1f5f9',
+                                                        color: '#334155',
+                                                        border: 'none',
+                                                    }}
+                                                >
+                                                    #{idx + 1}
+                                                </Tag>
+                                                <span
+                                                    className="mono"
+                                                    style={{
+                                                        fontSize: 12,
+                                                        fontWeight: 600,
+                                                        color: '#0f172a',
+                                                    }}
+                                                >
+                                                    {startStr} ~ {endStr}
+                                                </span>
+                                            </Space>
+
+                                            <Space size={6}>
+                                                <Tag
+                                                    color={statusTagColor[item.status] || 'default'}
+                                                    style={{ margin: 0, fontWeight: 500 }}
+                                                >
+                                                    {statusNames[item.status] || item.status}
+                                                </Tag>
+                                                <Tag
+                                                    color="purple"
+                                                    style={{ margin: 0, fontSize: 10 }}
+                                                >
+                                                    v{item.revision}
+                                                </Tag>
+                                            </Space>
+                                        </div>
+
+                                        {/* 模态标签 */}
+                                        <Space size={[4, 4]} wrap>
+                                            {[
+                                                ...new Set(
+                                                    item.observations.map((o) => o.modality),
+                                                ),
+                                            ].map((m) => (
+                                                <Tag
+                                                    key={m}
+                                                    color="cyan"
+                                                    style={{
+                                                        fontSize: 11,
+                                                        margin: 0,
+                                                        borderRadius: 4,
+                                                    }}
+                                                >
+                                                    {modalityNames[m] || m}
+                                                </Tag>
+                                            ))}
+                                        </Space>
+
+                                        {/* 观测事实文本 */}
+                                        <div
+                                            style={{
+                                                padding: '8px 12px',
+                                                borderRadius: 6,
+                                                background: '#f8fafc',
+                                                border: '1px solid #f1f5f9',
+                                                color: textExcerpt ? '#1e293b' : '#94a3b8',
+                                                fontSize: 12,
+                                                lineHeight: 1.6,
+                                            }}
+                                        >
+                                            {textExcerpt || '（该时间段未提取到文字观测事实）'}
+                                        </div>
+
+                                        {/* 标签 */}
+                                        {item.tags.length ? (
+                                            <Space size={[4, 4]} wrap>
+                                                {item.tags.map((tag) => (
+                                                    <Tag
+                                                        key={tag}
+                                                        style={{
+                                                            fontSize: 10,
+                                                            margin: 0,
+                                                            background: '#f1f5f9',
+                                                        }}
+                                                    >
+                                                        #{tag}
+                                                    </Tag>
+                                                ))}
+                                            </Space>
+                                        ) : null}
+
+                                        {/* 底部动作 */}
+                                        <div
+                                            style={{
+                                                display: 'flex',
+                                                justifyContent: 'flex-end',
+                                                alignItems: 'center',
+                                                gap: 12,
+                                                paddingTop: 8,
+                                                borderTop: '1px solid #f8fafc',
+                                            }}
+                                        >
+                                            {viewingSliceGroup.asset ? (
+                                                <Button
+                                                    size="small"
+                                                    icon={<AimOutlined />}
+                                                    onClick={() => {
+                                                        const seekMs = Number(
+                                                            item.time_range?.start_ms ?? 0,
+                                                        );
+                                                        setPreviewAsset({
+                                                            asset: viewingSliceGroup.asset!,
+                                                            seekMs,
+                                                        });
+                                                    }}
+                                                >
+                                                    定位回放
+                                                </Button>
+                                            ) : null}
+                                            <Link
+                                                to={`/materials/${encodeURIComponent(item.material_unit_id)}?${searchParamsOnly(params)}`}
+                                            >
+                                                <Button
+                                                    type="link"
+                                                    size="small"
+                                                    icon={<ArrowRightOutlined />}
+                                                    style={{ padding: 0 }}
+                                                >
+                                                    切片详情
+                                                </Button>
+                                            </Link>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+                ) : null}
+            </Drawer>
         </div>
     );
 }

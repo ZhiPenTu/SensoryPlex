@@ -27,7 +27,7 @@ sys.path.insert(0, str(ROOT / "plugins/python/common/src"))
 import psycopg  # noqa: E402
 from sensoryplex_gateway.settings import Settings  # noqa: E402
 
-CURRENT_SCHEMA = "0012_timeline_coverage"
+CURRENT_SCHEMA = "0013_timeline_coverage_states"
 
 
 class MultimodalPipelineVerifier:

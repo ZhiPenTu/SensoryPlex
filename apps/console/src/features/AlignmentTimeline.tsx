@@ -1,19 +1,23 @@
 import { Fragment, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Button, Space, Tag, Tooltip, Typography } from 'antd';
+import { Button, Space, Tooltip } from 'antd';
 import {
     AimOutlined,
     AudioOutlined,
+    BackwardOutlined,
+    ClearOutlined,
     ClockCircleOutlined,
+    DashboardOutlined,
     EyeOutlined,
     FileTextOutlined,
+    ForwardOutlined,
+    UnorderedListOutlined,
     VideoCameraOutlined,
 } from '@ant-design/icons';
 import { Link } from 'react-router-dom';
-import type { JsonObject, MaterialUnit } from '../api/contracts';
+import type { JsonObject, MaterialUnit, Upload } from '../api/contracts';
+import { bytes } from '../components';
 import { formatTime, modalityNames, payloadText, statusNames } from './material-utils';
 import './alignment-timeline.css';
-
-const { Text } = Typography;
 
 /**
  * 已知端侧模态的固定轨道顺序。
@@ -21,20 +25,29 @@ const { Text } = Typography;
  * 计数为零的轨道保留占位，显式声明「未观测」，不做任何合成或插值。
  */
 const PRIMARY_LANES: { key: string; icon: ReactNode; color: string }[] = [
-    { key: 'asr_segment', icon: <AudioOutlined />, color: '#d97706' },
-    { key: 'ocr_blocks', icon: <FileTextOutlined />, color: '#1d4ed8' },
-    { key: 'vision.scene_description', icon: <EyeOutlined />, color: '#059669' },
+    { key: 'asr_segment', icon: <AudioOutlined />, color: '#f59e0b' },
+    { key: 'ocr_blocks', icon: <FileTextOutlined />, color: '#38bdf8' },
+    { key: 'vision.scene_description', icon: <EyeOutlined />, color: '#10b981' },
 ];
 /** 未知模态（后续新增的观测种类）使用中性色，既不隐藏也不伪造语义。 */
 const DEFAULT_LANE_COLOR = '#64748b';
 
 const unitColors: Record<string, string> = {
-    fast_ready: '#1d4ed8',
-    partial: '#d97706',
-    enriched: '#059669',
-    conflict: '#dc2626',
-    failed: '#dc2626',
-    rejected: '#dc2626',
+    fast_ready: 'linear-gradient(90deg, #1d4ed8 0%, #2563eb 100%)',
+    partial: 'linear-gradient(90deg, #b45309 0%, #d97706 100%)',
+    enriched: 'linear-gradient(90deg, #047857 0%, #059669 100%)',
+    conflict: 'linear-gradient(90deg, #b91c1c 0%, #dc2626 100%)',
+    failed: 'linear-gradient(90deg, #b91c1c 0%, #dc2626 100%)',
+    rejected: 'linear-gradient(90deg, #b91c1c 0%, #dc2626 100%)',
+};
+
+const unitBorders: Record<string, string> = {
+    fast_ready: '#3b82f6',
+    partial: '#f59e0b',
+    enriched: '#10b981',
+    conflict: '#ef4444',
+    failed: '#ef4444',
+    rejected: '#ef4444',
 };
 
 interface UnitBlock {
@@ -84,6 +97,10 @@ export interface AlignmentTimelineProps {
     endMs: bigint;
     detailHref: (materialUnitId: string) => string;
     onLocate?: (ms: number) => void;
+    onOpenDetails?: () => void;
+    asset?: Upload;
+    streamId?: string;
+    streamTitle?: string;
 }
 
 export default function AlignmentTimeline({
@@ -92,9 +109,13 @@ export default function AlignmentTimeline({
     endMs,
     detailHref,
     onLocate,
+    onOpenDetails,
+    asset,
+    streamId,
+    streamTitle,
 }: AlignmentTimelineProps) {
     const trackRef = useRef<HTMLDivElement>(null);
-    const [cursorMs, setCursorMs] = useState<number | null>(null);
+    const videoRef = useRef<HTMLVideoElement | null>(null);
 
     const start = Number(startMs);
     const end = Number(endMs);
@@ -114,6 +135,44 @@ export default function AlignmentTimeline({
             })),
         [materials, start, end],
     );
+
+    // 默认游标定位到第一个素材单元起始位置，若无单元则为 null
+    const initialCursorMs = useMemo(() => {
+        if (units.length > 0) {
+            return units[0].startMs;
+        }
+        return null;
+    }, [units]);
+
+    const [cursorMs, setCursorMs] = useState<number | null>(initialCursorMs);
+
+    const seekVideoToMs = (ms: number) => {
+        if (videoRef.current) {
+            videoRef.current.currentTime = ms / 1000;
+        }
+    };
+
+    const handleLocatePlay = () => {
+        if (cursorMs != null) {
+            seekVideoToMs(cursorMs);
+            videoRef.current?.play().catch(() => {});
+            onLocate?.(cursorMs);
+        }
+    };
+
+    const handleTimeUpdate = () => {
+        if (videoRef.current && !videoRef.current.paused) {
+            const ms = Math.round(videoRef.current.currentTime * 1000);
+            setCursorMs(ms);
+        }
+    };
+
+    const handleStep = (deltaMs: number) => {
+        const current = cursorMs ?? start;
+        const target = Math.min(end, Math.max(start, current + deltaMs));
+        setCursorMs(target);
+        seekVideoToMs(target);
+    };
 
     const facts = useMemo<ObservationFact[]>(() => {
         const collected: ObservationFact[] = [];
@@ -185,11 +244,31 @@ export default function AlignmentTimeline({
         });
     }, [cursorMs, lanes, factsByLane]);
 
+    const asrReadout = useMemo(() => readout.find((r) => r.lane.key === 'asr_segment'), [readout]);
+    const ocrReadout = useMemo(() => readout.find((r) => r.lane.key === 'ocr_blocks'), [readout]);
+    const visionReadout = useMemo(
+        () => readout.find((r) => r.lane.key === 'vision.scene_description'),
+        [readout],
+    );
+    const extraReadouts = useMemo(
+        () =>
+            readout.filter(
+                (r) =>
+                    !['asr_segment', 'ocr_blocks', 'vision.scene_description'].includes(r.lane.key),
+            ),
+        [readout],
+    );
+
     const handleMove = (event: React.MouseEvent<HTMLDivElement>) => {
         const rect = trackRef.current?.getBoundingClientRect();
         if (!rect || rect.width <= 0) return;
+        if (event.clientX < rect.left) {
+            return;
+        }
         const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
-        setCursorMs(Math.round(start + ratio * span));
+        const newMs = Math.round(start + ratio * span);
+        setCursorMs(newMs);
+        seekVideoToMs(newMs);
     };
 
     const ticks = [0, 0.25, 0.5, 0.75, 1];
@@ -201,249 +280,609 @@ export default function AlignmentTimeline({
 
     return (
         <section className="alignment-panel">
+            {/* ── 顶部状态栏与流式指引 ─────────────────────────────────────────── */}
             <div className="alignment-head">
                 <div className="alignment-flow">
-                    <span>视频流</span>
+                    <span className="alignment-flow-pulse" />
+                    <span className="alignment-flow-label">SENSORYPLEX HUD</span>
+                    <span className="alignment-flow-sep">|</span>
+                    <span className="alignment-flow-item">视频母带</span>
                     <span className="alignment-flow-arrow">→</span>
-                    <span>端侧多模态感知</span>
+                    <span className="alignment-flow-item">端侧感知</span>
                     <span className="alignment-flow-arrow">→</span>
-                    <span className="alignment-flow-strong">多模态时间轴对齐</span>
+                    <span className="alignment-flow-item active">时空对齐总线</span>
                     <span className="alignment-flow-arrow">→</span>
-                    <span>素材单元</span>
+                    <span className="alignment-flow-item">素材切片</span>
                 </div>
-                <Space size={[6, 6]} wrap>
+
+                <Space size={8} wrap align="center">
                     {lanes.map((lane) => {
                         const count = factsByLane.get(lane.key)?.length ?? 0;
                         return (
-                            <Tag
+                            <div
                                 key={lane.key}
-                                className={
-                                    count ? 'alignment-count-tag' : 'alignment-count-tag empty'
-                                }
+                                className={`alignment-telemetry-tag${count ? '' : ' empty'}`}
                             >
-                                <span className="alignment-axis-icon" style={{ color: lane.color }}>
-                                    {lane.icon}
-                                </span>
-                                {modalityNames[lane.key] || lane.key} {count}
-                            </Tag>
+                                <span
+                                    className="alignment-telemetry-dot"
+                                    style={{ background: count ? lane.color : '#475569' }}
+                                />
+                                <span>{modalityNames[lane.key] || lane.key}</span>
+                                <span className="alignment-telemetry-num">{count}</span>
+                            </div>
                         );
                     })}
-                    <Tag className="alignment-count-tag">{facts.length} 条观测事实</Tag>
+                    <div className="alignment-telemetry-tag highlight">
+                        <span>事实总数</span>
+                        <span className="alignment-telemetry-num">{facts.length}</span>
+                    </div>
+
+                    {onOpenDetails ? (
+                        <Button
+                            size="small"
+                            className="alignment-details-btn"
+                            icon={<UnorderedListOutlined />}
+                            onClick={onOpenDetails}
+                        >
+                            切片明细 ({materials.length})
+                        </Button>
+                    ) : null}
                 </Space>
             </div>
 
-            <div className="alignment-grid">
-                <div className="alignment-axis-label">时间刻度</div>
-                <div className="alignment-ruler" ref={trackRef} onMouseMove={handleMove}>
-                    {ticks.map((ratio) => {
-                        const at = Math.round(start + ratio * span);
-                        return (
-                            <span
-                                key={ratio}
-                                className={`alignment-tick-label${ratio === 0 ? ' first' : ''}${ratio === 1 ? ' last' : ''}`}
-                                style={{ left: `${ratio * 100}%` }}
-                            >
-                                {formatTime(String(at))}
+            {/* ── 中部三栏控制台工作区 ─────────────────────────────────────────── */}
+            <div className="alignment-cockpit-grid">
+                {/* ── 左栏：顶部「其他信息」 + 底部「asr(语音转写)」 ── */}
+                <div className="alignment-cockpit-col">
+                    {/* 其他信息卡片 */}
+                    <div className="alignment-tech-card accent-cyan">
+                        <div>
+                            <div className="alignment-card-head">
+                                <div className="alignment-card-title">
+                                    <DashboardOutlined style={{ color: '#38bdf8' }} />
+                                    <span>其他信息 · TIMECODE</span>
+                                </div>
+                                <span className="alignment-flow-pulse" style={{ margin: 0 }} />
+                            </div>
+
+                            <div className="alignment-timecode-box">
+                                <span className="alignment-timecode-digits">
+                                    {cursorMs == null ? '--:--.---' : formatTime(String(cursorMs))}
+                                </span>
+                                <span className="alignment-timecode-desc">
+                                    {cursorMs == null
+                                        ? '监视器待命中 · 点击时间轴任意位置锁定'
+                                        : '游标已锁定 · 毫秒级多模态对齐检视'}
+                                </span>
+                            </div>
+                        </div>
+
+                        <div className="alignment-meta-grid">
+                            <div className="alignment-meta-grid-item">
+                                跨度: <span>{(span / 1000).toFixed(1)}s</span>
+                            </div>
+                            <div className="alignment-meta-grid-item">
+                                单元: <span>{units.length} 个</span>
+                            </div>
+                            <div className="alignment-meta-grid-item">
+                                事实: <span>{facts.length} 条</span>
+                            </div>
+                            <div className="alignment-meta-grid-item">
+                                覆盖: <span>{formatTime(String(start))}</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* ASR 语音转写卡片 */}
+                    <div className="alignment-tech-card accent-amber">
+                        <div>
+                            <div className="alignment-card-head">
+                                <div className="alignment-card-title">
+                                    <AudioOutlined style={{ color: '#f59e0b' }} />
+                                    <span>asr · 语音转写</span>
+                                </div>
+                                {asrReadout ? (
+                                    <div>
+                                        {asrReadout.relation === 'covering' ? (
+                                            <span className="alignment-chip covering">
+                                                精准覆盖 0ms
+                                            </span>
+                                        ) : null}
+                                        {asrReadout.relation === 'nearest' ? (
+                                            <span className="alignment-chip nearest">
+                                                邻近 {asrReadout.offsetMs > 0 ? '+' : ''}
+                                                {asrReadout.offsetMs} ms
+                                            </span>
+                                        ) : null}
+                                        {asrReadout.relation === 'absent' ? (
+                                            <span className="alignment-chip absent">未观测</span>
+                                        ) : null}
+                                    </div>
+                                ) : null}
+                            </div>
+
+                            {asrReadout?.fact ? (
+                                <>
+                                    <div
+                                        className="alignment-readout-time"
+                                        style={{ color: '#f59e0b' }}
+                                    >
+                                        [ {formatTime(String(asrReadout.fact.startMs))} ~{' '}
+                                        {formatTime(String(asrReadout.fact.endMs))} ]
+                                    </div>
+                                    <div className="alignment-readout-textbox">
+                                        {asrReadout.fact.text || '（该观测事实无文本载荷）'}
+                                    </div>
+                                </>
+                            ) : (
+                                <div className="alignment-readout-empty">
+                                    本视频未观测到该模态事实，时间轴严格不做任何插值或合成。
+                                </div>
+                            )}
+                        </div>
+
+                        {asrReadout?.fact ? (
+                            <div>
+                                <div className="alignment-readout-meta-row">
+                                    <Tooltip title={asrReadout.fact.confidenceReason || undefined}>
+                                        <span className="alignment-meta-pill">
+                                            {asrReadout.fact.confidence == null
+                                                ? '置信度未知'
+                                                : `置信度: ${asrReadout.fact.confidence.toFixed(3)}`}
+                                        </span>
+                                    </Tooltip>
+                                    {asrReadout.fact.qualityState ? (
+                                        <span className="alignment-meta-pill">
+                                            质量: {asrReadout.fact.qualityState}
+                                        </span>
+                                    ) : null}
+                                    {asrReadout.fact.timingSource ? (
+                                        <span className="alignment-meta-pill">
+                                            pts: {asrReadout.fact.timingSource}
+                                        </span>
+                                    ) : null}
+                                </div>
+                                {asrReadout.fact.provenance ? (
+                                    <Tooltip title={asrReadout.fact.provenance}>
+                                        <div className="alignment-readout-prov">
+                                            PROV: {asrReadout.fact.provenance}
+                                        </div>
+                                    </Tooltip>
+                                ) : null}
+                            </div>
+                        ) : null}
+                    </div>
+                </div>
+
+                {/* ── 中栏：「原视频播放窗口」 ── */}
+                <div className="alignment-center-player-card">
+                    <div className="alignment-card-head">
+                        <div className="alignment-card-title">
+                            <VideoCameraOutlined style={{ color: '#38bdf8' }} />
+                            <span>原视频播放窗口 · MONITOR</span>
+                        </div>
+                        {asset ? (
+                            <span className="alignment-chip covering">
+                                {asset.content_type} · {bytes(asset.size_bytes)}
                             </span>
-                        );
-                    })}
-                    {cursorMs == null ? null : (
-                        <>
+                        ) : (
+                            <span className="alignment-chip absent">未挂载原片</span>
+                        )}
+                    </div>
+
+                    <div className="alignment-video-wrapper">
+                        {asset ? (
+                            <video
+                                ref={videoRef}
+                                controls
+                                preload="metadata"
+                                src={`/v1/assets/${asset.id}/content`}
+                                onTimeUpdate={handleTimeUpdate}
+                                onLoadedMetadata={() => {
+                                    if (cursorMs != null && videoRef.current) {
+                                        videoRef.current.currentTime = cursorMs / 1000;
+                                    }
+                                }}
+                            />
+                        ) : (
+                            <div className="alignment-video-empty">
+                                <VideoCameraOutlined style={{ fontSize: 32, color: '#475569' }} />
+                                <div style={{ color: '#94a3b8', fontWeight: 600 }}>
+                                    未关联原片媒体文件
+                                </div>
+                                <div style={{ fontSize: 11 }}>
+                                    {streamTitle || streamId || '视频母带'}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+
+                    <div className="alignment-video-controls">
+                        <div className="alignment-video-sync-tag">
+                            <ClockCircleOutlined />
+                            <span>
+                                游标同步:{' '}
+                                {cursorMs == null ? '--:--.---' : formatTime(String(cursorMs))}
+                            </span>
+                        </div>
+                        <Space size={6}>
+                            <Button
+                                size="small"
+                                className="alignment-tech-ghost-btn"
+                                icon={<BackwardOutlined />}
+                                onClick={() => handleStep(-5000)}
+                            >
+                                -5s
+                            </Button>
+                            <Button
+                                size="small"
+                                className="alignment-tech-ghost-btn"
+                                icon={<ForwardOutlined />}
+                                onClick={() => handleStep(5000)}
+                            >
+                                +5s
+                            </Button>
+                            <Button
+                                size="small"
+                                className="alignment-tech-primary-btn"
+                                icon={<AimOutlined />}
+                                onClick={handleLocatePlay}
+                            >
+                                定位同步
+                            </Button>
+                        </Space>
+                    </div>
+                </div>
+
+                {/* ── 右栏：顶部「画面描述(Vision)」 + 底部「画面文字(OCR)」 ── */}
+                <div className="alignment-cockpit-col">
+                    {/* 画面描述卡片（含 清除读取 与 定位回放 按钮） */}
+                    <div className="alignment-tech-card accent-emerald">
+                        <div>
+                            <div className="alignment-card-head">
+                                <div className="alignment-card-title">
+                                    <EyeOutlined style={{ color: '#10b981' }} />
+                                    <span>画面描述 · Vision</span>
+                                </div>
+                                <Space size={6} align="center">
+                                    {cursorMs != null ? (
+                                        <Button
+                                            size="small"
+                                            className="alignment-tech-ghost-btn"
+                                            icon={<ClearOutlined />}
+                                            onClick={() => setCursorMs(null)}
+                                        >
+                                            清除读取
+                                        </Button>
+                                    ) : null}
+                                    <Button
+                                        size="small"
+                                        type="primary"
+                                        className="alignment-tech-primary-btn"
+                                        icon={<AimOutlined />}
+                                        onClick={handleLocatePlay}
+                                    >
+                                        定位回放
+                                    </Button>
+                                </Space>
+                            </div>
+
+                            <div style={{ marginBottom: 4 }}>
+                                {visionReadout ? (
+                                    <div>
+                                        {visionReadout.relation === 'covering' ? (
+                                            <span className="alignment-chip covering">
+                                                精准覆盖 0ms
+                                            </span>
+                                        ) : null}
+                                        {visionReadout.relation === 'nearest' ? (
+                                            <span className="alignment-chip nearest">
+                                                邻近 {visionReadout.offsetMs > 0 ? '+' : ''}
+                                                {visionReadout.offsetMs} ms
+                                            </span>
+                                        ) : null}
+                                        {visionReadout.relation === 'absent' ? (
+                                            <span className="alignment-chip absent">未观测</span>
+                                        ) : null}
+                                    </div>
+                                ) : null}
+                            </div>
+
+                            {visionReadout?.fact ? (
+                                <>
+                                    <div
+                                        className="alignment-readout-time"
+                                        style={{ color: '#10b981' }}
+                                    >
+                                        [ {formatTime(String(visionReadout.fact.startMs))} ~{' '}
+                                        {formatTime(String(visionReadout.fact.endMs))} ]
+                                    </div>
+                                    <div className="alignment-readout-textbox">
+                                        {visionReadout.fact.text || '（该观测事实无文本载荷）'}
+                                    </div>
+                                </>
+                            ) : (
+                                <div className="alignment-readout-empty">
+                                    本视频未观测到该模态事实，时间轴严格不做任何插值或合成。
+                                </div>
+                            )}
+                        </div>
+
+                        {visionReadout?.fact ? (
+                            <div>
+                                <div className="alignment-readout-meta-row">
+                                    <span className="alignment-meta-pill">
+                                        {visionReadout.fact.confidence == null
+                                            ? '置信度未知'
+                                            : `置信度: ${visionReadout.fact.confidence.toFixed(3)}`}
+                                    </span>
+                                    {visionReadout.fact.qualityState ? (
+                                        <span className="alignment-meta-pill">
+                                            质量: {visionReadout.fact.qualityState}
+                                        </span>
+                                    ) : null}
+                                </div>
+                                {visionReadout.fact.provenance ? (
+                                    <Tooltip title={visionReadout.fact.provenance}>
+                                        <div className="alignment-readout-prov">
+                                            PROV: {visionReadout.fact.provenance}
+                                        </div>
+                                    </Tooltip>
+                                ) : null}
+                            </div>
+                        ) : null}
+                    </div>
+
+                    {/* 画面文字 (OCR) 卡片 */}
+                    <div className="alignment-tech-card accent-cyan">
+                        <div>
+                            <div className="alignment-card-head">
+                                <div className="alignment-card-title">
+                                    <FileTextOutlined style={{ color: '#38bdf8' }} />
+                                    <span>画面文字 · OCR</span>
+                                </div>
+                                {ocrReadout ? (
+                                    <div>
+                                        {ocrReadout.relation === 'covering' ? (
+                                            <span className="alignment-chip covering">
+                                                精准覆盖 0ms
+                                            </span>
+                                        ) : null}
+                                        {ocrReadout.relation === 'nearest' ? (
+                                            <span className="alignment-chip nearest">
+                                                邻近 {ocrReadout.offsetMs > 0 ? '+' : ''}
+                                                {ocrReadout.offsetMs} ms
+                                            </span>
+                                        ) : null}
+                                        {ocrReadout.relation === 'absent' ? (
+                                            <span className="alignment-chip absent">未观测</span>
+                                        ) : null}
+                                    </div>
+                                ) : null}
+                            </div>
+
+                            {ocrReadout?.fact ? (
+                                <>
+                                    <div
+                                        className="alignment-readout-time"
+                                        style={{ color: '#38bdf8' }}
+                                    >
+                                        [ {formatTime(String(ocrReadout.fact.startMs))} ~{' '}
+                                        {formatTime(String(ocrReadout.fact.endMs))} ]
+                                    </div>
+                                    <div className="alignment-readout-textbox">
+                                        {ocrReadout.fact.text || '（该观测事实无文本载荷）'}
+                                    </div>
+                                </>
+                            ) : (
+                                <div className="alignment-readout-empty">
+                                    本视频未观测到该模态事实，时间轴严格不做任何插值或合成。
+                                </div>
+                            )}
+                        </div>
+
+                        {ocrReadout?.fact ? (
+                            <div>
+                                <div className="alignment-readout-meta-row">
+                                    <Tooltip title={ocrReadout.fact.confidenceReason || undefined}>
+                                        <span className="alignment-meta-pill">
+                                            {ocrReadout.fact.confidence == null
+                                                ? '置信度未知'
+                                                : `置信度: ${ocrReadout.fact.confidence.toFixed(3)}`}
+                                        </span>
+                                    </Tooltip>
+                                    {ocrReadout.fact.qualityState ? (
+                                        <span className="alignment-meta-pill">
+                                            质量: {ocrReadout.fact.qualityState}
+                                        </span>
+                                    ) : null}
+                                    {ocrReadout.fact.timingSource ? (
+                                        <span className="alignment-meta-pill">
+                                            pts: {ocrReadout.fact.timingSource}
+                                        </span>
+                                    ) : null}
+                                </div>
+                                {ocrReadout.fact.provenance ? (
+                                    <Tooltip title={ocrReadout.fact.provenance}>
+                                        <div className="alignment-readout-prov">
+                                            PROV: {ocrReadout.fact.provenance}
+                                        </div>
+                                    </Tooltip>
+                                ) : null}
+                            </div>
+                        ) : null}
+                    </div>
+                </div>
+            </div>
+
+            {/* 附加自定义模态（若有） */}
+            {extraReadouts.length ? (
+                <div style={{ display: 'flex', gap: 12, marginBottom: 12 }}>
+                    {extraReadouts.map(({ lane, fact, relation, offsetMs }) => (
+                        <div
+                            key={lane.key}
+                            className="alignment-tech-card"
+                            style={{ borderTop: `2px solid ${lane.color}` }}
+                        >
+                            <div className="alignment-card-head">
+                                <div className="alignment-card-title">
+                                    <span style={{ color: lane.color }}>{lane.icon}</span>
+                                    <span>{modalityNames[lane.key] || lane.key}</span>
+                                </div>
+                                <span className={`alignment-chip ${relation}`}>
+                                    {relation === 'covering'
+                                        ? '覆盖中'
+                                        : relation === 'nearest'
+                                          ? `邻近 ${offsetMs}ms`
+                                          : '未观测'}
+                                </span>
+                            </div>
+                            <div className="alignment-readout-textbox">
+                                {fact?.text || '（无文本载荷）'}
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            ) : null}
+
+            {/* ── 底部：更紧凑的全宽多功能时间轴 (Compact Multi-function Timeline) ── */}
+            <div className="alignment-tracks-deck">
+                <div className="alignment-tracks-titlebar">
+                    <span>多功能时间轴 · TIMELINE BUS</span>
+                    <span className="alignment-tracks-range">
+                        SPAN: {formatTime(String(start))} ~ {formatTime(String(end))} (
+                        {(span / 1000).toFixed(1)}s)
+                    </span>
+                </div>
+
+                <div className="alignment-grid" onMouseMove={handleMove} onClick={handleMove}>
+                    {/* 时间刻度 */}
+                    <div className="alignment-axis-label">
+                        <ClockCircleOutlined style={{ color: '#38bdf8' }} />
+                        <span>时间刻度</span>
+                    </div>
+                    <div className="alignment-ruler" ref={trackRef}>
+                        {ticks.map((ratio) => {
+                            const at = Math.round(start + ratio * span);
+                            return (
+                                <span
+                                    key={ratio}
+                                    className={`alignment-tick-label${ratio === 0 ? ' first' : ''}${ratio === 1 ? ' last' : ''}`}
+                                    style={{ left: `${ratio * 100}%` }}
+                                >
+                                    {formatTime(String(at))}
+                                </span>
+                            );
+                        })}
+                        {cursorMs == null ? null : (
                             <span
                                 className="alignment-cursor-bubble"
                                 style={{ left: `${percent(cursorMs)}%` }}
                             >
                                 {formatTime(String(cursorMs))}
                             </span>
-                            {cursorLine}
-                        </>
-                    )}
-                </div>
+                        )}
+                        {cursorLine}
+                    </div>
 
-                <div className="alignment-axis-label">素材单元</div>
-                <div className="alignment-track">
-                    {units.map((unit) => {
-                        const left = percent(unit.startMs);
-                        const width = Math.max(percent(unit.endMs) - left, 0.6);
-                        return (
-                            <Tooltip
-                                key={unit.materialUnitId}
-                                title={`${formatTime(String(unit.startMs))} ~ ${formatTime(String(unit.endMs))} · ${statusNames[unit.status] || unit.status} · v${unit.revision} · ${unit.observationCount} 条观测`}
-                            >
-                                <Link
-                                    to={detailHref(unit.materialUnitId)}
-                                    className="alignment-unit"
-                                    style={{
-                                        left: `${left}%`,
-                                        width: `${width}%`,
-                                        background: unitColors[unit.status] || '#1d4ed8',
-                                    }}
+                    {/* 素材单元 */}
+                    <div className="alignment-axis-label">
+                        <VideoCameraOutlined style={{ color: '#818cf8' }} />
+                        <span>素材单元</span>
+                    </div>
+                    <div className="alignment-track">
+                        {units.map((unit) => {
+                            const left = percent(unit.startMs);
+                            const width = Math.max(percent(unit.endMs) - left, 0.6);
+                            return (
+                                <Tooltip
+                                    key={unit.materialUnitId}
+                                    title={`${formatTime(String(unit.startMs))} ~ ${formatTime(String(unit.endMs))} · ${statusNames[unit.status] || unit.status} · v${unit.revision} · ${unit.observationCount} 条观测`}
                                 >
-                                    {width >= 7 ? (
-                                        <span className="alignment-unit-text">
-                                            {statusNames[unit.status] || unit.status}
-                                        </span>
-                                    ) : null}
-                                </Link>
-                            </Tooltip>
-                        );
-                    })}
-                    {cursorLine}
-                </div>
-
-                {lanes.map((lane) => {
-                    const list = factsByLane.get(lane.key) ?? [];
-                    return (
-                        <Fragment key={lane.key}>
-                            <div className="alignment-axis-label">
-                                <span className="alignment-axis-icon" style={{ color: lane.color }}>
-                                    {lane.icon}
-                                </span>
-                                {modalityNames[lane.key] || lane.key}
-                            </div>
-                            <div className="alignment-track">
-                                {cursorLine}
-                                {list.length ? (
-                                    list.map((fact) => {
-                                        const left = percent(fact.startMs);
-                                        const width = Math.max(percent(fact.endMs) - left, 0.22);
-                                        const active =
-                                            cursorMs != null &&
-                                            fact.startMs <= cursorMs &&
-                                            cursorMs < fact.endMs;
-                                        return (
-                                            <Tooltip
-                                                key={fact.observationId}
-                                                title={`${formatTime(String(fact.startMs))} ~ ${formatTime(String(fact.endMs))}｜${fact.text.slice(0, 120) || '（无文本载荷）'}`}
-                                            >
-                                                <button
-                                                    type="button"
-                                                    aria-label={`${modalityNames[fact.modality] || fact.modality} ${formatTime(String(fact.startMs))}`}
-                                                    className={`alignment-tick${active ? ' active' : ''}`}
-                                                    style={{
-                                                        left: `${left}%`,
-                                                        width: `${width}%`,
-                                                        background: lane.color,
-                                                        opacity: active ? 1 : 0.45,
-                                                    }}
-                                                    onClick={() =>
-                                                        setCursorMs(
-                                                            Math.round(
-                                                                (fact.startMs + fact.endMs) / 2,
-                                                            ),
-                                                        )
-                                                    }
-                                                />
-                                            </Tooltip>
-                                        );
-                                    })
-                                ) : (
-                                    <span className="alignment-lane-empty">未观测到该模态事实</span>
-                                )}
-                            </div>
-                        </Fragment>
-                    );
-                })}
-            </div>
-
-            <div className="alignment-readout">
-                <div className="alignment-readout-head">
-                    <Space size={10} align="center" wrap>
-                        <ClockCircleOutlined style={{ color: '#1d4ed8' }} />
-                        <Text strong style={{ fontSize: 13 }}>
-                            {cursorMs == null
-                                ? '时间节点读取窗'
-                                : `时间节点 ${formatTime(String(cursorMs))}`}
-                        </Text>
-                        {cursorMs == null ? (
-                            <Text type="secondary" style={{ fontSize: 12 }}>
-                                将鼠标移到时间轴上，读取该时间节点的画面文字、画面描述与语音等观测事实
-                            </Text>
-                        ) : null}
-                    </Space>
-                    <Space size={8}>
-                        {cursorMs != null ? (
-                            <Button size="small" type="text" onClick={() => setCursorMs(null)}>
-                                清除读取
-                            </Button>
-                        ) : null}
-                        {cursorMs != null && onLocate ? (
-                            <Button
-                                size="small"
-                                icon={<AimOutlined />}
-                                onClick={() => onLocate(cursorMs)}
-                            >
-                                定位回放
-                            </Button>
-                        ) : null}
-                    </Space>
-                </div>
-
-                {cursorMs == null ? null : (
-                    <div className="alignment-readout-grid">
-                        {readout.map(({ lane, fact, relation, offsetMs }) => (
-                            <div className="alignment-readout-cell" key={lane.key}>
-                                <div className="alignment-readout-title">
-                                    <span
-                                        className="alignment-axis-icon"
-                                        style={{ color: lane.color }}
+                                    <Link
+                                        to={detailHref(unit.materialUnitId)}
+                                        className="alignment-unit"
+                                        style={{
+                                            left: `${left}%`,
+                                            width: `${width}%`,
+                                            background: unitColors[unit.status] || '#1d4ed8',
+                                            borderColor: unitBorders[unit.status] || '#3b82f6',
+                                        }}
+                                        onClick={() => {
+                                            setCursorMs(unit.startMs);
+                                            seekVideoToMs(unit.startMs);
+                                        }}
                                     >
+                                        {width >= 7 ? (
+                                            <span className="alignment-unit-text">
+                                                {statusNames[unit.status] || unit.status}
+                                            </span>
+                                        ) : null}
+                                    </Link>
+                                </Tooltip>
+                            );
+                        })}
+                        {cursorLine}
+                    </div>
+
+                    {/* 各模态轨道 */}
+                    {lanes.map((lane) => {
+                        const list = factsByLane.get(lane.key) ?? [];
+                        return (
+                            <Fragment key={lane.key}>
+                                <div className="alignment-axis-label">
+                                    <span style={{ color: lane.color, fontSize: 11 }}>
                                         {lane.icon}
                                     </span>
                                     <span>{modalityNames[lane.key] || lane.key}</span>
-                                    {relation === 'nearest' ? (
-                                        <Tag
-                                            color="warning"
-                                            style={{ margin: 0, fontSize: 10, lineHeight: '16px' }}
-                                        >
-                                            邻近 {offsetMs > 0 ? '+' : ''}
-                                            {offsetMs} ms
-                                        </Tag>
-                                    ) : null}
-                                    {relation === 'absent' ? (
-                                        <Tag
-                                            style={{ margin: 0, fontSize: 10, lineHeight: '16px' }}
-                                        >
-                                            未观测
-                                        </Tag>
-                                    ) : null}
                                 </div>
-
-                                {fact ? (
-                                    <>
-                                        <div className="alignment-readout-time">
-                                            {formatTime(String(fact.startMs))} ~{' '}
-                                            {formatTime(String(fact.endMs))}
-                                        </div>
-                                        <div className="alignment-readout-text">
-                                            {fact.text || '（该观测事实无文本载荷）'}
-                                        </div>
-                                        <div className="alignment-readout-meta">
-                                            {fact.confidence == null
-                                                ? `置信度未知${fact.confidenceReason ? ` · ${fact.confidenceReason}` : ''}`
-                                                : `置信度 ${fact.confidence.toFixed(3)}`}
-                                            {fact.qualityState
-                                                ? ` · 质量 ${fact.qualityState}`
-                                                : ''}
-                                            {fact.timingSource
-                                                ? ` · 计时来源 ${fact.timingSource}`
-                                                : ''}
-                                        </div>
-                                        {fact.provenance ? (
-                                            <div className="alignment-readout-meta mono">
-                                                {fact.provenance}
-                                            </div>
-                                        ) : null}
-                                    </>
-                                ) : (
-                                    <div className="alignment-readout-text muted">
-                                        本视频未观测到该模态事实，时间轴不做任何插值或合成。
-                                    </div>
-                                )}
-                            </div>
-                        ))}
-                    </div>
-                )}
+                                <div className="alignment-track">
+                                    {cursorLine}
+                                    {list.length ? (
+                                        list.map((fact) => {
+                                            const left = percent(fact.startMs);
+                                            const width = Math.max(percent(fact.endMs) - left, 0.3);
+                                            const active =
+                                                cursorMs != null &&
+                                                fact.startMs <= cursorMs &&
+                                                cursorMs < fact.endMs;
+                                            return (
+                                                <Tooltip
+                                                    key={fact.observationId}
+                                                    title={`${formatTime(String(fact.startMs))} ~ ${formatTime(String(fact.endMs))}｜${fact.text.slice(0, 120) || '（无文本载荷）'}`}
+                                                >
+                                                    <button
+                                                        type="button"
+                                                        aria-label={`${modalityNames[fact.modality] || fact.modality} ${formatTime(String(fact.startMs))}`}
+                                                        className={`alignment-tick${active ? ' active' : ''}`}
+                                                        style={{
+                                                            left: `${left}%`,
+                                                            width: `${width}%`,
+                                                            background: lane.color,
+                                                            opacity: active ? 1 : 0.65,
+                                                        }}
+                                                        onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            const mid = Math.round(
+                                                                (fact.startMs + fact.endMs) / 2,
+                                                            );
+                                                            setCursorMs(mid);
+                                                            seekVideoToMs(mid);
+                                                        }}
+                                                    />
+                                                </Tooltip>
+                                            );
+                                        })
+                                    ) : (
+                                        <span className="alignment-lane-empty">
+                                            未观测到该模态事实
+                                        </span>
+                                    )}
+                                </div>
+                            </Fragment>
+                        );
+                    })}
+                </div>
             </div>
         </section>
     );

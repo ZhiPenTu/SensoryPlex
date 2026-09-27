@@ -9,10 +9,12 @@ import hashlib
 import json
 import os
 import platform
+import queue
 import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -29,6 +31,9 @@ if str(ROOT) not in sys.path:
 LOGGER = get_logger("sensoryplex.agent")
 # 单次 release bundle 下载上限（秒）：大 bundle 走本机回环，给足时间但绝不无限等。
 BUNDLE_DOWNLOAD_TIMEOUT_S = 600.0
+# 心跳与执解耦后，待执行意图的本地缓冲上限。队列满时留在待投列表下一轮继续投递，
+# 既不阻塞心跳，也不丢弃控制面已经标记为 dispatched 的意图。
+INTENT_QUEUE_CAPACITY = 16
 
 
 def probe_host_capabilities() -> dict[str, Any]:
@@ -636,6 +641,32 @@ def execute_intent(
         return False
 
 
+def intent_worker(
+    intents: "queue.Queue[dict[str, Any]]",
+    stop_event: threading.Event,
+    client: NodeAgentClient,
+    state_file: str | None,
+) -> None:
+    """在独立线程里串行执行部署/任务意图，让心跳不再被长任务阻塞。
+
+    节点离线判定看的是 `last_heartbeat_at`：只要执行体跑在心跳线程里，超过 60 秒的
+    真实任务（例如整段 ASR、全帧 OCR）就会把节点拖成 offline，随后回执上报被 409
+    `agent_node_not_schedulable` 拒绝，任务结果永远落不了库。因此这里保持**单工作线程**
+    串行语义（并发上限为 1，不改变现有资源占用模型），只把心跳从执行体里解耦出来。
+    """
+    while not stop_event.is_set():
+        try:
+            intent = intents.get(timeout=0.5)
+        except queue.Empty:
+            continue
+        try:
+            execute_intent(intent, client, state_file=state_file)
+        except Exception as error:  # noqa: BLE001 - 单个意图不外溢影响心跳与后续意图
+            LOGGER.error("Intent execution crashed: %s", error, exc_info=True)
+        finally:
+            intents.task_done()
+
+
 def main():
     parser = argparse.ArgumentParser(description="SensoryPlex Node Agent")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -765,6 +796,20 @@ def main():
         client = NodeAgentClient(main_url, args.node_id, token)
         executor = get_hot_deploy_executor(client, args.state_file)
 
+        # `--once` 保持同步语义（单次心跳 + 立即执行完成后再退出）；常驻模式把心跳与
+        # 意图执行解耦，避免长任务期间节点被判定离线、回执上报被 409 拒绝。
+        intent_queue: queue.Queue[dict[str, Any]] | None = None
+        stop_event = threading.Event()
+        backlog: list[dict[str, Any]] = []
+        if not args.once:
+            intent_queue = queue.Queue(maxsize=INTENT_QUEUE_CAPACITY)
+            threading.Thread(
+                target=intent_worker,
+                args=(intent_queue, stop_event, client, args.state_file),
+                name="intent-worker",
+                daemon=True,
+            ).start()
+
         heartbeat_count = 0
         while True:
             try:
@@ -777,6 +822,7 @@ def main():
 
                 if status == "NODE_STATUS_REVOKED":
                     LOGGER.error("Node revoked by main node", node_id=args.node_id)
+                    stop_event.set()
                     sys.exit(2)
 
                 unverified = hb_res.get("reconciliation_required", [])
@@ -787,12 +833,19 @@ def main():
                     )
 
                 intents = hb_res.get("pending_intents", [])
-                for intent in intents:
-                    execute_intent(intent, client, state_file=args.state_file)
 
                 if args.once:
+                    for intent in intents:
+                        execute_intent(intent, client, state_file=args.state_file)
                     LOGGER.info("Heartbeat once completed", status=status, processed=len(intents))
                     break
+
+                # 队列有界：满了就留在 backlog 下一轮继续投，不阻塞心跳也不丢弃意图。
+                backlog.extend(intents)
+                while backlog and intent_queue is not None and not intent_queue.full():
+                    intent_queue.put(backlog.pop(0))
+                if backlog:
+                    LOGGER.warning("intent backlog pending", waiting=len(backlog))
 
                 interval = hb_res.get("heartbeat_interval_ms", 5000) / 1000.0
                 time.sleep(interval or args.interval_s)
@@ -800,6 +853,7 @@ def main():
             except Exception as e:
                 LOGGER.error("Heartbeat error: %s", e, exc_info=True)
                 if args.once:
+                    stop_event.set()
                     sys.exit(1)
                 time.sleep(args.interval_s)
 

@@ -116,7 +116,10 @@ Runtime → Timeline → 追加已验收（[ADR-028](adr/ADR-028-Runtime到Timel
 **revision 前进**"与"**向量 GC**"这三段没走通。
 不得把本节读作 Golden Path 已完成；
 接入的 VLM 只保证链路语义正确，**不保证描述可用**（模型输出不稳定）。
-抽帧的覆盖率目前只到帧数口径，语义覆盖仍未用模型输出度量。
+抽帧口径已升级为**全帧判别 + 有界证据窗口**（见下节“多模态文件方案执行闭环”第 5 项）：
+**输入完整性**（每一个被解码的视频帧都有明确结论）与**语义覆盖**（静态画面相邻语义输入不超过
+`evidence_max_gap_ms`）都已用真实授权样本核对；但语义覆盖量的是**输入**，不等于**模型输出质量**
+——“每个窗口/锚点都拿到了可用的模型描述”仍未验收。
 共享内存数据面只在本机有意义（且同 UID 进程之间没有逐 buffer 隔离），不是分布式数据面。
 
 ASR 链路（M10）也已落地：第二个模型插件 `plugins/python/processors/asr-whisper-mlx` 消费数据面里的
@@ -356,3 +359,43 @@ GLMemory 协商导致多视频轨竞态、容器内 PCM 的源编码采集不到
    - `make multimodal-pipeline-check`：20 项通过（验证方案校验拒绝、不可变 Revision 发布、节点实例预检与快照生成）；
    - `make multimodal-execution-check MEDIA=...`：实测通过，有声真实样本 103.352s 真实产生 11 个素材单元、104 个覆盖窗口，三模型与 Timeline 融合全部真实执行并通过回执验收。
    - 边界：`golden_path_verified=false` 保持不变；MLX ASR 仅限 macOS；Linux 未伪装可用。
+5. **语义覆盖取代固定抽帧（全帧判别 + 有界事件证据窗口）**：
+   - Runtime 的 `replay` / `ingest` 在 `--evidence` 下对**每一个被解码且可用的视频帧**判别一次，
+     结论只能是选中（基线锚点 / 事件锚点 / 事件前上下文 / 事件后上下文）或**带稳定原因**被覆盖
+     （`no_change_yet`、`event_rate_limited`、`event_budget_exhausted`、`missing_signature`、
+     `non_monotonic_pts`）；逐帧账本写成独立 JSONL artifact，报告只带聚合计数与有界窗口预览，
+     `frame_ledger_entries` 只统计帧记录；
+   - 静态画面的语义刷新上界由 `evidence_max_gap_ms`（默认 1000 ms）保证，变化画面由
+     「预上下文 + 锚点 + 后上下文（默认各 2 帧，单请求 ≤ 9 帧）」的有界事件窗口覆盖；
+     超限是显式计数（`suppressed_event_keeps`、`event_budget_exhausted`），不静默降级成“没有变化”；
+   - 执行器（`tools/task_executor.py`）不再自行采样：VLM 按证据窗口（外加没有窗口的静态基线锚点）
+     请求，OCR 只按锚点请求，ASR 仍按有序音频段；请求数与单请求帧数都有硬上限；
+   - 数据面是**真背压**：handoff 服务在解码**之前**启动，执行器在解码进行中按窗口增量领料并立刻
+     归还，容量类拒绝在有消费者时按 `handoff-wait-timeout-ms` 有界重试；
+   - **诚实降级**：锚点帧被拒（或窗口锚点从未交接）时整窗登记为
+     `data_plane_retention_rejected` 并跳过该输入单位，已交接的上下文帧立刻归还，覆盖层把对应
+     秒格标成 `not_observed:data_plane_retention_rejected`；账本说交接成功、保留表却已经没有这一帧
+     记可重试的 `data_plane_buffer_missing`。两者都不再让整条 Task 以 `evidence_window_empty` 失败；
+   - 真实授权样本核对（`uv run --frozen python tools/verify_replay.py --media <样本>`，默认启用全帧判别）：
+     720p / 34.5 s 样本判别 1034 帧 = 选中 59 + 带原因覆盖 975、8 个事件窗口、
+     `max_selected_gap_ms=1000`；1080p / 103.35 s 样本判别 3099 帧 = 选中 187 + 带原因覆盖 2912、
+     19 个事件窗口、`max_selected_gap_ms=1000`；同一样本的执行器分组核对得到 VLM 118 次请求 /
+     170 帧（19 个窗口 + 99 个静态基线锚点）、OCR 118 次请求 / 118 帧，单请求最大 4 帧；
+   - **有界保留面的两种真实结局**（同一份 1080p / 20 s 授权样本，两次完整 `orchestrated_v2`
+     Execution，只改 Revision 里的保留面大小）：2 GiB 下三个消费节点 `retain_rejected=0`、
+     `characterized_frames=600`、`windows=19`、`requests=84`，Execution `succeeded`；
+     128 MiB 下数据面 `backpressure state=saturated`、`retain_rejected=243`
+     （`arena_capacity_exceeded`，其中 `video_frame` 59 帧），执行器记
+     `retention_rejected_frames=59` / `retention_rejected_units=27` 并跳过这些单位，Execution
+     仍 `succeeded`；覆盖层 20 个 1 秒窗中 17 个标成 `data_plane_retention_rejected`，
+     **没有** `evidence_window_empty`。两次都满足 `handoff_shutdown reason=plane_drained`、
+     `concurrent_with_decode=true` 与保留/拒绝恒等式；
+   - **同轮修掉的缺陷**：被拒帧的账目先把 `buffer_id` / `source_digest` 写成空串，Timeline
+     账本构建把它读成真实描述符并以 `worker_report_invalid_digest` 让整条 Task 失败；改成只留
+     时间范围与原因码后，受压运行整条 Execution `completed`；
+   - **未解决（待决策）**：1 秒窗格与 6 秒音频段互斥，ASR Observation 被 Timeline 以
+     `observation_crosses_window` 显式拒绝（不裁剪），因此只进覆盖层、不进素材
+     （素材保持 `pending_enrichments:["asr_segment"]`）；
+   - **证据边界**：这一层证明的是**输入完整性**与**语义覆盖**（间隔上界 + 变化窗口），
+     **不**证明**模型完整性**——每个窗口/锚点是否真的产出了可用的模型输出仍未验收；
+     `golden_path_verified=false` 保持不变。

@@ -58,6 +58,19 @@ code {
     border: 1px solid #e2e8f0;
 }
 
+/* 屏幕阅读器辅助类（视觉隐藏） */
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
 /* 布局骨架 Shell */
 .app-shell {
     min-height: 100vh;

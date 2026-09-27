@@ -4,7 +4,7 @@
 //! 仍能构建并测试 crate 的其他部分。两个 sink 都使用有界队列，
 //! 消费端停止排空时会让 pipeline 减速，而不是无界地缓冲。
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -23,7 +23,8 @@ use crate::arena::{Arena, DEFAULT_ARENA_CAPACITY_BYTES};
 use crate::backpressure::{BackpressurePolicy, BackpressureTracker, QueueWatermarks};
 use crate::capability::{self, DecodedFormat, Rejection, SourceFormatContext, TrackClass, Verdict};
 use crate::descriptor::{hand_off, BufferSpec, HandoffCounters};
-use crate::handoff::{BufferHandoff, RetainPolicy};
+use crate::evidence::{EvidencePolicy, EvidenceSelector, EvidenceStep, LedgerHandle};
+use crate::handoff::{BufferHandoff, SharedHandoff};
 use crate::lease::LeaseRegistry;
 use crate::live::{LiveConfig, LiveStats, StallTracker};
 use crate::sampler::{AdaptiveSampler, Decision, FrameSignature, SamplingPolicy, SkipReason};
@@ -76,11 +77,35 @@ pub struct DecodeRun {
     /// 不能用"全保留"冒充。
     pub sampling: SamplingPolicy,
     /// 保留式交接：打开后字节留在共享内存里等第二个进程领取 lease。
-    pub handoff: RetainPolicy,
+    ///
+    /// 这里放的是**已经打开**的共享数据面，而不是一条策略：服务端必须在解码开始之前就
+    /// 拿到同一份句柄，才能与解码并发地排空保留表（见 `RetainPolicy::open`）。
+    pub handoff: Option<Arc<SharedHandoff>>,
     /// 描述符之后那条有界队列的背压策略。阈值与降速倍数都在这里确定，
     /// 解码会话只负责按它作出决策并计数。
     pub backpressure: BackpressurePolicy,
+    /// 语义覆盖策略。`None` 表示这次运行不做全帧判别——旧行为保持不变，报告里也不会
+    /// 出现 `semantic_coverage`，因此"没有语义账本"永远不会被读成"每帧都没变"。
+    pub evidence: Option<EvidencePolicy>,
+    /// 逐帧账本的落盘句柄。`None` 表示只保留报告里的计数与有界预览。
+    pub ledger: Option<LedgerHandle>,
+    /// 逐帧账本 artifact 的路径。它只用于报告里的 `frame_ledger_path`：有账本却没写路径
+    /// 会让"账本在哪"无从查起，两者必须一起设置。
+    pub ledger_path: Option<String>,
 }
+
+/// 预上下文帧的字节保留环条目。帧的字节已经从解码样本里移进来，不再额外拷贝。
+#[derive(Debug)]
+struct PreFrame {
+    frame_index: u64,
+    start_ms: i64,
+    end_ms: i64,
+    format: BufferFormat,
+    bytes: Vec<u8>,
+}
+
+/// 预上下文保留环的字节上限。超过就按最老的逐出，并显式计数，绝不无界增长。
+pub const MAX_PRE_RING_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrackKind {
@@ -1460,10 +1485,27 @@ pub(crate) struct DecodeSession<'a> {
     /// 这份清单是它们唯一的存在位置，因此是必填的。
     rejected_tracks: Vec<media::RejectedTrack>,
     sampler: AdaptiveSampler,
+    /// 全帧判别与事件证据窗口选择器。`None` 表示这次运行不做语义覆盖判别。
+    coverage: Option<EvidenceSelector>,
+    /// 预上下文帧的字节保留环：条数由策略决定，总字节有硬上限。
+    pre_frames: VecDeque<PreFrame>,
+    pre_ring_bytes: usize,
+    /// 因为语义证据计划而额外交接的帧数（自适应采样器本来会跳过它们）。
+    evidence_added_keeps: u64,
+    /// 选中但被有界保留表拒绝的帧数。
+    evidence_retention_rejections: u64,
+    ledger: Option<LedgerHandle>,
+    ledger_path: Option<String>,
+    /// 账本里已经写出的**逐帧**记录条数。窗口记录共享同一份 artifact，但它们的条数由
+    /// `windows` 描述，因此这里只统计帧，报告里的 `frame_ledger_entries` 才能被逐行复核。
+    ledger_entries: u64,
     segmenter: Option<AudioSegmenter>,
     segment_report: media::AudioSegmentReport,
     /// 保留式交接的数据面。`None` 表示本次运行不保留字节（进程内自校验路径）。
-    handoff: Option<BufferHandoff>,
+    ///
+    /// 它由调用方在解码之前打开，并在解码期间与 gRPC 服务共享：消费者领料与生产者保留
+    /// 是同一份表上的两个方向，谁也不能只在对方结束之后才开始。
+    handoff: Option<Arc<SharedHandoff>>,
     /// 有界队列的压力等级与阶段一降级计数。它不做队列的权威记账：
     /// 容量/水位/峰值/丢弃都取自 `handoff` 的真实统计，见 `finish`。
     tracker: BackpressureTracker,
@@ -1493,17 +1535,18 @@ impl<'a> DecodeSession<'a> {
             evidence: Vec::new(),
             rejected_tracks: Vec::new(),
             sampler: AdaptiveSampler::new(run.sampling),
-            handoff: match run.handoff.enabled {
-                // 段名按运行随机派生：句柄（arena id，会出现在报告里）不可反推出段名，
-                // 消费者只能从 lease 服务的应答里拿到它（见 ADR-010）。
-                true => Some(BufferHandoff::new(
-                    arena_id,
-                    run.handoff.arena_capacity_bytes,
-                    Some(&crate::shm::run_seed()),
-                    run.handoff.retained_limit,
-                )?),
-                false => None,
-            },
+            coverage: run.evidence.map(EvidenceSelector::new),
+            pre_frames: VecDeque::new(),
+            pre_ring_bytes: 0,
+            evidence_added_keeps: 0,
+            evidence_retention_rejections: 0,
+            ledger: run.ledger.clone(),
+            ledger_path: run.ledger_path.clone(),
+            ledger_entries: 0,
+            // 句柄由调用方在解码前打开（`RetainPolicy::open`）：段名按运行随机派生，
+            // 句柄（arena id，会出现在报告里）不可反推出段名，消费者只能从 lease 服务
+            // 的应答里拿到它（见 ADR-010）。这里只借用同一个 Arc，不重建数据面。
+            handoff: run.handoff.clone(),
             tracker: BackpressureTracker::new(run.backpressure),
             segmenter: None,
             segment_report: media::AudioSegmentReport {
@@ -1534,6 +1577,178 @@ impl<'a> DecodeSession<'a> {
     /// 是两回事，"报告里没有这条轨道"不能用来表达"这条轨道被拒绝了"。
     pub(crate) fn record_rejections(&mut self, rejected: Vec<media::RejectedTrack>) {
         self.rejected_tracks = rejected;
+    }
+
+    /// 把未交接的视频帧字节放进有限保留环，供后续事件窗口补"变化前"上下文。
+    ///
+    /// 环的条数由策略决定，总字节另有一个硬上限；两个上限都是逐出即计数，不静默丢失。
+    /// 帧的字节是从解码样本里**移动**进来的，因此不留额外副本。
+    fn hold_pre_context(
+        &mut self,
+        frame_index: Option<u64>,
+        sample: DecodedSample,
+        pts_ms: i64,
+        end_ms: i64,
+    ) {
+        let Some(frame_index) = frame_index else {
+            return;
+        };
+        let Some(selector) = self.coverage.as_ref() else {
+            return;
+        };
+        let pre_frames = selector.policy().pre_frames;
+        if pre_frames == 0 || sample.pixel_format != VIDEO_PIXEL_FORMAT {
+            return;
+        }
+        let format = buffer_format(TrackKind::Video, &sample);
+        let bytes = sample.bytes;
+        if bytes.len() > MAX_PRE_RING_BYTES {
+            if let Some(selector) = self.coverage.as_mut() {
+                selector.note_pre_context_eviction();
+            }
+            return;
+        }
+        self.pre_ring_bytes += bytes.len();
+        self.pre_frames.push_back(PreFrame {
+            frame_index,
+            start_ms: pts_ms,
+            end_ms,
+            format,
+            bytes,
+        });
+        while self.pre_frames.len() > pre_frames as usize {
+            self.evict_oldest_pre_frame(false);
+        }
+        while self.pre_ring_bytes > MAX_PRE_RING_BYTES {
+            self.evict_oldest_pre_frame(true);
+        }
+    }
+
+    fn evict_oldest_pre_frame(&mut self, count_as_eviction: bool) {
+        let Some(evicted) = self.pre_frames.pop_front() else {
+            return;
+        };
+        self.pre_ring_bytes -= evicted.bytes.len();
+        if count_as_eviction {
+            if let Some(selector) = self.coverage.as_mut() {
+                selector.note_pre_context_eviction();
+            }
+        }
+    }
+
+    /// 把窗口要求的帧序号从保留环里取出并交接。环里已经找不到的帧是显式逐出，不是"没有这一帧"。
+    fn retain_pre_context(&mut self, indexes: &[u64]) -> Result<(), MediaError> {
+        if indexes.is_empty() {
+            return Ok(());
+        }
+        let mut frames = Vec::with_capacity(indexes.len());
+        for index in indexes {
+            match self
+                .pre_frames
+                .iter()
+                .position(|frame| frame.frame_index == *index)
+            {
+                Some(position) => {
+                    if let Some(frame) = self.pre_frames.remove(position) {
+                        self.pre_ring_bytes -= frame.bytes.len();
+                        frames.push(frame);
+                    }
+                }
+                None => {
+                    if let Some(selector) = self.coverage.as_mut() {
+                        selector.note_pre_context_eviction();
+                    }
+                }
+            }
+        }
+        for frame in frames {
+            self.place_pre_frame(frame)?;
+        }
+        Ok(())
+    }
+
+    /// 交接一个预上下文帧。它和其他视频帧走同一条 arena/descriptor/保留表路径。
+    fn place_pre_frame(&mut self, frame: PreFrame) -> Result<(), MediaError> {
+        let index = track_index(TrackKind::Video);
+        let buffer_id = {
+            let track = &mut self.tracks[index];
+            track.next_index += 1;
+            format!(
+                "buf-{}-{}-{:08}",
+                self.stream_short, VIDEO_FRAME_KIND, track.next_index
+            )
+        };
+        let time_range = TimeRange {
+            start_ms: frame.start_ms,
+            end_ms: frame.end_ms,
+        };
+        hand_off(
+            &mut self.arena,
+            &mut self.leases,
+            BufferSpec {
+                buffer_id: buffer_id.clone(),
+                kind: VIDEO_FRAME_KIND,
+                stream_id: self.stream_id,
+                time_range,
+                format: frame.format.clone(),
+            },
+            &frame.bytes,
+            self.now_ms,
+            &mut self.counters,
+        )?;
+        let retained = match self.handoff.as_ref() {
+            Some(handoff) => handoff
+                .retain_or_reject(
+                    &buffer_id,
+                    VIDEO_FRAME_KIND,
+                    self.stream_id,
+                    time_range,
+                    frame.format.clone(),
+                    &frame.bytes,
+                )?
+                .is_some(),
+            None => true,
+        };
+        {
+            let track = &mut self.tracks[index];
+            track.samples += 1;
+            track.bytes += frame.bytes.len() as u64;
+        }
+        // 预上下文帧在它自己的时间点上被自适应采样器跳过了；现在是被语义证据计划追认交接的，
+        // 所以它同样计入 `kept_evidence_window`，否则"kept + 额外保留 = 交接帧数"就不成立。
+        self.evidence_added_keeps += 1;
+        if let Some(selector) = self.coverage.as_mut() {
+            if retained {
+                selector.mark_retained(frame.frame_index, &buffer_id)?;
+            } else {
+                selector.mark_rejected(frame.frame_index, "data_plane_retention_rejected");
+            }
+        }
+        if !retained {
+            self.evidence_retention_rejections += 1;
+        }
+        Ok(())
+    }
+
+    /// 把已经按帧序号定型的判别记录写进逐帧账本。没有账本时只保留报告里的计数。
+    fn flush_ledger(&mut self) -> Result<(), MediaError> {
+        let Some(selector) = self.coverage.as_mut() else {
+            return Ok(());
+        };
+        // 顺序是契约的一部分：帧按序号先写，只有当窗口里**最后一帧**也已经写出去之后，
+        // 才轮到窗口记录。增量消费方因此永远看不到"引用着还不存在的行"的窗口。
+        let records = selector.drain_ready();
+        if let Some(ledger) = self.ledger.as_ref() {
+            for record in &records {
+                ledger.frame(record).map_err(MediaError::DecodeFailed)?;
+                self.ledger_entries += 1;
+            }
+            let windows = selector.drain_emitted_windows(self.ledger_entries);
+            for window in &windows {
+                ledger.window(window).map_err(MediaError::DecodeFailed)?;
+            }
+        }
+        Ok(())
     }
 
     /// 驱动入口。buffer 自带时长的样本立即落地；时长缺失的样本按轨道挂起一个，
@@ -1617,13 +1832,21 @@ impl<'a> DecodeSession<'a> {
         // 背压观测点：在给这一帧做决定之前读一次下游队列的深度。只有在有界队列真的存在时
         // 才观测——没有队列就是没有测量，报告里必须写 `observed = false`，而不是写一组零。
         if let Some(handoff) = self.handoff.as_ref() {
-            self.tracker.observe_queue(watermarks(handoff));
+            let watermarks = handoff.observe(watermarks)?;
+            self.tracker.observe_queue(watermarks);
         }
-        // 视频抽帧发生在这里，也就是在字节进入 arena 之前：被跳过的帧根本不交接，
+        // 视频抽帧与全帧判别都发生在字节进入 arena 之前：被跳过的帧根本不交接，
         // 但一定会带原因计数，绝不静默消失。
+        let mut coverage_step: Option<EvidenceStep> = None;
         if sample.track == TrackKind::Video {
-            let signature = if sample.pixel_format == VIDEO_PIXEL_FORMAT {
+            let rgba = sample.pixel_format == VIDEO_PIXEL_FORMAT;
+            let signature = if rgba {
                 FrameSignature::from_rgba(&sample.bytes, sample.width, sample.height)
+            } else {
+                None
+            };
+            let text_signature = if rgba {
+                FrameSignature::edge_energy_from_rgba(&sample.bytes, sample.width, sample.height)
             } else {
                 None
             };
@@ -1632,21 +1855,64 @@ impl<'a> DecodeSession<'a> {
                 self.tracker
                     .throttled_min_interval_ms(self.sampler.policy().min_interval_ms)
             });
-            if let Decision::Skip { reason, .. } = self
+            let decision = self
                 .sampler
-                .observe_with_pressure(pts_ms, signature, throttle)
-            {
+                .observe_with_pressure(pts_ms, signature, throttle);
+            let sampler_keep = decision.kept();
+            let mut sampler_skip = None;
+            if let Decision::Skip { reason, .. } = decision {
                 if reason == SkipReason::BackpressureThrottled {
                     self.tracker.record_throttled_keep();
                 }
+                sampler_skip = Some(reason);
+            }
+            // 全帧判别：每个可用帧先得到结论，再决定它是否进入数据面。
+            let step = match self.coverage.as_mut() {
+                Some(selector) => {
+                    Some(selector.observe(pts_ms, end_ms, signature, text_signature)?)
+                }
+                None => None,
+            };
+            let evidence_keep = step.as_ref().is_some_and(|step| step.retain_now);
+            if !sampler_keep && !evidence_keep {
+                let reason = sampler_skip.unwrap_or(SkipReason::NoChangeYet);
                 self.drop_sample(index, reason.name());
                 // last_end_ms 描述"这条轨道解码到哪里"，而不是"交接到哪里"：
                 // 抽帧只影响交接，不影响这条轨道是否已经到达流的末尾。
                 self.tracks[index].last_end_ms = end_ms;
+                // 未交接的帧要留在有限保留环里：后续事件窗口可以把最近几帧补成"变化前"上下文。
+                self.hold_pre_context(
+                    step.as_ref().map(|step| step.frame_index),
+                    sample,
+                    pts_ms,
+                    end_ms,
+                );
+                self.flush_ledger()?;
                 return Ok(());
             }
+            if evidence_keep && !sampler_keep {
+                // 事件帧不被固定间隔吃掉：这正是语义覆盖相对于固定采样的差别。
+                self.evidence_added_keeps += 1;
+            }
+            if sampler_keep
+                && step.as_ref().is_some_and(|step| {
+                    step.selection == crate::evidence::FrameSelection::NotSelected
+                })
+            {
+                // 自适应采样器单独保留了这一帧：账本必须把它标成基线锚点，
+                // 否则会出现"账本说没选中、数据面里却有这个 buffer"的矛盾。
+                if let (Some(selector), Some(step)) = (self.coverage.as_mut(), step.as_ref()) {
+                    selector.mark_baseline_keep(step.frame_index, pts_ms);
+                }
+            }
+            coverage_step = step;
         }
 
+        // 这两个值在块内赋值、块外使用：语义账本要把"这一帧真的进了数据面"
+        // 与"它只是拿到了 descriptor"分开记录，因此它们的生命周期必须覆盖整个校验块。
+        // 两个值都在下面的校验块里被无条件赋值，因此这里不做无意义的初始化。
+        let retained_in_plane: bool;
+        let placed_buffer_id: String;
         {
             let track = &mut self.tracks[index];
             // origin 是轨道的属性，而不是 buffer 的属性。流中途变化意味着
@@ -1693,16 +1959,21 @@ impl<'a> DecodeSession<'a> {
             )?;
             // 真实跨进程交接：字节留在共享内存里等消费者领取 lease。容量类拒绝（保留表满、
             // 段满）是**有界行为**，已经计入 `BufferHandoff` 的统计；契约违规才让本次 decode 失败。
-            if let Some(handoff) = self.handoff.as_mut() {
-                handoff.retain_or_reject(
-                    &buffer_id,
-                    kind,
-                    self.stream_id,
-                    time_range,
-                    format,
-                    &sample.bytes,
-                )?;
-            }
+            retained_in_plane = match self.handoff.as_ref() {
+                Some(handoff) => handoff
+                    .retain_or_reject(
+                        &buffer_id,
+                        kind,
+                        self.stream_id,
+                        time_range,
+                        format,
+                        &sample.bytes,
+                    )?
+                    .is_some(),
+                // 没有保留式数据面时不存在保留表，也就没有"被保留表拒绝"这回事。
+                None => true,
+            };
+            placed_buffer_id = buffer_id.clone();
             if track.samples == 0 {
                 // 源侧证据取首个被接受样本的那一份：同一轨道的后续样本携带同一上下文。
                 track.source = sample.source.clone();
@@ -1728,6 +1999,26 @@ impl<'a> DecodeSession<'a> {
                 track.evidence_taken = true;
                 self.evidence.push(descriptor);
             }
+        }
+
+        if sample.track == TrackKind::Video && !retained_in_plane {
+            self.evidence_retention_rejections += 1;
+        }
+        if let Some(step) = coverage_step {
+            if let Some(selector) = self.coverage.as_mut() {
+                if retained_in_plane {
+                    selector.mark_retained(step.frame_index, &placed_buffer_id)?;
+                } else {
+                    selector.mark_rejected(step.frame_index, "data_plane_retention_rejected");
+                }
+            }
+            // 预上下文帧在锚点之后交接：`track.samples == 0` 的源侧证据已经在锚点上采集，
+            // 不会被保留环里的旧帧抢先。数据面的读取顺序仍然由半开时间区间决定。
+            let pre_indexes = step.pre_context_indexes;
+            if !pre_indexes.is_empty() {
+                self.retain_pre_context(&pre_indexes)?;
+            }
+            self.flush_ledger()?;
         }
 
         if sample.track == TrackKind::Audio {
@@ -1810,7 +2101,7 @@ impl<'a> DecodeSession<'a> {
         // `audio_segment` 这类输入——进程内 arena 与 lease 只够本进程自证，不能替代数据面。
         // 容量类拒绝（保留表满、单类配额）是**有界行为**，已经计入 `BufferHandoff` 的统计；
         // 契约违规才让本次 decode 失败。
-        if let Some(handoff) = self.handoff.as_mut() {
+        if let Some(handoff) = self.handoff.as_ref() {
             handoff.retain_or_reject(
                 &segment_id,
                 AUDIO_SEGMENT_KIND,
@@ -1836,7 +2127,7 @@ impl<'a> DecodeSession<'a> {
 
     pub(crate) fn finish(
         mut self,
-    ) -> Result<(media::DecodedDataPlane, Option<BufferHandoff>), MediaError> {
+    ) -> Result<(media::DecodedDataPlane, Option<Arc<SharedHandoff>>), MediaError> {
         // 流/窗口结束时仍挂起的样本补不出时长：显式计入丢弃，不让它静默消失。
         for index in 0..self.pending.len() {
             if self.pending[index].take().is_some() {
@@ -1861,18 +2152,24 @@ impl<'a> DecodeSession<'a> {
                 self.emit_segment(sample_rate, channels, &segment)?;
             }
         }
+        // 语义覆盖收尾必须在采样报告之前：`kept_evidence_window` 与账本条数描述同一批
+        // 额外交接的帧，两者必须来自同一次收尾，不能各算一遍。
+        let semantic_coverage = self.finalize_coverage()?;
         let sampling = self.sampling_report();
         // 收尾前再观测一次：`state` 应当描述运行**结束那一刻**的队列深度，
         // 而不是最后一个样本到来之前的那一刻。等级只在迁移时计数，多观测一次不会重复计数。
         if let Some(handoff) = self.handoff.as_ref() {
-            self.tracker.observe_queue(watermarks(handoff));
+            let watermarks = handoff.observe(watermarks)?;
+            self.tracker.observe_queue(watermarks);
         }
-        let handoff_stats = self.handoff.as_ref().map(BufferHandoff::stats);
-        let drop_kinds = self
-            .handoff
-            .as_ref()
-            .map(|handoff| handoff.retain_rejections_by_kind().clone())
-            .unwrap_or_default();
+        let handoff_stats = match self.handoff.as_ref() {
+            Some(handoff) => Some(handoff.stats()?),
+            None => None,
+        };
+        let drop_kinds = match self.handoff.as_ref() {
+            Some(handoff) => handoff.retain_rejections_by_kind()?,
+            None => Default::default(),
+        };
         let backpressure = self.tracker.report(handoff_stats.as_ref(), &drop_kinds);
         let plane = media::DecodedDataPlane {
             arena_id: self.arena.id().to_string(),
@@ -1891,9 +2188,11 @@ impl<'a> DecodeSession<'a> {
             sampling: vec![sampling],
             backpressure: Some(backpressure),
             rejected_tracks: std::mem::take(&mut self.rejected_tracks),
+            semantic_coverage: semantic_coverage.into_iter().collect(),
         };
         // 保留式数据面在 decode 结束后仍然存活：字节必须留到消费者领取并释放。
-        Ok((plane, self.handoff.take()))
+        // 交出去的是同一个共享句柄（不是所有权）：服务端从这里继续服务，直到账面对上。
+        Ok((plane, self.handoff.clone()))
     }
 
     /// 抽帧口径。被跳过的帧在这里有完整明细，同时也计入轨道的 `dropped_samples`：
@@ -1919,7 +2218,83 @@ impl<'a> DecodeSession<'a> {
             max_gap_ms: counters.max_gap_ms,
             max_keeps_bound: policy.max_keeps(self.sampler.observed_span_ms()),
             max_frame_interval_ms: counters.max_frame_interval_ms,
+            // 自适应采样器单独跳过了、但被语义证据计划额外交接的帧。没有语义计划时恒为 0，
+            // 因此 "0" 只表示这次运行没有额外交接，不表示语义计划没有工作。
+            kept_evidence_window: self.evidence_added_keeps,
         }
+    }
+
+    /// 收尾语义覆盖：把事件窗口写进逐帧账本，冲刷剩余逐帧记录，再用同一次收尾构造报告。
+    ///
+    /// 报告只带摘要与有界窗口预览；完整逐帧账本落盘，路径写进 `frame_ledger_path`。
+    /// 返回 `None` 表示这次运行没有启用语义覆盖——那不是"每帧都没变"。
+    fn finalize_coverage(&mut self) -> Result<Option<media::SemanticCoverageReport>, MediaError> {
+        let Some(selector) = self.coverage.as_mut() else {
+            return Ok(None);
+        };
+        let summary = selector.finish()?;
+        let policy = selector.policy();
+        let counters = summary.counters.clone();
+        let selection_counts = counters.selection_counts();
+        // `finish` 已把剩余候选帧定型，收尾后再刷一次，保证每一帧都恰好进账本一次；
+        // 增量落盘在解码期间写过的窗口不会重复写（游标在 selector 里）。
+        self.flush_ledger()?;
+        // 流已结束：此刻不会再有新的帧记录，把剩下的窗口一次写完（含 `finish` 收尾的那一个）。
+        let tail_windows = match self.coverage.as_mut() {
+            Some(selector) => selector.drain_emitted_windows(u64::MAX),
+            None => Vec::new(),
+        };
+        if let Some(ledger) = self.ledger.as_ref() {
+            for window in &tail_windows {
+                ledger.window(window).map_err(MediaError::DecodeFailed)?;
+            }
+        }
+        // `EvidencePolicy` 里没有单独的 `context_frames` 字段：总上下文帧数就是前后之和，
+        // 拆开仍保留 `pre`，避免把"变化前"的帧数读成总窗口宽度。
+        let context_frames = policy.pre_frames.saturating_add(policy.post_frames);
+        let listed_windows = summary
+            .windows
+            .iter()
+            .take(crate::evidence::MAX_LISTED_WINDOWS)
+            .map(|window| media::EvidenceWindow {
+                window_id: window.window_id.clone(),
+                time_range: Some(TimeRange {
+                    start_ms: window.start_ms,
+                    end_ms: window.end_ms,
+                }),
+                anchor_ms: window.anchor_ms,
+                trigger: window.trigger.to_string(),
+                frame_buffer_ids: window.frame_buffer_ids.clone(),
+                context_before: window.context_before,
+                context_after: window.context_after,
+                handed_off_frames: window.handed_off_frames,
+            })
+            .collect();
+        Ok(Some(media::SemanticCoverageReport {
+            track_kind: TrackKind::Video.name().to_string(),
+            max_semantic_gap_ms: policy.max_semantic_gap_ms,
+            evidence_context_frames: context_frames,
+            evidence_pre_frames: policy.pre_frames,
+            change_threshold: policy.change_threshold,
+            text_change_threshold: policy.text_change_threshold,
+            characterized_frames: counters.characterized,
+            selected_baseline_anchor: counters.baseline_anchor,
+            selected_event_anchor: counters.event_anchor,
+            selected_event_pre_context: counters.event_pre_context,
+            selected_event_post_context: counters.event_post_context,
+            covered_without_model_refresh: counters.not_selected,
+            windows: counters.windows,
+            windows_listed_limit: summary.listed_limit,
+            listed_windows,
+            max_selected_gap_ms: counters.max_selected_gap_ms,
+            suppressed_event_keeps: counters.suppressed_event_keeps,
+            pre_context_evictions: counters.pre_context_evictions,
+            frame_ledger_path: self.ledger_path.clone().unwrap_or_default(),
+            frame_ledger_entries: self.ledger_entries,
+            decision_counts: summary.decision_counts.clone(),
+            selection_counts,
+            skip_reason_counts: summary.skip_reason_counts.clone(),
+        }))
     }
 }
 
@@ -1939,7 +2314,7 @@ pub struct DecodeOutcome {
     pub plane: media::DecodedDataPlane,
     /// `Some` 表示字节仍留在共享内存里；调用方**必须**在进程存活期间把它交给消费者，
     /// 并在退出前核对释放/过期计数。
-    pub handoff: Option<BufferHandoff>,
+    pub handoff: Option<Arc<SharedHandoff>>,
     /// 样本预算耗尽导致运行被截断，调用方必须如实上报。
     pub truncated: bool,
 }
@@ -2038,7 +2413,7 @@ pub fn decode_file(
 pub struct LiveOutcome {
     pub plane: media::DecodedDataPlane,
     /// 与 `DecodeOutcome` 同义：`Some` 表示字节留在共享内存里等消费者领 lease。
-    pub handoff: Option<BufferHandoff>,
+    pub handoff: Option<Arc<SharedHandoff>>,
     /// 窗口内的断流/恢复记录。没有样本的窗口不是一个成功的 ingest。
     pub stats: LiveStats,
     /// 样本预算耗尽导致窗口提前结束。
@@ -2146,8 +2521,11 @@ mod tests {
             audio_segment_ms: 5_000,
             audio_overlap_ms: 0,
             sampling: SamplingPolicy::default(),
-            handoff: RetainPolicy::default(),
+            handoff: None,
             backpressure: BackpressurePolicy::default(),
+            evidence: None,
+            ledger: None,
+            ledger_path: None,
         }
     }
 
@@ -2330,7 +2708,11 @@ mod tests {
     /// 打开保留式数据面的运行。`arena_bytes` 就是那条共享区的硬上限。
     fn retained_run(arena_bytes: usize, limit: usize, policy: BackpressurePolicy) -> DecodeRun {
         DecodeRun {
-            handoff: RetainPolicy::shared(arena_bytes, limit).expect("retention policy is valid"),
+            handoff: crate::handoff::RetainPolicy::shared(arena_bytes, limit)
+                .expect("retention policy is valid")
+                // 等待预算为 0：这里的测试进程没有消费者，等待只会把用例拖慢。
+                .open("arena-retained-test", 0)
+                .expect("the shared plane opens"),
             backpressure: policy,
             ..run()
         }
@@ -2394,6 +2776,7 @@ mod tests {
             handoff
                 .expect("retention stays alive for the consumer")
                 .stats()
+                .expect("the plane answers its stats")
                 .retained_total,
             2
         );
@@ -2439,13 +2822,18 @@ mod tests {
         let (plane, handoff) = subject.finish().expect("session finishes");
         let handoff = handoff.expect("retention stays alive for the consumer");
         assert_eq!(
-            handoff.retained_by_kind().get("audio_segment").copied(),
+            handoff
+                .retained_by_kind()
+                .expect("the plane reports its kinds")
+                .get("audio_segment")
+                .copied(),
             Some(1),
             "the segment descriptor must be offerable to another process"
         );
         let segment = handoff
             .list()
-            .iter()
+            .expect("the plane lists what it retains")
+            .into_iter()
             .find(|held| held.kind == "audio_segment")
             .expect("the segment is in the retained table");
         assert_eq!(
@@ -2530,5 +2918,109 @@ mod tests {
         let report = plane.backpressure.expect("a report is always attached");
         assert!(!report.observed);
         assert!(report.queues.is_empty());
+    }
+
+    /// 带语义覆盖策略的运行。它让"全帧判别 + 事件窗口"与自适应采样同时生效。
+    fn evidence_run() -> DecodeRun {
+        DecodeRun {
+            evidence: Some(EvidencePolicy::default()),
+            ..run()
+        }
+    }
+
+    #[test]
+    fn semantic_coverage_accounts_for_every_video_frame_and_every_handed_off_frame() {
+        let run = evidence_run();
+        let mut subject = DecodeSession::new("stream-evidence", "evidence", "arena-evidence", &run)
+            .expect("session builds");
+        // 120 帧静态画面（走基线复查）之后接一次画面变化（走事件窗口），两条路径都要覆盖。
+        let mut pts = 0i64;
+        for _ in 0..120 {
+            subject
+                .push(video_sample(Some(pts), Some(33)))
+                .expect("push");
+            pts += 33;
+        }
+        let mut changed = video_sample(Some(pts), Some(33));
+        changed.bytes = vec![240u8; 16 * 16 * 4];
+        subject.push(changed).expect("push");
+        pts += 33;
+        for _ in 0..3 {
+            subject
+                .push(video_sample(Some(pts), Some(33)))
+                .expect("push");
+            pts += 33;
+        }
+        let (plane, _) = subject.finish().expect("finish");
+
+        let video = stat(&plane, TrackKind::Video);
+        let sampling = plane.sampling.first().expect("采样报告");
+        let coverage = plane
+            .semantic_coverage
+            .first()
+            .expect("启用语义覆盖后报告必须存在");
+        assert_eq!(
+            coverage.characterized_frames, sampling.observed,
+            "判别帧数必须等于采样器观测到的帧数"
+        );
+        assert_eq!(
+            sampling.kept + sampling.kept_evidence_window,
+            video.samples,
+            "采样保留加语义额外交接必须等于实际交接的视频帧数"
+        );
+        assert!(
+            sampling.kept_evidence_window > 0,
+            "事件窗口与预上下文应当带来额外交接"
+        );
+        assert!(coverage.characterized_frames >= 124);
+        assert!(
+            coverage.max_selected_gap_ms <= coverage.max_semantic_gap_ms + 33,
+            "静态语义间隔不得超过上限加一个帧间隔"
+        );
+        assert_eq!(coverage.track_kind, "video");
+        // 语义覆盖最容易被打破的一条不变量：预上下文帧先按"未选中"计数、再升级成窗口
+        // 上下文，如果只撤销跳过原因而不撤销 `not_selected`，这里就会多出重叠的帧。
+        let selected = coverage.selected_baseline_anchor
+            + coverage.selected_event_anchor
+            + coverage.selected_event_pre_context
+            + coverage.selected_event_post_context;
+        assert!(
+            coverage.selected_event_pre_context > 0,
+            "事件窗口要补上下文帧"
+        );
+        assert_eq!(
+            selected + coverage.covered_without_model_refresh,
+            coverage.characterized_frames,
+            "每一帧要么被选中、要么带原因被覆盖"
+        );
+        let counted_skips: u64 = coverage
+            .skip_reason_counts
+            .iter()
+            .map(|entry| {
+                entry
+                    .rsplit_once('=')
+                    .expect("name=count")
+                    .1
+                    .parse::<u64>()
+                    .expect("count")
+            })
+            .sum();
+        assert_eq!(
+            counted_skips, coverage.covered_without_model_refresh,
+            "聚合跳过计数必须等于未选中的帧数"
+        );
+    }
+
+    #[test]
+    fn a_run_without_an_evidence_policy_says_so_instead_of_claiming_no_change() {
+        let mut subject = session();
+        subject.push(changing_video_sample(0, 10)).expect("push");
+        let (plane, _) = subject.finish().expect("finish");
+        assert!(
+            plane.semantic_coverage.is_empty(),
+            "未启用语义覆盖时报告必须为空，而不是给出'每帧都没变'"
+        );
+        let sampling = plane.sampling.first().expect("采样报告");
+        assert_eq!(sampling.kept_evidence_window, 0);
     }
 }

@@ -211,6 +211,7 @@ export default function Assets() {
                 ref={input}
                 type="file"
                 accept="video/mp4,video/webm"
+                style={{ display: 'none' }}
                 onChange={(e) => {
                     const f = e.target.files?.[0];
                     if (f) upload.mutate(f);

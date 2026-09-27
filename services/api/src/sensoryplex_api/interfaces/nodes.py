@@ -1105,12 +1105,12 @@ def register(app, pool, auth, settings):
             or not isinstance(raw_coverage, list)
         ):
             fail(422, "timeline_ingest_input_invalid")
-        if len(raw_units) > 128 or len(raw_items) > 1024 or len(raw_coverage) > 512:
+        if len(raw_units) > 1024 or len(raw_items) > 8192 or len(raw_coverage) > 7200:
             fail(413, "timeline_ingest_limit_exceeded")
         encoded_size = len(source_b64) + sum(
             len(value) for value in raw_units if isinstance(value, str)
         )
-        if encoded_size > 4_000_000 or any(not isinstance(value, str) for value in raw_units):
+        if encoded_size > 8_000_000 or any(not isinstance(value, str) for value in raw_units):
             fail(413, "timeline_ingest_limit_exceeded")
         try:
             description = media_pb2.MediaSourceDescription()
@@ -1151,6 +1151,9 @@ def register(app, pool, auth, settings):
             "queued",
             "running",
             "failed",
+            # 语义覆盖：逐帧判别过但这一段不需要重新送模型；以及计划刷新了却没有观测。
+            "covered_without_model_refresh",
+            "semantic_refresh_without_observation",
         }
         allowed_modality = {
             "queued",
@@ -1160,6 +1163,8 @@ def register(app, pool, auth, settings):
             "failed",
             "not_sampled_by_policy",
             "not_scheduled",
+            "covered_without_model_refresh",
+            "not_observed",
         }
         try:
             coverage: list[tuple[int, int, str, dict, dict]] = []

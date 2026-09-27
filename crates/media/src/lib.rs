@@ -10,6 +10,7 @@ pub mod capability;
 #[cfg(feature = "gstreamer")]
 pub mod decode;
 pub mod descriptor;
+pub mod evidence;
 pub mod handoff;
 pub mod lease;
 pub mod live;

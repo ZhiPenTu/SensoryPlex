@@ -701,7 +701,13 @@ def register(app, pool, auth, settings):
                 ),
             )
 
-            deadline = datetime.now(UTC) + timedelta(milliseconds=OPERATION_DEADLINE_MS)
+            grace_period_ms = min(
+                max(int(release["default_deadline_ms"]), DRAIN_GRACE_FLOOR_MS),
+                DRAIN_GRACE_CEILING_MS,
+            )
+            deadline = datetime.now(UTC) + timedelta(
+                milliseconds=OPERATION_DEADLINE_MS + grace_period_ms
+            )
             operation = one(
                 conn,
                 """
@@ -740,10 +746,7 @@ def register(app, pool, auth, settings):
                 release_id=release_id,
                 bundle_digest=release["bundle_digest"],
                 runtime_instance_id=candidate["runtime_instance_id"],
-                grace_period_ms=min(
-                    max(int(release["default_deadline_ms"]), DRAIN_GRACE_FLOOR_MS),
-                    DRAIN_GRACE_CEILING_MS,
-                ),
+                grace_period_ms=grace_period_ms,
                 deadline_unix_ms=operation["deadline_unix_ms"],
             )
             audit(
@@ -1015,7 +1018,13 @@ def register(app, pool, auth, settings):
                     generation,
                 ),
             )
-            deadline = datetime.now(UTC) + timedelta(milliseconds=OPERATION_DEADLINE_MS)
+            grace_period_ms = min(
+                max(int(release["default_deadline_ms"]), DRAIN_GRACE_FLOOR_MS),
+                DRAIN_GRACE_CEILING_MS,
+            )
+            deadline = datetime.now(UTC) + timedelta(
+                milliseconds=OPERATION_DEADLINE_MS + grace_period_ms
+            )
             new_operation = one(
                 conn,
                 """
@@ -1055,10 +1064,7 @@ def register(app, pool, auth, settings):
                 release_id=target["release_id"],
                 bundle_digest=target["bundle_digest"],
                 runtime_instance_id=candidate["runtime_instance_id"],
-                grace_period_ms=min(
-                    max(int(release["default_deadline_ms"]), DRAIN_GRACE_FLOOR_MS),
-                    DRAIN_GRACE_CEILING_MS,
-                ),
+                grace_period_ms=grace_period_ms,
                 deadline_unix_ms=new_operation["deadline_unix_ms"],
             )
             audit(
@@ -1430,6 +1436,10 @@ def _cutover(conn, node_id, req, operation) -> dict:
     grace_ms = min(
         max(int(old_release["default_deadline_ms"]), DRAIN_GRACE_FLOOR_MS), DRAIN_GRACE_CEILING_MS
     )
+    drain_deadline_unix_ms = max(
+        int(operation["deadline_unix_ms"]),
+        int(datetime.now(UTC).timestamp() * 1000) + grace_ms + 60_000,
+    )
     insert_intent(
         conn,
         node_id=node_id,
@@ -1444,12 +1454,12 @@ def _cutover(conn, node_id, req, operation) -> dict:
         bundle_digest=old_runtime["bundle_digest"],
         runtime_instance_id=old_runtime_id,
         grace_period_ms=grace_ms,
-        deadline_unix_ms=operation["deadline_unix_ms"],
+        deadline_unix_ms=drain_deadline_unix_ms,
     )
     conn.execute(
-        "UPDATE plugin_deployment_operation SET stage='draining_old', updated_at=now() "
-        "WHERE operation_id=%s",
-        (operation["operation_id"],),
+        "UPDATE plugin_deployment_operation SET stage='draining_old', "
+        "deadline_unix_ms=%s, updated_at=now() WHERE operation_id=%s",
+        (drain_deadline_unix_ms, operation["operation_id"]),
     )
     audit(
         conn,

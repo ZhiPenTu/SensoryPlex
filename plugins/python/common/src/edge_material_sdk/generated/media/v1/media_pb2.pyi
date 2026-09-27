@@ -18,12 +18,42 @@ class FrameRateMode(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     FRAME_RATE_MODE_UNKNOWN: _ClassVar[FrameRateMode]
     FRAME_RATE_MODE_CONSTANT: _ClassVar[FrameRateMode]
     FRAME_RATE_MODE_VARIABLE: _ClassVar[FrameRateMode]
+
+class FrameDecision(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    FRAME_DECISION_UNSPECIFIED: _ClassVar[FrameDecision]
+    FRAME_DECISION_FIRST_FRAME: _ClassVar[FrameDecision]
+    FRAME_DECISION_CONTENT_CHANGE: _ClassVar[FrameDecision]
+    FRAME_DECISION_TEXT_CHANGE: _ClassVar[FrameDecision]
+    FRAME_DECISION_STATIC_HEARTBEAT: _ClassVar[FrameDecision]
+    FRAME_DECISION_NO_CHANGE: _ClassVar[FrameDecision]
+
+class FrameSelection(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    FRAME_SELECTION_UNSPECIFIED: _ClassVar[FrameSelection]
+    FRAME_SELECTION_BASELINE_ANCHOR: _ClassVar[FrameSelection]
+    FRAME_SELECTION_EVENT_ANCHOR: _ClassVar[FrameSelection]
+    FRAME_SELECTION_EVENT_PRE_CONTEXT: _ClassVar[FrameSelection]
+    FRAME_SELECTION_EVENT_POST_CONTEXT: _ClassVar[FrameSelection]
+    FRAME_SELECTION_NOT_SELECTED: _ClassVar[FrameSelection]
 MEDIA_SOURCE_KIND_UNSPECIFIED: MediaSourceKind
 MEDIA_SOURCE_KIND_FILE: MediaSourceKind
 MEDIA_SOURCE_KIND_SRT: MediaSourceKind
 FRAME_RATE_MODE_UNKNOWN: FrameRateMode
 FRAME_RATE_MODE_CONSTANT: FrameRateMode
 FRAME_RATE_MODE_VARIABLE: FrameRateMode
+FRAME_DECISION_UNSPECIFIED: FrameDecision
+FRAME_DECISION_FIRST_FRAME: FrameDecision
+FRAME_DECISION_CONTENT_CHANGE: FrameDecision
+FRAME_DECISION_TEXT_CHANGE: FrameDecision
+FRAME_DECISION_STATIC_HEARTBEAT: FrameDecision
+FRAME_DECISION_NO_CHANGE: FrameDecision
+FRAME_SELECTION_UNSPECIFIED: FrameSelection
+FRAME_SELECTION_BASELINE_ANCHOR: FrameSelection
+FRAME_SELECTION_EVENT_ANCHOR: FrameSelection
+FRAME_SELECTION_EVENT_PRE_CONTEXT: FrameSelection
+FRAME_SELECTION_EVENT_POST_CONTEXT: FrameSelection
+FRAME_SELECTION_NOT_SELECTED: FrameSelection
 
 class MediaSourceRef(_message.Message):
     __slots__ = ("stream_id", "source_id", "kind", "uri_secret_ref", "content_hash")
@@ -196,7 +226,7 @@ class AudioSegmentReport(_message.Message):
     def __init__(self, segment_ms: _Optional[int] = ..., segments: _Optional[int] = ..., partial_segments: _Optional[int] = ..., bytes: _Optional[int] = ..., listed: _Optional[_Iterable[_Union[AudioSegment, _Mapping]]] = ..., listed_limit: _Optional[int] = ..., dropped_samples: _Optional[int] = ..., discontinuities: _Optional[int] = ..., drop_reasons: _Optional[_Iterable[str]] = ..., overlap_ms: _Optional[int] = ...) -> None: ...
 
 class SamplingReport(_message.Message):
-    __slots__ = ("track_kind", "min_interval_ms", "static_hold_ms", "change_threshold", "observed", "kept", "kept_first_frame", "kept_content_change", "kept_static_heartbeat", "skipped_rate_limited", "skipped_no_change", "skipped_non_monotonic", "skipped_missing_signature", "max_gap_ms", "max_keeps_bound", "max_frame_interval_ms", "skipped_backpressure_throttled")
+    __slots__ = ("track_kind", "min_interval_ms", "static_hold_ms", "change_threshold", "observed", "kept", "kept_first_frame", "kept_content_change", "kept_static_heartbeat", "skipped_rate_limited", "skipped_no_change", "skipped_non_monotonic", "skipped_missing_signature", "max_gap_ms", "max_keeps_bound", "max_frame_interval_ms", "skipped_backpressure_throttled", "kept_evidence_window")
     TRACK_KIND_FIELD_NUMBER: _ClassVar[int]
     MIN_INTERVAL_MS_FIELD_NUMBER: _ClassVar[int]
     STATIC_HOLD_MS_FIELD_NUMBER: _ClassVar[int]
@@ -214,6 +244,7 @@ class SamplingReport(_message.Message):
     MAX_KEEPS_BOUND_FIELD_NUMBER: _ClassVar[int]
     MAX_FRAME_INTERVAL_MS_FIELD_NUMBER: _ClassVar[int]
     SKIPPED_BACKPRESSURE_THROTTLED_FIELD_NUMBER: _ClassVar[int]
+    KEPT_EVIDENCE_WINDOW_FIELD_NUMBER: _ClassVar[int]
     track_kind: str
     min_interval_ms: int
     static_hold_ms: int
@@ -231,10 +262,105 @@ class SamplingReport(_message.Message):
     max_keeps_bound: int
     max_frame_interval_ms: int
     skipped_backpressure_throttled: int
-    def __init__(self, track_kind: _Optional[str] = ..., min_interval_ms: _Optional[int] = ..., static_hold_ms: _Optional[int] = ..., change_threshold: _Optional[int] = ..., observed: _Optional[int] = ..., kept: _Optional[int] = ..., kept_first_frame: _Optional[int] = ..., kept_content_change: _Optional[int] = ..., kept_static_heartbeat: _Optional[int] = ..., skipped_rate_limited: _Optional[int] = ..., skipped_no_change: _Optional[int] = ..., skipped_non_monotonic: _Optional[int] = ..., skipped_missing_signature: _Optional[int] = ..., max_gap_ms: _Optional[int] = ..., max_keeps_bound: _Optional[int] = ..., max_frame_interval_ms: _Optional[int] = ..., skipped_backpressure_throttled: _Optional[int] = ...) -> None: ...
+    kept_evidence_window: int
+    def __init__(self, track_kind: _Optional[str] = ..., min_interval_ms: _Optional[int] = ..., static_hold_ms: _Optional[int] = ..., change_threshold: _Optional[int] = ..., observed: _Optional[int] = ..., kept: _Optional[int] = ..., kept_first_frame: _Optional[int] = ..., kept_content_change: _Optional[int] = ..., kept_static_heartbeat: _Optional[int] = ..., skipped_rate_limited: _Optional[int] = ..., skipped_no_change: _Optional[int] = ..., skipped_non_monotonic: _Optional[int] = ..., skipped_missing_signature: _Optional[int] = ..., max_gap_ms: _Optional[int] = ..., max_keeps_bound: _Optional[int] = ..., max_frame_interval_ms: _Optional[int] = ..., skipped_backpressure_throttled: _Optional[int] = ..., kept_evidence_window: _Optional[int] = ...) -> None: ...
+
+class FrameCharacterization(_message.Message):
+    __slots__ = ("buffer_id", "frame_index", "time_range", "signature_delta", "text_signature_delta", "signature_available", "decision", "selection", "evidence_window_id", "skip_reason")
+    BUFFER_ID_FIELD_NUMBER: _ClassVar[int]
+    FRAME_INDEX_FIELD_NUMBER: _ClassVar[int]
+    TIME_RANGE_FIELD_NUMBER: _ClassVar[int]
+    SIGNATURE_DELTA_FIELD_NUMBER: _ClassVar[int]
+    TEXT_SIGNATURE_DELTA_FIELD_NUMBER: _ClassVar[int]
+    SIGNATURE_AVAILABLE_FIELD_NUMBER: _ClassVar[int]
+    DECISION_FIELD_NUMBER: _ClassVar[int]
+    SELECTION_FIELD_NUMBER: _ClassVar[int]
+    EVIDENCE_WINDOW_ID_FIELD_NUMBER: _ClassVar[int]
+    SKIP_REASON_FIELD_NUMBER: _ClassVar[int]
+    buffer_id: str
+    frame_index: int
+    time_range: _common_pb2.TimeRange
+    signature_delta: int
+    text_signature_delta: int
+    signature_available: bool
+    decision: FrameDecision
+    selection: FrameSelection
+    evidence_window_id: str
+    skip_reason: str
+    def __init__(self, buffer_id: _Optional[str] = ..., frame_index: _Optional[int] = ..., time_range: _Optional[_Union[_common_pb2.TimeRange, _Mapping]] = ..., signature_delta: _Optional[int] = ..., text_signature_delta: _Optional[int] = ..., signature_available: bool = ..., decision: _Optional[_Union[FrameDecision, str]] = ..., selection: _Optional[_Union[FrameSelection, str]] = ..., evidence_window_id: _Optional[str] = ..., skip_reason: _Optional[str] = ...) -> None: ...
+
+class EvidenceWindow(_message.Message):
+    __slots__ = ("window_id", "time_range", "anchor_ms", "trigger", "frame_buffer_ids", "context_before", "context_after", "handed_off_frames")
+    WINDOW_ID_FIELD_NUMBER: _ClassVar[int]
+    TIME_RANGE_FIELD_NUMBER: _ClassVar[int]
+    ANCHOR_MS_FIELD_NUMBER: _ClassVar[int]
+    TRIGGER_FIELD_NUMBER: _ClassVar[int]
+    FRAME_BUFFER_IDS_FIELD_NUMBER: _ClassVar[int]
+    CONTEXT_BEFORE_FIELD_NUMBER: _ClassVar[int]
+    CONTEXT_AFTER_FIELD_NUMBER: _ClassVar[int]
+    HANDED_OFF_FRAMES_FIELD_NUMBER: _ClassVar[int]
+    window_id: str
+    time_range: _common_pb2.TimeRange
+    anchor_ms: int
+    trigger: str
+    frame_buffer_ids: _containers.RepeatedScalarFieldContainer[str]
+    context_before: int
+    context_after: int
+    handed_off_frames: int
+    def __init__(self, window_id: _Optional[str] = ..., time_range: _Optional[_Union[_common_pb2.TimeRange, _Mapping]] = ..., anchor_ms: _Optional[int] = ..., trigger: _Optional[str] = ..., frame_buffer_ids: _Optional[_Iterable[str]] = ..., context_before: _Optional[int] = ..., context_after: _Optional[int] = ..., handed_off_frames: _Optional[int] = ...) -> None: ...
+
+class SemanticCoverageReport(_message.Message):
+    __slots__ = ("track_kind", "max_semantic_gap_ms", "evidence_context_frames", "evidence_pre_frames", "change_threshold", "text_change_threshold", "characterized_frames", "selected_baseline_anchor", "selected_event_anchor", "selected_event_pre_context", "selected_event_post_context", "covered_without_model_refresh", "windows", "windows_listed_limit", "listed_windows", "max_selected_gap_ms", "suppressed_event_keeps", "pre_context_evictions", "frame_ledger_path", "frame_ledger_entries", "decision_counts", "selection_counts", "skip_reason_counts")
+    TRACK_KIND_FIELD_NUMBER: _ClassVar[int]
+    MAX_SEMANTIC_GAP_MS_FIELD_NUMBER: _ClassVar[int]
+    EVIDENCE_CONTEXT_FRAMES_FIELD_NUMBER: _ClassVar[int]
+    EVIDENCE_PRE_FRAMES_FIELD_NUMBER: _ClassVar[int]
+    CHANGE_THRESHOLD_FIELD_NUMBER: _ClassVar[int]
+    TEXT_CHANGE_THRESHOLD_FIELD_NUMBER: _ClassVar[int]
+    CHARACTERIZED_FRAMES_FIELD_NUMBER: _ClassVar[int]
+    SELECTED_BASELINE_ANCHOR_FIELD_NUMBER: _ClassVar[int]
+    SELECTED_EVENT_ANCHOR_FIELD_NUMBER: _ClassVar[int]
+    SELECTED_EVENT_PRE_CONTEXT_FIELD_NUMBER: _ClassVar[int]
+    SELECTED_EVENT_POST_CONTEXT_FIELD_NUMBER: _ClassVar[int]
+    COVERED_WITHOUT_MODEL_REFRESH_FIELD_NUMBER: _ClassVar[int]
+    WINDOWS_FIELD_NUMBER: _ClassVar[int]
+    WINDOWS_LISTED_LIMIT_FIELD_NUMBER: _ClassVar[int]
+    LISTED_WINDOWS_FIELD_NUMBER: _ClassVar[int]
+    MAX_SELECTED_GAP_MS_FIELD_NUMBER: _ClassVar[int]
+    SUPPRESSED_EVENT_KEEPS_FIELD_NUMBER: _ClassVar[int]
+    PRE_CONTEXT_EVICTIONS_FIELD_NUMBER: _ClassVar[int]
+    FRAME_LEDGER_PATH_FIELD_NUMBER: _ClassVar[int]
+    FRAME_LEDGER_ENTRIES_FIELD_NUMBER: _ClassVar[int]
+    DECISION_COUNTS_FIELD_NUMBER: _ClassVar[int]
+    SELECTION_COUNTS_FIELD_NUMBER: _ClassVar[int]
+    SKIP_REASON_COUNTS_FIELD_NUMBER: _ClassVar[int]
+    track_kind: str
+    max_semantic_gap_ms: int
+    evidence_context_frames: int
+    evidence_pre_frames: int
+    change_threshold: int
+    text_change_threshold: int
+    characterized_frames: int
+    selected_baseline_anchor: int
+    selected_event_anchor: int
+    selected_event_pre_context: int
+    selected_event_post_context: int
+    covered_without_model_refresh: int
+    windows: int
+    windows_listed_limit: int
+    listed_windows: _containers.RepeatedCompositeFieldContainer[EvidenceWindow]
+    max_selected_gap_ms: int
+    suppressed_event_keeps: int
+    pre_context_evictions: int
+    frame_ledger_path: str
+    frame_ledger_entries: int
+    decision_counts: _containers.RepeatedScalarFieldContainer[str]
+    selection_counts: _containers.RepeatedScalarFieldContainer[str]
+    skip_reason_counts: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, track_kind: _Optional[str] = ..., max_semantic_gap_ms: _Optional[int] = ..., evidence_context_frames: _Optional[int] = ..., evidence_pre_frames: _Optional[int] = ..., change_threshold: _Optional[int] = ..., text_change_threshold: _Optional[int] = ..., characterized_frames: _Optional[int] = ..., selected_baseline_anchor: _Optional[int] = ..., selected_event_anchor: _Optional[int] = ..., selected_event_pre_context: _Optional[int] = ..., selected_event_post_context: _Optional[int] = ..., covered_without_model_refresh: _Optional[int] = ..., windows: _Optional[int] = ..., windows_listed_limit: _Optional[int] = ..., listed_windows: _Optional[_Iterable[_Union[EvidenceWindow, _Mapping]]] = ..., max_selected_gap_ms: _Optional[int] = ..., suppressed_event_keeps: _Optional[int] = ..., pre_context_evictions: _Optional[int] = ..., frame_ledger_path: _Optional[str] = ..., frame_ledger_entries: _Optional[int] = ..., decision_counts: _Optional[_Iterable[str]] = ..., selection_counts: _Optional[_Iterable[str]] = ..., skip_reason_counts: _Optional[_Iterable[str]] = ...) -> None: ...
 
 class DecodedDataPlane(_message.Message):
-    __slots__ = ("arena_id", "arena_capacity_bytes", "arena_peak_bytes", "decoded_bytes", "tracks", "descriptors_built", "descriptors_validated", "descriptor_failures", "failure_reasons", "leases_issued", "leases_released", "evidence_descriptors", "audio_segments", "sampling", "backpressure", "rejected_tracks")
+    __slots__ = ("arena_id", "arena_capacity_bytes", "arena_peak_bytes", "decoded_bytes", "tracks", "descriptors_built", "descriptors_validated", "descriptor_failures", "failure_reasons", "leases_issued", "leases_released", "evidence_descriptors", "audio_segments", "sampling", "backpressure", "rejected_tracks", "semantic_coverage")
     ARENA_ID_FIELD_NUMBER: _ClassVar[int]
     ARENA_CAPACITY_BYTES_FIELD_NUMBER: _ClassVar[int]
     ARENA_PEAK_BYTES_FIELD_NUMBER: _ClassVar[int]
@@ -251,6 +377,7 @@ class DecodedDataPlane(_message.Message):
     SAMPLING_FIELD_NUMBER: _ClassVar[int]
     BACKPRESSURE_FIELD_NUMBER: _ClassVar[int]
     REJECTED_TRACKS_FIELD_NUMBER: _ClassVar[int]
+    SEMANTIC_COVERAGE_FIELD_NUMBER: _ClassVar[int]
     arena_id: str
     arena_capacity_bytes: int
     arena_peak_bytes: int
@@ -267,7 +394,8 @@ class DecodedDataPlane(_message.Message):
     sampling: _containers.RepeatedCompositeFieldContainer[SamplingReport]
     backpressure: BackpressureReport
     rejected_tracks: _containers.RepeatedCompositeFieldContainer[RejectedTrack]
-    def __init__(self, arena_id: _Optional[str] = ..., arena_capacity_bytes: _Optional[int] = ..., arena_peak_bytes: _Optional[int] = ..., decoded_bytes: _Optional[int] = ..., tracks: _Optional[_Iterable[_Union[DecodedTrackStat, _Mapping]]] = ..., descriptors_built: _Optional[int] = ..., descriptors_validated: _Optional[int] = ..., descriptor_failures: _Optional[int] = ..., failure_reasons: _Optional[_Iterable[str]] = ..., leases_issued: _Optional[int] = ..., leases_released: _Optional[int] = ..., evidence_descriptors: _Optional[_Iterable[_Union[_common_pb2.BufferDescriptor, _Mapping]]] = ..., audio_segments: _Optional[_Union[AudioSegmentReport, _Mapping]] = ..., sampling: _Optional[_Iterable[_Union[SamplingReport, _Mapping]]] = ..., backpressure: _Optional[_Union[BackpressureReport, _Mapping]] = ..., rejected_tracks: _Optional[_Iterable[_Union[RejectedTrack, _Mapping]]] = ...) -> None: ...
+    semantic_coverage: _containers.RepeatedCompositeFieldContainer[SemanticCoverageReport]
+    def __init__(self, arena_id: _Optional[str] = ..., arena_capacity_bytes: _Optional[int] = ..., arena_peak_bytes: _Optional[int] = ..., decoded_bytes: _Optional[int] = ..., tracks: _Optional[_Iterable[_Union[DecodedTrackStat, _Mapping]]] = ..., descriptors_built: _Optional[int] = ..., descriptors_validated: _Optional[int] = ..., descriptor_failures: _Optional[int] = ..., failure_reasons: _Optional[_Iterable[str]] = ..., leases_issued: _Optional[int] = ..., leases_released: _Optional[int] = ..., evidence_descriptors: _Optional[_Iterable[_Union[_common_pb2.BufferDescriptor, _Mapping]]] = ..., audio_segments: _Optional[_Union[AudioSegmentReport, _Mapping]] = ..., sampling: _Optional[_Iterable[_Union[SamplingReport, _Mapping]]] = ..., backpressure: _Optional[_Union[BackpressureReport, _Mapping]] = ..., rejected_tracks: _Optional[_Iterable[_Union[RejectedTrack, _Mapping]]] = ..., semantic_coverage: _Optional[_Iterable[_Union[SemanticCoverageReport, _Mapping]]] = ...) -> None: ...
 
 class BackpressureQueue(_message.Message):
     __slots__ = ("name", "unit", "capacity", "current", "peak")

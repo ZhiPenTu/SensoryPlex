@@ -34,7 +34,7 @@ from sensoryplex_gateway.settings import Settings  # noqa: E402
 
 # 这是验收工具要求的最小数据库版本；新增迁移改变事实/执行契约后必须同步推进，
 # 不能把已经成功迁移的控制面误读为不可用。
-CURRENT_SCHEMA = "0012_timeline_coverage"
+CURRENT_SCHEMA = "0013_timeline_coverage_states"
 
 
 class OrchestrationVerifier:

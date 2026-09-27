@@ -6,9 +6,9 @@
 //! - 所有拒绝都在应答里给出 `reason_code`，调用方不必读日志猜原因；
 //! - 这里不做"兜底"：TTL 越界、窗口越界、迟到释放一律失败。
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, MutexGuard};
 
-use sensoryplex_media::handoff::{BufferHandoff, HandoffStats, RetainedBuffer};
+use sensoryplex_media::handoff::{BufferHandoff, HandoffStats, RetainedBuffer, SharedHandoff};
 use sensoryplex_sdk::common::{ErrorCode, ProcessingError};
 use sensoryplex_sdk::media as contract;
 use sensoryplex_sdk::media::buffer_handoff_service_server::{
@@ -22,33 +22,16 @@ pub use sensoryplex_sdk::media::buffer_handoff_service_server::BufferHandoffServ
 pub const DEFAULT_HANDOFF_TTL_MS: u32 = 5_000;
 
 pub struct HandoffService {
-    plane: Arc<Mutex<BufferHandoff>>,
+    plane: Arc<SharedHandoff>,
     default_ttl_ms: u32,
-    /// 每次 RPC 都会刷新；空闲超过阈值即认为消费者已经离开。
-    last_activity_ms: Arc<std::sync::atomic::AtomicI64>,
-    /// 是否已经有过消费者。没等到消费者和"消费者走了"是两种不同的情况：
-    /// 前者说明数据面没人用，账面对不上，必须显式失败。
-    connected: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl HandoffService {
-    pub fn new(plane: Arc<Mutex<BufferHandoff>>, default_ttl_ms: u32) -> Self {
+    pub fn new(plane: Arc<SharedHandoff>, default_ttl_ms: u32) -> Self {
         Self {
             plane,
             default_ttl_ms,
-            last_activity_ms: Arc::new(std::sync::atomic::AtomicI64::new(
-                sensoryplex_media::now_unix_ms(),
-            )),
-            connected: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
-    }
-
-    pub fn last_activity_ms(&self) -> Arc<std::sync::atomic::AtomicI64> {
-        Arc::clone(&self.last_activity_ms)
-    }
-
-    pub fn connected(&self) -> Arc<std::sync::atomic::AtomicBool> {
-        Arc::clone(&self.connected)
     }
 
     pub fn server(self) -> Server<Self> {
@@ -56,14 +39,12 @@ impl HandoffService {
     }
 
     /// 取数据面并把这次调用记为"消费者还活着"。锁中毒是内部错误，必须显式失败。
-    fn plane(&self) -> Result<std::sync::MutexGuard<'_, BufferHandoff>, &'static str> {
-        self.last_activity_ms.store(
-            sensoryplex_media::now_unix_ms(),
-            std::sync::atomic::Ordering::Relaxed,
-        );
-        self.connected
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-        self.plane.lock().map_err(|_| "handoff_plane_poisoned")
+    ///
+    /// 消费者在场这件事记在**共享句柄**上，因为解码路径要读它来决定"这一帧值不值得等"：
+    /// 没有消费者时等待只是把解码拖住。
+    fn plane(&self) -> Result<MutexGuard<'_, BufferHandoff>, String> {
+        self.plane.mark_consumer_active();
+        self.plane.plane().map_err(|error| reason_code(&error))
     }
 }
 

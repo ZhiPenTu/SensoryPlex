@@ -180,7 +180,9 @@ function ExecutionDetails({ job, onClose }: { job: JobDraft; onClose: () => void
                                     title: '状态',
                                     dataIndex: 'state',
                                     key: 'state',
-                                    render: (state: string) => <Badge state={state} />,
+                                    render: (state: string) => (
+                                        <Badge state={state === 'pending' ? 'task_pending' : state} />
+                                    ),
                                 },
                                 {
                                     title: '原因',
