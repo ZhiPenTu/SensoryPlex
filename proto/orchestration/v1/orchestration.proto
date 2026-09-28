@@ -1,6 +1,8 @@
 syntax = "proto3";
 package edge.material.orchestration.v1;
 
+import "common/v1/common.proto";
+import "material/v1/material.proto";
 import "google/protobuf/struct.proto";
 
 // The authoritative, immutable identity of a plugin used by a published pipeline revision.
@@ -125,6 +127,29 @@ message TaskInputManifest {
   int64 start_ms = 9;
   int64 end_ms = 10;
   string content_hash = 11;
+  // 以下字段只用于延迟满足的对象引用任务。media_locator 是受控存储定位符，
+  // 不是宿主绝对路径、URL、文件描述符或任意命令。
+  string execution_id = 12;
+  string asset_id = 13;
+  string media_locator = 14;
+  edge.material.common.v1.TimeRange time_range = 15;
+  string prompt = 16;
+  string source_id = 17;
+  string source_item_id = 18;
+  string material_unit_id = 19;
+  PluginReference plugin = 20;
+}
+
+// VLM 慢路径的结果回传。JetStream 只负责至少一次投递；底座以 task_id 和
+// result_digest 在 PostgreSQL 做幂等收敛，绝不把消息 ACK 当成事实写入成功。
+message VlmTaskResult {
+  TaskInputManifest task = 1;
+  bool success = 2;
+  bool retryable = 3;
+  string reason_code = 4;
+  edge.material.material.v1.Observation observation = 5;
+  string result_digest = 6;
+  int64 completed_at_unix_ms = 7;
 }
 
 // 回执使“插件进程还活着”和“这个 assignment 已执行”成为两个不可混淆的事实。

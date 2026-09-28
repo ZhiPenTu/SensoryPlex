@@ -27,6 +27,43 @@ PLUGIN_DIR = pathlib.Path(__file__).parents[2] / "plugins/python/processors/vlm-
 DIGEST = "sha256:" + "a" * 64
 
 
+def test_local_decode_memory_limit_survives_protobuf_struct():
+    from google.protobuf.json_format import MessageToDict, ParseDict
+
+    request = runtime.ValidateConfigRequest()
+    ParseDict(
+        {"data_plane_mode": "local_decode", "min_free_memory_bytes": 268435456}, request.config
+    )
+    config = MessageToDict(request.config)
+    assert vlm.validate_config(config).valid
+    assert not vlm.validate_config({**config, "min_free_memory_bytes": 268435456.5}).valid
+    assert not vlm.validate_config({**config, "min_free_memory_bytes": True}).valid
+
+
+@pytest.mark.parametrize("mode", ["per_request", "local_decode"])
+def test_grpc_start_does_not_require_static_handoff_for_dynamic_modes(monkeypatch, mode):
+    import asyncio
+
+    from edge_material_plugin_vlm_moondream.server import PluginServicer
+    from google.protobuf.json_format import ParseDict
+
+    plugin = make_plugin()
+    monkeypatch.setattr(plugin, "_probe_model", lambda config: plugin.model)
+    loop = asyncio.new_event_loop()
+    try:
+        service = PluginServicer(plugin, loop)
+        request = runtime.StartRequest()
+        config = {"data_plane_mode": mode}
+        if mode == "local_decode":
+            config["min_free_memory_bytes"] = 268435456
+        ParseDict(config, request.config)
+        response = service.Start(request, None)
+        assert response.state == "ready", response.error.reason_code
+        assert plugin.buffer_reader is None
+    finally:
+        loop.close()
+
+
 class FakeReader:
     """测试替身：只实现插件真正用到的读取契约。"""
 
@@ -185,6 +222,16 @@ def test_config_validation_rejects_unknown_keys_and_missing_endpoint():
     assert not unknown.valid and unknown.field_errors == ["unknown_config_keys:typo"]
     missing = vlm.validate_config({"handoff_endpoint": ""})
     assert not missing.valid and "handoff_endpoint_required" in missing.field_errors
+
+    delayed_without_watermark = vlm.validate_config({"data_plane_mode": "local_decode"})
+    assert not delayed_without_watermark.valid
+    assert "min_free_memory_bytes_required" in delayed_without_watermark.field_errors
+    assert vlm.validate_config(
+        {
+            "data_plane_mode": "local_decode",
+            "min_free_memory_bytes": vlm.MIN_LOCAL_DECODE_FREE_MEMORY_BYTES,
+        }
+    ).valid
 
 
 def test_config_hash_tracks_only_the_effective_config():

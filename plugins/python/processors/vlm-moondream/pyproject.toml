@@ -1,9 +1,9 @@
 [project]
 name = "edge-material-plugin-vlm-moondream"
-version = "0.1.1"
+version = "0.1.3"
 description = "SensoryPlex VLM scene-description processor plugin (local ollama backend)"
 requires-python = ">=3.12,<3.13"
-dependencies = ["edge-material-sdk", "grpcio>=1.71,<1.72"]
+dependencies = ["edge-material-sdk", "grpcio>=1.71,<1.72", "nats-py>=2.9,<3"]
 
 [build-system]
 requires = ["hatchling"]

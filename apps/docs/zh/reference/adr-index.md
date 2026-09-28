@@ -33,6 +33,8 @@
 | ADR-027 | 事件链路分级背压与容器化常驻 | `events` profile 与档位准入 |
 | ADR-028 | Runtime到Timeline接线与授权追加 | runtime 输出如何变成被授权的事实 |
 | ADR-029 | 可编排插件执行核心 | 不可变 revision、持久 Run、多节点调度 |
+| ADR-030 | 插件热部署执行器 | 版本化蓝绿本机 native 插件进程 |
+| ADR-031 | VLM 延迟满足 WorkQueue | 底座发布、插件拉取与增量融合 |
 
 ::: tip 关于编号
 仓库里没有 ADR-018 文件；编号刻意留了空档而没有重排，因为 ADR 编号被代码与迁移引用。
@@ -41,7 +43,7 @@
 ## 去哪里读
 
 - ADR-001 … ADR-008 —— 仓库根的 `技术选型ADR与V1实施蓝图.md`
-- ADR-009 … ADR-029 —— [`docs/adr/`](https://github.com/ZhiPenTu/SensoryPlex/tree/master/docs/adr)
+- ADR-009 … ADR-031 —— [`docs/adr/`](https://github.com/ZhiPenTu/SensoryPlex/tree/master/docs/adr)
 
 与 ADR 一起读会更有用的设计文档：
 

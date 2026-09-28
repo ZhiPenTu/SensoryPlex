@@ -691,6 +691,32 @@ class CreatePluginDeploymentRequest(_message.Message):
     config: _struct_pb2.Struct
     def __init__(self, release_id: _Optional[str] = ..., config_id: _Optional[str] = ..., config: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ...) -> None: ...
 
+class BatchDeployPluginsRequest(_message.Message):
+    __slots__ = ("plugin_ids",)
+    PLUGIN_IDS_FIELD_NUMBER: _ClassVar[int]
+    plugin_ids: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, plugin_ids: _Optional[_Iterable[str]] = ...) -> None: ...
+
+class PluginDeploymentRejection(_message.Message):
+    __slots__ = ("plugin_id", "reason")
+    PLUGIN_ID_FIELD_NUMBER: _ClassVar[int]
+    REASON_FIELD_NUMBER: _ClassVar[int]
+    plugin_id: str
+    reason: str
+    def __init__(self, plugin_id: _Optional[str] = ..., reason: _Optional[str] = ...) -> None: ...
+
+class BatchDeployPluginsResponse(_message.Message):
+    __slots__ = ("node_id", "operations", "already_ready", "rejected")
+    NODE_ID_FIELD_NUMBER: _ClassVar[int]
+    OPERATIONS_FIELD_NUMBER: _ClassVar[int]
+    ALREADY_READY_FIELD_NUMBER: _ClassVar[int]
+    REJECTED_FIELD_NUMBER: _ClassVar[int]
+    node_id: str
+    operations: _containers.RepeatedCompositeFieldContainer[PluginDeploymentOperation]
+    already_ready: _containers.RepeatedScalarFieldContainer[str]
+    rejected: _containers.RepeatedCompositeFieldContainer[PluginDeploymentRejection]
+    def __init__(self, node_id: _Optional[str] = ..., operations: _Optional[_Iterable[_Union[PluginDeploymentOperation, _Mapping]]] = ..., already_ready: _Optional[_Iterable[str]] = ..., rejected: _Optional[_Iterable[_Union[PluginDeploymentRejection, _Mapping]]] = ...) -> None: ...
+
 class SyncPluginReleasesRequest(_message.Message):
     __slots__ = ("dry_run",)
     DRY_RUN_FIELD_NUMBER: _ClassVar[int]

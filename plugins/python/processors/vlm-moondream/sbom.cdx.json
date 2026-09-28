@@ -10,6 +10,11 @@
       "name": "grpcio>=1.71,<1.72",
       "type": "library",
       "version": "unspecified"
+    },
+    {
+      "name": "nats-py>=2.9,<3",
+      "type": "library",
+      "version": "unspecified"
     }
   ],
   "metadata": {
@@ -18,11 +23,11 @@
       "properties": [
         {
           "name": "sensoryplex:package_digest",
-          "value": "sha256:21c1bcc823effaecba2e7be0aca176c1371131bb823ae6dce68606e3a330733b"
+          "value": "sha256:98035027be89cba0ad4afce31cf8284d6afb5fea4c35e77086c4214171eb5963"
         }
       ],
       "type": "application",
-      "version": "0.1.1"
+      "version": "0.1.3"
     },
     "tools": [
       {

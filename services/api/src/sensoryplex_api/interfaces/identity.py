@@ -28,15 +28,28 @@ def register(app, pool, auth, settings):
         auth.check_origin(request)
         if not settings.demo_username or not settings.demo_password:
             return out(pb.DemoAccount(enabled=False))
+        password = settings.demo_password.get_secret_value()
         with pool.connection() as conn:
             user = one(
                 conn,
                 "SELECT password_hash,disabled FROM console_user WHERE username=%s",
                 (settings.demo_username,),
             )
-        password = settings.demo_password.get_secret_value()
-        if not user or user["disabled"] or not verify_password(password, user["password_hash"]):
-            return out(pb.DemoAccount(enabled=False))
+            if not user or user["disabled"] or not verify_password(password, user["password_hash"]):
+                conn.execute(
+                    "INSERT INTO console_user "
+                    "(username, display_name, password_hash, roles, disabled, created_at) "
+                    "VALUES (%s, %s, %s, %s, false, now()) "
+                    "ON CONFLICT (username) DO UPDATE SET "
+                    "password_hash=EXCLUDED.password_hash, disabled=false",
+                    (
+                        settings.demo_username,
+                        "演示账号",
+                        password_hash(password),
+                        ["admin", "operator"],
+                    ),
+                )
+                conn.commit()
         return out(pb.DemoAccount(enabled=True, username=settings.demo_username, password=password))
 
     @app.post("/auth/v1/session")

@@ -3,7 +3,6 @@
 import json
 import pathlib
 import sys
-import urllib.request
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -16,22 +15,11 @@ from tools.verify_timeline_handoff import (  # noqa: E402
 )
 from tools.verify_timeline_semantic import (  # noqa: E402
     OCR_MODULE,
-    VLM_MODULE,
     derive_shared_url,
-    merge_worker_reports,
     ocr_model_dir,
 )
 
 PIPELINE = ROOT / "config/pipelines/file-material.yaml"
-
-
-def is_ollama_ready() -> bool:
-    try:
-        req = urllib.request.Request("http://127.0.0.1:11434/api/tags")
-        with urllib.request.urlopen(req, timeout=1.5) as resp:
-            return resp.status == 200
-    except Exception:
-        return False
 
 
 def run_video_task(config: dict, database_url: str = "") -> dict:
@@ -55,9 +43,9 @@ def run_video_task(config: dict, database_url: str = "") -> dict:
     workdir.mkdir(parents=True, exist_ok=True)
 
     failures = []
-    passes = []
 
-    # 1. 运行 OCR 识别遍（文字事实，为后续向量化和精准检索提供基石）
+    # legacy_ocr_v1 只保留 OCR 兼容事实。VLM 只能经 `orchestrated_v2` 的快路径入库事务创建
+    # WorkQueue outbox；这里再同步全片解码会重新把慢路径变成用户的阻塞条件。
     model_dir = ocr_model_dir()
     ocr_pass = replay_pass(
         media_path,
@@ -77,39 +65,13 @@ def run_video_task(config: dict, database_url: str = "") -> dict:
         max_frames=int(config.get("max_frames", 30)),
         exact_frame_count=False,
     )
-    passes.append(ocr_pass)
-
-    # 2. 如果显式配置 with_vlm 且本机 Ollama 在线，运行 VLM 场景描述遍
-    if config.get("with_vlm") and is_ollama_ready():
-        try:
-            vlm_pass = replay_pass(
-                media_path,
-                workdir,
-                failures,
-                plugin_module=VLM_MODULE,
-                report_name="replay-vlm.pb",
-                worker_report_name="ai-worker-vlm.json",
-                label="vlm",
-                max_frames=int(config.get("max_frames", 30)),
-                allow_frame_failures=True,
-                exact_frame_count=False,
-            )
-            passes.append(vlm_pass)
-        except Exception as e:
-            print(f"[task_runner] VLM optional pass skipped: {e}")
-
-    # 合并 worker 报告
-    if len(passes) == 1:
-        merged_report = passes[0]
-        replay_report = workdir / "replay-ocr.pb"
-    else:
-        merged_report = merge_worker_reports(passes)
-        replay_report = workdir / "replay-ocr.pb"
+    merged_report = ocr_pass
+    replay_report = workdir / "replay-ocr.pb"
 
     worker_report_path = workdir / "ai-worker-merged.json"
     worker_report_path.write_text(json.dumps(merged_report, indent=2, ensure_ascii=False))
 
-    # 3. 运行 Timeline 融合核心（确定性栅格选窗，逐条准入）
+    # 2. 运行 Timeline 融合核心（确定性栅格选窗，逐条准入）
     fuse_timeline(
         media_path,
         workdir,
@@ -123,7 +85,7 @@ def run_video_task(config: dict, database_url: str = "") -> dict:
     if failures:
         raise RuntimeError(f"pipeline_fusion_failed: {'; '.join(failures)}")
 
-    # 4. 授权事务性追加到数据库与 outbox
+    # 3. 授权事务性追加到数据库与 outbox
     timeline_report_path = workdir / "timeline.json"
     material_dir = workdir / "materials"
 

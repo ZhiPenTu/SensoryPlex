@@ -264,6 +264,13 @@ const statusConfig: Record<string, StatusStyle> = {
         icon: <SyncOutlined spin />,
     },
     fast_ready: { label: '基础素材', bg: '#eff6ff', text: '#1d4ed8', border: '#bfdbfe' },
+    ready_for_review: {
+        label: '可审阅，补全中',
+        bg: '#ecfeff',
+        text: '#0f766e',
+        border: '#99f6e4',
+        icon: <SyncOutlined spin />,
+    },
     NODE_STATUS_ENROLLING: {
         label: '注册中',
         bg: '#eff6ff',

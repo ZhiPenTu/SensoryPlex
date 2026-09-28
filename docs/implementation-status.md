@@ -153,7 +153,8 @@ CoreML 收益未取得；`metal`（ONNX 路径）、`linux-x86_64`、Mac mini �
 "绝不联网"只有 manifest 声明，没有 DNS/egress 强制执行。
 
 文本向量链路也已落地（第四个模型插件 `plugins/python/processors/embed-bge-onnx`）：这是第一条
-**不接数据面**的链路——输入是上游 OCR 观测里的文字（`observation.ocr_blocks`），不是字节，
+**不接数据面**的链路——输入是上游 OCR 文字块（`observation.ocr_blocks`）或受控 VLM 场景描述
+（`observation.vision.scene_description.text`），不是字节，
 因此 manifest 声明 `acceptsMemoryKinds: []`，喂 buffer 会以 `buffer_reader_not_attached` 明确拒绝。
 本机 BGE 权重（`onnx/model_quantized.onnx` 24 010 842 B + `tokenizer.json` + `config.json` 三份文件的
 **组合摘要**，由验收脚本独立复算）产出**维度版本化**的 L2 归一化向量：`dimension=512` 取自
@@ -341,7 +342,39 @@ GLMemory 协商导致多视频轨竞态、容器内 PCM 的源编码采集不到
 没有经过 PR，需要维护者确认来源（见 `docs/verification.md` 的"M8 BGE"一节末）。
 
 
-## 多模态文件方案执行闭环（ADR-028 / ADR-029 / ADR-030 桥接）已落地并验收
+## VLM 延迟满足 WorkQueue（ADR-031）已接入并完成消息层验收
+
+2026-09-28 起，新发布的 `orchestrated_v2` 文件多模态 Revision 不再将 `vlm_enrich` 编译为同步 DAG
+节点：OCR、ASR 与 Timeline 仍是必需 L1；VLM 的制品、配置、提示词和采样策略作为 Timeline 的不可变
+`delayed_enrichments` 写入 revision。L1 事实入库后，任务即转为 `ready_for_review`，基础素材、原片回放
+与文字定位不等待 VLM。
+
+- 迁移 `0014_vlm_delayed_enrichment.sql` / `0015_vlm_failure_result_receipt.sql` 新增 VLM 任务、任务
+  outbox 与结果回执账本；发布前不写 `published_at`，结果融合在 PostgreSQL 事务成功后才 ACK；成功和
+  不可重试失败都可幂等重放。
+- `sensoryplex-tasks` 是独立的 JetStream WorkQueue；`vlm-publisher` 创建/严格对账流，宿主 VLM
+  Consumer 以 `fetch(batch=1)` 竞争任务，`vlm-result-fuser` 消费结果后增量追加 Observation/Material，
+  再触发现有 material outbox → relay → index 链路。
+- Consumer 只收 content-hash 受控定位符和时间锚点，本机按需解码单帧；它必须有显式可用内存水位，低于
+  水位或无法探测时不会拉取任务。没有 Raw Buffer、宿主路径、模型密钥或解压像素越过消息边界。
+- Console 对该 VLM 的新配置固定为 `local_decode` 并携带最低 256 MiB 的本机余量水位；其完整配置摘要
+  与 Pull Consumer 严格比对。`per_request` 只保留给 OCR/ASR 的 descriptor 路径，不能再发布成 VLM
+  慢路径 Revision；Consumer 模块以 `python -m` 原生启动时会实际进入拉取循环，而不是静默退出。
+- `make vlm-workqueue-check` 已在 Compose NATS 验证两个独立 Consumer 竞争十条任务、每条只 ACK 一次，
+  以及未 ACK 任务经 AckWait 的第 2 次投递。`./deploy/up-events.sh` 会启动并健康检查 publisher/fuser；
+  其状态行在 `.data/events/`，不能把“容器启动”读作 Consumer 已就绪。
+- 既有 index Consumer 已扩展为只对 OCR `blocks[].text` 与 VLM `vision.scene_description.text` 两种受控
+  文本形态生成 BGE 向量；prompt、帧元数据、ASR 和未知 modality 仍显式排除。PostgreSQL 集成测试验证
+  延迟 VLM Observation 会写成 ready 向量记录。
+
+**仍未验收：** 授权媒体在 native VLM Consumer 节点上的真实按需解码、真实 Moondream 推理、延迟描述进入
+常驻索引并经语义检索/Range 回放可见，以及 VLM 满负载时的 RSS/统一内存曲线。因此
+`golden_path_verified=false` 保持不变；本节不能替代真实媒体 Golden Path。
+
+## 多模态文件方案执行闭环（ADR-028 / ADR-029 / ADR-030 桥接，历史同步 VLM 记录）
+
+> 2026-09-28 的 ADR-031 已将新 Revision 的 VLM 从本节描述的同步 DAG 路径拆出。以下记录保留此前
+> 实现与验收背景，不能被用来宣称当前延迟满足路径的真实模型媒体闭环已经完成。
 
 依据 [多模态文件任务执行闭环方案](design/multimodal-pipeline-execution-plan.md)，已完成同机 `local_native` 完整多模态执行闭环：
 
@@ -399,3 +432,26 @@ GLMemory 协商导致多视频轨竞态、容器内 PCM 的源编码采集不到
    - **证据边界**：这一层证明的是**输入完整性**与**语义覆盖**（间隔上界 + 变化窗口），
      **不**证明**模型完整性**——每个窗口/锚点是否真的产出了可用的模型输出仍未验收；
      `golden_path_verified=false` 保持不变。
+
+## 2026-09-28：插件中心一键装配恢复真实安装
+
+- 一键装配改为同步受控制品仓并创建 ADR-030 部署操作；只选择与当前目录的版本、代码摘要和
+  节点平台完全匹配的首方 release。每个插件独立事务，进行中的操作复用，已就绪实例跳过；
+  候选从 planned 起预留资源，批量最多 16 项，不再发送仅写本地记录的旧 install 意图。
+- Console 展示逐项未受理原因、实际部署阶段与持续刷新的活跃实例数；目录上的
+  “本机已安装运行”要求 ready、active 指针、endpoint 和当前代码摘要均匹配。
+- 旧 Agent install/start/rollback 意图显式报 `controlled_release_required`，不再虚报安装成功；
+  legacy task worker 不覆盖已登记 Agent 的心跳或下线状态。
+- 本机 Agent 的 LaunchAgent 已从失效工作区路径恢复到当前仓库并重新登记；保留原有插件台账。
+  启动已有 Ollama 服务，保存本机 BGE 权重配置。VLM 0.1.3 修复 `local_decode` 生命周期启动
+  误读静态 handoff 地址，以及 protobuf Struct 将整数内存水位变成 float 的校验问题；
+  Embedding 当前源码打包为不可变 0.1.1 发布包，旧包及失败操作不覆盖、不删除。
+- 实机证据：通过浏览器一键装配，四项部署均 `succeeded`，逐一 gRPC Describe 的插件身份、
+  版本和摘要与 active 台账一致，Health 均 ready：ASR 0.1.1
+  (`op_70f1615f5b694dbbac9d5871550dc6c2`)、Embedding 0.1.1
+  (`op_d40125f094c34321aa1e2acf3ab4c72a`)、OCR 0.1.1
+  (`op_a8f4c2ae772f440da76ffd1dd6eb1200`)、VLM 0.1.3
+  (`op_e1319c9a93cd4a979de6c985dfcc82af`)。
+- 验证：容器内部署 API、Agent/legacy worker、VLM/BGE 契约共 81 项通过；定向 ruff 与
+  Console 构建通过；新增发布包整包与成员摘要独立复算通过。该证据限于本机安装与生命周期，
+  不代表媒体业务 Process、Linux 或完整 Golden Path 验收。

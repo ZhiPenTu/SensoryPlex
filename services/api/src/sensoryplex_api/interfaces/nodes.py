@@ -30,7 +30,7 @@ from ..contracts import (
     rows,
     text_field,
 )
-from ..infrastructure import materials, timeline_ingest
+from ..infrastructure import materials, timeline_ingest, vlm_delayed
 from ..infrastructure import orchestration as orchestrator
 from ..infrastructure.catalog import plugin
 from ..infrastructure.preflight import check_preflight
@@ -1194,8 +1194,8 @@ def register(app, pool, auth, settings):
             fail(422, "timeline_ingest_coverage_invalid")
 
         with pool.connection() as conn:
-            intent, config, execution, task, assignment, _revision, node, upload = (
-                v2_intent_context(conn, intent_id, authorization, lock=True)
+            intent, config, execution, task, assignment, revision, node, upload = v2_intent_context(
+                conn, intent_id, authorization, lock=True
             )
             if task_id != task["task_id"] or task["node_id"] != "timeline_fusion":
                 fail(403, "timeline_ingest_task_mismatch")
@@ -1278,9 +1278,49 @@ def register(app, pool, auth, settings):
                             Jsonb(reasons),
                         ),
                     )
+                # OCR/ASR 与完整覆盖层已经作为快路径事实落库；在同一事务内仅创建 VLM
+                # 时间锚点任务和 outbox，不连 NATS、更不解压任何帧。提交之后用户即可审阅，
+                # 发布器/Consumer 的可用性不再阻塞 L1。
+                vlm_task_ids = vlm_delayed.enqueue_vlm_tasks(
+                    conn,
+                    execution=execution,
+                    revision=revision,
+                    description=description,
+                    items=items,
+                    units=units,
+                )
+                conn.execute(
+                    """
+                    UPDATE console_job_execution
+                    SET state='ready_for_review',modality_summary=modality_summary || %s::jsonb,
+                        completed_at=NULL
+                    WHERE execution_id=%s
+                    """,
+                    (
+                        Jsonb(
+                            {
+                                "fast_path": "ready_for_review",
+                                "vlm_enrichment": {
+                                    "queued": len(vlm_task_ids),
+                                    "mode": "jetstream_workqueue",
+                                },
+                            }
+                        ),
+                        execution["execution_id"],
+                    ),
+                )
+                conn.execute(
+                    """
+                    UPDATE console_job_draft
+                    SET state='ready_for_review',error_code=NULL,error_detail=NULL,completed_at=NULL
+                    WHERE id=%s
+                    """,
+                    (execution["job_id"],),
+                )
             except (
                 timeline_ingest.TimelineIngestError,
                 materials.RevisionConflict,
+                vlm_delayed.VlmDelayedError,
                 ValueError,
             ) as error:
                 fail(422, str(error).split(":", 1)[0])
@@ -1297,6 +1337,7 @@ def register(app, pool, auth, settings):
             "appended": appended,
             "replayed": replayed,
             "coverage_windows": len(coverage),
+            "vlm_tasks_enqueued": len(vlm_task_ids),
         }
 
     @app.post("/v1/agent/heartbeat")
@@ -1843,107 +1884,6 @@ def register_lifecycle_convenience_endpoints(app, pool, auth, settings):
                 purged.append(nid)
             audit(conn, p.name, "node.purge_stale", f"count={len(purged)}")
         return {"purged": purged, "total": len(purged)}
-
-    @app.post("/admin/v1/nodes/{node_id}/plugins:batch-deploy")
-    def batch_deploy_plugins(
-        node_id: str,
-        body: Annotated[dict, Body()] = ...,
-        p: Annotated[object, Depends(auth.require("plugins:manage"))] = None,
-    ):
-        """一键向目标节点装配所有通过预检的基础流水线插件。"""
-        plugin_ids = body.get("plugin_ids") or [
-            "org.sensoryplex.vlm-moondream",
-            "org.sensoryplex.asr-whisper-mlx",
-            "org.sensoryplex.ocr-rapidocr",
-            "org.sensoryplex.embed-bge-onnx",
-        ]
-
-        deployed = []
-        rejected = []
-        with pool.connection() as conn:
-            nr = one(
-                conn,
-                "SELECT * FROM console_node WHERE node_id=%s FOR UPDATE",
-                (node_id,),
-            )
-            if not nr:
-                fail(404, "node_not_found")
-            if nr["status"] != "ready":
-                fail(409, "target_node_not_ready")
-
-            for pid in plugin_ids:
-                try:
-                    p_entry = plugin(settings, pid)
-                except Exception:
-                    continue
-
-                pre_res = check_preflight(nr, p_entry)
-                if not pre_res["eligible"]:
-                    rejected.append({"plugin_id": pid, "reason": pre_res["reason_code"]})
-                    continue
-
-                existing_inst = one(
-                    conn,
-                    "SELECT * FROM console_plugin_instance WHERE node_id=%s AND plugin_id=%s",
-                    (node_id, pid),
-                )
-                prev_digest = existing_inst["artifact_digest"] if existing_inst else None
-                inst_id = existing_inst["instance_id"] if existing_inst else identifier("inst")
-                config_hash = "sha256:" + hashlib.sha256(b"{}").hexdigest()
-
-                conn.execute(
-                    """
-                    INSERT INTO console_plugin_instance(
-                        instance_id, node_id, plugin_id, plugin_version, artifact_digest,
-                        previous_digest, desired_state, actual_state, config_hash, config,
-                        created_by, updated_at
-                    )
-                    VALUES (
-                        %s, %s, %s, %s, %s, %s, 'ready', 'installing', %s, '{}'::jsonb, %s, now()
-                    )
-                    ON CONFLICT (node_id, plugin_id) DO UPDATE SET
-                        plugin_version=EXCLUDED.plugin_version,
-                        previous_digest=console_plugin_instance.artifact_digest,
-                        artifact_digest=EXCLUDED.artifact_digest,
-                        desired_state='ready',
-                        actual_state='installing',
-                        config_hash=EXCLUDED.config_hash,
-                        error_code=NULL,
-                        error_detail=NULL,
-                        updated_at=now()
-                    """,
-                    (
-                        inst_id,
-                        node_id,
-                        pid,
-                        p_entry["version"],
-                        p_entry["digest"],
-                        prev_digest,
-                        config_hash,
-                        p.name,
-                    ),
-                )
-
-                intent_id = identifier("intent")
-                conn.execute(
-                    """
-                    INSERT INTO console_deployment_intent(
-                        id, node_id, instance_id, action, artifact_digest, rollback_digest,
-                        config, state, created_by
-                    ) VALUES (%s, %s, %s, 'install', %s, %s, '{}'::jsonb, 'pending', %s)
-                    """,
-                    (intent_id, node_id, inst_id, p_entry["digest"], prev_digest, p.name),
-                )
-                deployed.append(pid)
-
-            audit(
-                conn,
-                p.name,
-                "node.batch_deploy",
-                f"{node_id}:deployed={len(deployed)}:rejected={len(rejected)}",
-            )
-
-        return {"node_id": node_id, "deployed": deployed, "rejected": rejected}
 
     @app.post("/v1/agent/candidate-register")
     def candidate_register(body: Annotated[dict, Body()] = ...):

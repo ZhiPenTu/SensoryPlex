@@ -50,9 +50,9 @@ LOGGER = logging.getLogger("task_worker")
 
 
 def ensure_node_ready(conn) -> None:
-    """确保 local-host 节点存在并刷新心跳为 ready 状态。"""
+    """兼容旧工作器节点；已登记 Agent 的心跳与下线状态只能由 Agent 管理。"""
     row = conn.execute(
-        "SELECT node_id, status FROM console_node WHERE node_id=%s",
+        "SELECT node_id, status, session_token_hash FROM console_node WHERE node_id=%s",
         (NODE_ID,),
     ).fetchone()
     if not row:
@@ -70,7 +70,7 @@ def ensure_node_ready(conn) -> None:
             """,
             (NODE_ID,),
         )
-    else:
+    elif not row["session_token_hash"]:
         conn.execute(
             """
             UPDATE console_node
@@ -108,7 +108,7 @@ def process_pending_task(conn) -> bool:
               AND (draft.target_node_id=%s OR draft.target_node_id IS NULL)
               -- 直接扫描 Job 只是遗留兼容入口，同样不能越过 v2 执行器。
               AND pipeline.execution_mode='legacy_ocr_v1'
-            ORDER BY dispatched_at ASC NULLS LAST, created_at ASC
+            ORDER BY draft.dispatched_at ASC NULLS LAST, draft.created_at ASC
             FOR UPDATE SKIP LOCKED
             LIMIT 1
             """,

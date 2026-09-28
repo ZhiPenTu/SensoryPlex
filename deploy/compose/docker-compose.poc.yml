@@ -135,6 +135,10 @@ services:
       - type: bind
         source: ${REPO_ROOT:-../../}
         target: /workspace
+      - type: bind
+        source: ${REPO_ROOT:-../../}/deploy/compose/console.nginx.conf
+        target: /etc/nginx/conf.d/console.conf
+        read_only: true
     depends_on:
       api: {condition: service_healthy}
     ports: ["127.0.0.1:${CONSOLE_PORT:-5173}:5173"]
@@ -248,6 +252,90 @@ services:
         - |-
           import pathlib, time
           path = pathlib.Path("/workspace/.data/events/relay-status.json")
+          raise SystemExit(0 if path.is_file() and time.time() - path.stat().st_mtime < 15 else 1)
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    restart: unless-stopped
+
+  # VLM 慢路径发布器：只搬运 PostgreSQL 的 vlm_task_outbox 到独立 WorkQueue；确认发布前
+  # 不改变任务状态。它不读媒体、不运行模型，也不与素材事件流共用 subject。
+  vlm-publisher:
+    profiles: ["events"]
+    image: sensoryplex-api:0.1.0
+    build:
+      context: ../..
+      dockerfile: services/api/Dockerfile
+    command:
+      - /app/.venv/bin/python
+      - -m
+      - sensoryplex_api.vlm_slowpath
+      - publisher
+      - --batch
+      - ${SENSORYPLEX_VLM_PUBLISH_BATCH:-64}
+      - --status-out
+      - /workspace/.data/events/vlm-publisher-status.json
+    environment:
+      SENSORYPLEX_DATABASE_URL: postgresql://sensoryplex:${POSTGRES_PASSWORD}@postgres:5432/sensoryplex
+      SENSORYPLEX_NATS_URL: nats://nats:4222
+      PYTHONPATH: /workspace/services/api/src:/workspace/services/index-worker/src:/workspace/services/outbox-relay/src:/workspace/plugins/python/common/src:/workspace
+    working_dir: /workspace
+    volumes:
+      - type: bind
+        source: ${REPO_ROOT:-../../}
+        target: /workspace
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      nats: {condition: service_started}
+    healthcheck:
+      test:
+        - CMD
+        - /app/.venv/bin/python
+        - -c
+        - |-
+          import pathlib, time
+          path = pathlib.Path("/workspace/.data/events/vlm-publisher-status.json")
+          raise SystemExit(0 if path.is_file() and time.time() - path.stat().st_mtime < 15 else 1)
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    restart: unless-stopped
+
+  # VLM 结果融合器：消费独立 result subject，事务性追加 Observation/Material/outbox 后才 ACK。
+  # 不解码媒体；消息重投或结果冲突都不被误记为成功。
+  vlm-result-fuser:
+    profiles: ["events"]
+    image: sensoryplex-api:0.1.0
+    build:
+      context: ../..
+      dockerfile: services/api/Dockerfile
+    command:
+      - /app/.venv/bin/python
+      - -m
+      - sensoryplex_api.vlm_slowpath
+      - fuser
+      - --status-out
+      - /workspace/.data/events/vlm-result-fuser-status.json
+    environment:
+      SENSORYPLEX_DATABASE_URL: postgresql://sensoryplex:${POSTGRES_PASSWORD}@postgres:5432/sensoryplex
+      SENSORYPLEX_NATS_URL: nats://nats:4222
+      PYTHONPATH: /workspace/services/api/src:/workspace/services/index-worker/src:/workspace/services/outbox-relay/src:/workspace/plugins/python/common/src:/workspace
+    working_dir: /workspace
+    volumes:
+      - type: bind
+        source: ${REPO_ROOT:-../../}
+        target: /workspace
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      nats: {condition: service_started}
+    healthcheck:
+      test:
+        - CMD
+        - /app/.venv/bin/python
+        - -c
+        - |-
+          import pathlib, time
+          path = pathlib.Path("/workspace/.data/events/vlm-result-fuser-status.json")
           raise SystemExit(0 if path.is_file() and time.time() - path.stat().st_mtime < 15 else 1)
       interval: 10s
       timeout: 5s

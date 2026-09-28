@@ -10,15 +10,16 @@ release_id 从受认证端点取 bundle，意图内不携带 URL、命令、宿�
 
 import hashlib
 import json
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from edge_material_sdk.generated.node.v1 import node_pb2 as pb
-from fastapi import Body, Depends, Header, Query
+from fastapi import Body, Depends, Header, HTTPException, Query
 from fastapi.responses import FileResponse, PlainTextResponse
 from psycopg.types.json import Jsonb
 
-from ..contracts import audit, fail, hash_token, identifier, one, out, rows, text_field
+from ..contracts import audit, fail, hash_token, identifier, one, out, parse, rows, text_field
 from ..infrastructure.catalog import plugin as catalog_plugin
 from ..infrastructure.preflight import check_preflight
 
@@ -338,7 +339,9 @@ def node_headroom_bytes(conn, node_row, exclude_instance_id: str = "") -> tuple[
         FROM plugin_runtime_instance AS instance
         JOIN plugin_release AS release ON release.release_id = instance.release_id
         WHERE instance.node_id = %s AND instance.instance_id <> %s
-          AND instance.state IN ('active', 'draining', 'candidate_ready')
+          AND instance.state IN (
+              'planned', 'staged', 'starting', 'validating', 'candidate_ready', 'active', 'draining'
+          )
         """,
         (node_row["node_id"], exclude_instance_id),
     ).fetchone()[0]
@@ -553,7 +556,7 @@ def register(app, pool, auth, settings):
     ):
         return create_operation(node_id, plugin_id, body or {}, p, kind="upgrade")
 
-    def create_operation(node_id, plugin_id, body, principal, kind):
+    def create_operation(node_id, plugin_id, body, principal, kind, connection=None):
         # 缺 body 等于空意图：release_id 缺失会在 `text_field` 处显式失败（422），
         # 而不是在 `body.get` 上炸出未处理异常。
         body = body or {}
@@ -561,7 +564,7 @@ def register(app, pool, auth, settings):
         config = body.get("config") or {}
         config_id = body.get("config_id")
 
-        with pool.connection() as conn:
+        with nullcontext(connection) if connection is not None else pool.connection() as conn:
             node = one(conn, "SELECT * FROM console_node WHERE node_id=%s FOR UPDATE", (node_id,))
             if not node:
                 fail(404, "node_not_found")
@@ -643,6 +646,13 @@ def register(app, pool, auth, settings):
                 )
                 fail(422, "upgrade_headroom_insufficient")
 
+            if slot and one(
+                conn,
+                "SELECT operation_id FROM plugin_deployment_operation WHERE instance_id=%s "
+                "AND stage NOT IN ('succeeded', 'failed', 'cancelled') LIMIT 1",
+                (slot["instance_id"],),
+            ):
+                fail(409, "plugin_deployment_in_progress")
             generation = (slot["generation"] if slot else 0) + 1
             if slot is None:
                 slot = one(
@@ -756,6 +766,121 @@ def register(app, pool, auth, settings):
                 f"{node_id}:{plugin_id}:{operation['operation_id']}:{release_id}",
             )
             return out(operation_proto(conn, operation), pb.PluginDeploymentOperation)
+
+    @app.post("/admin/v1/nodes/{node_id}/plugins:batch-deploy")
+    def batch_deploy_plugins(
+        node_id: str,
+        body: Annotated[dict, Body()] = ...,
+        p: Annotated[object, Depends(auth.require("plugins:manage"))] = None,
+    ):
+        """批量装配复用受控热部署；每项独立事务，拒绝项不掩盖也不撤销其它项。"""
+        req = parse(body, pb.BatchDeployPluginsRequest)
+        plugin_ids = list(req.plugin_ids) or [
+            "org.sensoryplex.vlm-moondream",
+            "org.sensoryplex.asr-whisper-mlx",
+            "org.sensoryplex.ocr-rapidocr",
+            "org.sensoryplex.embed-bge-onnx",
+        ]
+        if len(plugin_ids) > 16:
+            fail(422, "batch_deployment_limit_exceeded")
+        operations, already_ready, rejected = [], [], []
+        for plugin_id in dict.fromkeys(plugin_ids):
+            try:
+                with pool.connection() as conn:
+                    node = one(
+                        conn, "SELECT * FROM console_node WHERE node_id=%s FOR UPDATE", (node_id,)
+                    )
+                    if not node:
+                        fail(404, "node_not_found")
+                    if not node["session_token_hash"]:
+                        fail(409, "node_agent_not_enrolled")
+                    entry = catalog_plugin(settings, plugin_id)
+                    preflight = check_preflight(node, entry)
+                    if not preflight["eligible"]:
+                        fail(422, preflight["reason_code"])
+                    pending = one(
+                        conn,
+                        "SELECT * FROM plugin_deployment_operation WHERE node_id=%s "
+                        "AND plugin_id=%s AND stage NOT IN ('succeeded', 'failed', 'cancelled') "
+                        "ORDER BY created_at DESC LIMIT 1",
+                        (node_id, plugin_id),
+                    )
+                    if pending:
+                        operations.append(operation_proto(conn, pending))
+                        continue
+                    slot = one(
+                        conn,
+                        "SELECT * FROM console_plugin_instance WHERE node_id=%s AND plugin_id=%s",
+                        (node_id, plugin_id),
+                    )
+                    if (
+                        slot
+                        and slot["active_runtime_instance_id"]
+                        and slot["actual_state"] == "ready"
+                    ):
+                        already_ready.append(plugin_id)
+                        continue
+                    release = one(
+                        conn,
+                        "SELECT * FROM plugin_release WHERE plugin_id=%s AND platform=%s "
+                        "AND arch=%s AND trust='first_party' AND authenticated "
+                        "AND form='local_native' AND plugin_version=%s AND artifact_digest=%s",
+                        (
+                            plugin_id,
+                            node["platform"],
+                            node["arch"],
+                            entry["version"],
+                            entry["digest"],
+                        ),
+                    )
+                    if not release:
+                        fail(422, "plugin_release_not_found")
+                    # 配置来自已保存方案或已有槽位；模型目录等必填值不得猜测。
+                    saved = one(
+                        conn,
+                        "SELECT config FROM console_plugin_config WHERE plugin_id=%s "
+                        "ORDER BY created_at DESC, id DESC LIMIT 1",
+                        (plugin_id,),
+                    )
+                    if saved:
+                        config = saved["config"]
+                    elif slot:
+                        config = slot["config"]
+                    else:
+                        from .admin import _MULTIMODAL_CONFIG_DEFAULTS
+
+                        config = _MULTIMODAL_CONFIG_DEFAULTS.get(plugin_id, {})
+                    from jsonschema import Draft202012Validator
+
+                    if list(Draft202012Validator(entry["config_schema"]).iter_errors(config)):
+                        fail(422, "plugin_configuration_required")
+                    result = create_operation(
+                        node_id,
+                        plugin_id,
+                        {"release_id": release["release_id"], "config": config},
+                        p,
+                        "upgrade" if slot and slot["active_runtime_instance_id"] else "provision",
+                        connection=conn,
+                    )
+                    operations.append(result)
+            except HTTPException as error:
+                rejected.append({"plugin_id": plugin_id, "reason": str(error.detail)})
+        with pool.connection() as conn:
+            audit(
+                conn,
+                p.name,
+                "node.batch_deploy",
+                f"{node_id}:accepted={len(operations)}:ready={len(already_ready)}:rejected={len(rejected)}",
+            )
+        return out(
+            {
+                "node_id": node_id,
+                "operations": operations,
+                "already_ready": already_ready,
+                "rejected": rejected,
+            },
+            pb.BatchDeployPluginsResponse,
+        )
 
     @app.get("/admin/v1/plugin-deployments")
     def list_operations(

@@ -138,6 +138,29 @@ function Login({ onLogin }: { onLogin: (identity: Identity) => void }) {
         onSuccess: onLogin,
     });
 
+    useEffect(() => {
+        if (demo.data?.enabled && !demoFilled) {
+            form.setFieldsValue({
+                username: demo.data.username,
+                password: demo.data.password,
+            });
+            setDemoFilled(true);
+        }
+    }, [demo.data, demoFilled, form]);
+
+    const handleQuickLogin = () => {
+        if (!demo.data?.enabled) return;
+        mutation.reset();
+        form.setFieldsValue({
+            username: demo.data.username,
+            password: demo.data.password,
+        });
+        mutation.mutate({
+            username: demo.data.username,
+            password: demo.data.password,
+        });
+    };
+
     return (
         <div className="login-page">
             <section className="login-story">
@@ -244,34 +267,40 @@ function Login({ onLogin }: { onLogin: (identity: Identity) => void }) {
                         </Form.Item>
 
                         <Form.Item style={{ marginTop: 24, marginBottom: 12 }}>
-                            <Button
-                                type="primary"
-                                htmlType="submit"
-                                block
-                                loading={mutation.isPending}
-                                style={{ height: 42, fontSize: 15 }}
-                            >
-                                {mutation.isPending ? '正在验证身份…' : '登录工作台'}
-                            </Button>
+                            {demo.data?.enabled ? (
+                                <Button
+                                    type="primary"
+                                    block
+                                    loading={mutation.isPending}
+                                    onClick={handleQuickLogin}
+                                    style={{ height: 42, fontSize: 15 }}
+                                    icon={<UserOutlined />}
+                                >
+                                    {mutation.isPending ? '正在快速登录…' : `Demo 快速登录 (${demo.data.username})`}
+                                </Button>
+                            ) : (
+                                <Button
+                                    type="primary"
+                                    htmlType="submit"
+                                    block
+                                    loading={mutation.isPending}
+                                    style={{ height: 42, fontSize: 15 }}
+                                >
+                                    {mutation.isPending ? '正在验证身份…' : '登录工作台'}
+                                </Button>
+                            )}
                         </Form.Item>
 
                         {demo.data?.enabled ? (
                             <Form.Item style={{ marginBottom: 16 }}>
                                 <Button
+                                    type="default"
+                                    htmlType="submit"
                                     block
-                                    style={{ height: 40 }}
                                     disabled={mutation.isPending}
-                                    onClick={() => {
-                                        if (!demo.data?.enabled) return;
-                                        mutation.reset();
-                                        form.setFieldsValue({
-                                            username: demo.data.username,
-                                            password: demo.data.password,
-                                        });
-                                        setDemoFilled(true);
-                                    }}
+                                    style={{ height: 38, fontSize: 13 }}
                                 >
-                                    填入演示账号 ({demo.data.username})
+                                    使用表单凭据登录
                                 </Button>
                             </Form.Item>
                         ) : null}
@@ -283,11 +312,9 @@ function Login({ onLogin }: { onLogin: (identity: Identity) => void }) {
                         style={{ marginTop: 8, fontSize: 12, borderRadius: 6 }}
                         message={
                             <span style={{ color: '#475569' }}>
-                                {demoFilled
-                                    ? '演示账号已自动填入，点击“登录工作台”即可体验完整功能。'
-                                    : demo.data?.enabled
-                                      ? '当前节点已开启快速演示模式，可一键填入演示凭据体验。'
-                                      : '首次部署使用需由节点管理员分配系统凭据。'}
+                                {demo.data?.enabled
+                                    ? '当前单机环境已激活 Demo 快速登录，点击上方按钮即可一键进入工作台。'
+                                    : '首次部署使用需由节点管理员分配系统凭据。'}
                             </span>
                         }
                     />

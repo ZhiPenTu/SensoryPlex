@@ -23,7 +23,7 @@ from .settings import Settings
 # 多一条（镜像旧了）少一条（没跑迁移）都直接 503。因此每加一条迁移都必须同步这里——
 # 本切片新增 `0003_embedding_index` 时漏掉这一跳，就是被真实集成测试抓出来的。
 # `SCHEMA` 仍是最新版本，供 `schema_version` 字段上报。
-SCHEMA = "0013_timeline_coverage_states"
+SCHEMA = "0015_vlm_failure_result_receipt"
 SCHEMA_VERSIONS = {
     "0001_initial",
     "0002_console",
@@ -39,6 +39,8 @@ SCHEMA_VERSIONS = {
     # 全帧判别让"没送模型"分成"计划本来就不刷新"与"计划刷新过却没有观测"两种诚实语义，
     # 因此采样状态的取值集合必须一起前进。
     "0012_timeline_coverage",
+    "0013_timeline_coverage_states",
+    "0014_vlm_delayed_enrichment",
     SCHEMA,
 }
 # 语义检索不可用时的原因码：检索面未配置就是这个码，不是 501、也不是"没有命中"。

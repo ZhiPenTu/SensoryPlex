@@ -31,7 +31,7 @@ from edge_material_sdk.generated.runtime.v1 import runtime_pb2 as runtime
 from .png import encode_rgba
 
 PLUGIN_NAME = "org.sensoryplex.vlm-moondream"
-PLUGIN_VERSION = "0.1.1"
+PLUGIN_VERSION = "0.1.3"
 MODALITY = "vision.scene_description"
 CONSUMES = "media.video_frame"
 DEFAULT_ENDPOINT = "http://127.0.0.1:11434"
@@ -40,6 +40,7 @@ DEFAULT_PROMPT = "Describe what is visible in this image in one sentence."
 # 模型不提供校准置信度：这是模型的属性，不是缺失的数据，必须显式写出来。
 CONFIDENCE_UNAVAILABLE_REASON = "model_does_not_report_calibrated_confidence"
 DEFAULT_TIMEOUT_S = 180.0
+MIN_LOCAL_DECODE_FREE_MEMORY_BYTES = 256 * 1024 * 1024
 
 CONFIG_KEYS = (
     "endpoint",
@@ -49,6 +50,7 @@ CONFIG_KEYS = (
     "handoff_endpoint",
     "timeout_s",
     "ttl_ms",
+    "min_free_memory_bytes",
 )
 
 
@@ -61,6 +63,7 @@ class VlmConfig:
     handoff_endpoint: str = ""
     timeout_s: float = DEFAULT_TIMEOUT_S
     ttl_ms: int = 30_000
+    min_free_memory_bytes: int = 0
 
     @classmethod
     def from_mapping(cls, config: dict) -> VlmConfig:
@@ -68,6 +71,10 @@ class VlmConfig:
         if unknown:
             raise ValueError(f"unknown_config_keys:{','.join(unknown)}")
         fields = {key: config[key] for key in CONFIG_KEYS if key in config}
+        # protobuf Struct 将整数传成 float；仅恢复无小数部分的整数，不能夹取非法水位。
+        memory = fields.get("min_free_memory_bytes")
+        if isinstance(memory, float) and memory.is_integer():
+            fields["min_free_memory_bytes"] = int(memory)
         return cls(**{**{"endpoint": DEFAULT_ENDPOINT}, **fields})
 
     def effective(self) -> dict:
@@ -117,10 +124,16 @@ def validate_config(config: dict) -> runtime.ValidationResult:
         return runtime.ValidationResult(valid=False, field_errors=[str(error)])
     if not parsed.endpoint.startswith(("http://127.0.0.1", "http://localhost", "https://")):
         errors.append("endpoint_must_be_explicit")
-    if parsed.data_plane_mode not in {"static", "per_request"}:
+    if parsed.data_plane_mode not in {"static", "per_request", "local_decode"}:
         errors.append("invalid_data_plane_mode")
     if parsed.data_plane_mode == "static" and not parsed.handoff_endpoint:
         errors.append("handoff_endpoint_required")
+    if parsed.data_plane_mode == "local_decode" and (
+        isinstance(parsed.min_free_memory_bytes, bool)
+        or not isinstance(parsed.min_free_memory_bytes, int)
+        or parsed.min_free_memory_bytes < MIN_LOCAL_DECODE_FREE_MEMORY_BYTES
+    ):
+        errors.append("min_free_memory_bytes_required")
     if not 50 <= int(parsed.ttl_ms) <= 60_000:
         errors.append("ttl_ms_out_of_range")
     if parsed.timeout_s <= 0:
@@ -148,10 +161,16 @@ class VisionVlmPlugin(ProcessorPlugin):
         if not self.artifact_digest:
             raise ValueError("artifact_digest_required")
         parsed = VlmConfig.from_mapping(dict(config))
-        if parsed.data_plane_mode not in {"static", "per_request"}:
+        if parsed.data_plane_mode not in {"static", "per_request", "local_decode"}:
             raise ValueError("invalid_data_plane_mode")
         if parsed.data_plane_mode == "static" and not parsed.handoff_endpoint:
             raise ValueError("handoff_endpoint_required")
+        if parsed.data_plane_mode == "local_decode" and (
+            isinstance(parsed.min_free_memory_bytes, bool)
+            or not isinstance(parsed.min_free_memory_bytes, int)
+            or parsed.min_free_memory_bytes < MIN_LOCAL_DECODE_FREE_MEMORY_BYTES
+        ):
+            raise ValueError("min_free_memory_bytes_required")
         self.config = parsed
         self.model = self._probe_model(parsed)
         self.started = True
@@ -233,6 +252,14 @@ class VisionVlmPlugin(ProcessorPlugin):
             image = encode_rgba(fmt.width, fmt.height, read.payload, stride)
         except ValueError as error:
             raise PluginError(common.INVALID_INPUT, f"frame_encode_failed:{error}") from None
+        return self._describe_png(image)
+
+    def _describe_png(self, image: bytes) -> tuple[str, dict]:
+        """将一张已经在本机按锚点解码的 PNG 送给模型。
+
+        延迟 Consumer 只可调用这条接口：图片字节从不经过 NATS/gRPC 控制消息，也不进入
+        日志。普通 Runtime descriptor 路径仍先经 lease 校验再复用这一模型调用。
+        """
         payload = self._request_json(
             "/api/generate",
             {
@@ -253,6 +280,69 @@ class VisionVlmPlugin(ProcessorPlugin):
             "total_duration_ms": round(int(payload.get("total_duration", 0)) / 1e6, 3),
         }
         return text, telemetry
+
+    def describe_decoded_anchor(
+        self,
+        *,
+        stream_id: str,
+        source_id: str,
+        source_item_id: str,
+        start_ms: int,
+        end_ms: int,
+        png: bytes,
+        task_config_hash: str,
+    ) -> material.Observation:
+        """为 WorkQueue 慢路径构造 Observation；调用方已验证受控本地定位符。"""
+        if not self.started or self.model is None:
+            raise PluginError(common.UNSUPPORTED_CAPABILITY, "plugin_not_started")
+        if start_ms < 0 or end_ms <= start_ms or not png:
+            raise PluginError(common.INVALID_INPUT, "on_demand_anchor_invalid")
+        text, telemetry = self._describe_png(png)
+        image_digest = "sha256:" + hashlib.sha256(png).hexdigest()
+        seed = "|".join(
+            (
+                stream_id,
+                source_id,
+                source_item_id,
+                MODALITY,
+                PLUGIN_VERSION,
+                self.model.release_id,
+                task_config_hash,
+            )
+        )
+        observation = material.Observation(
+            observation_id="obs_" + hashlib.sha256(seed.encode()).hexdigest()[:32],
+            modality=MODALITY,
+            stream_id=stream_id,
+            source_id=source_id,
+            source_item_id=source_item_id,
+            time_range=common.TimeRange(start_ms=start_ms, end_ms=end_ms),
+            confidence_unavailable_reason=CONFIDENCE_UNAVAILABLE_REASON,
+            quality_state="final",
+            content_hash=image_digest,
+            timing_source="media_pts",
+            created_at_unix_ms=int(time.time() * 1000),
+            provenance=material.Provenance(
+                plugin=PLUGIN_NAME,
+                plugin_version=PLUGIN_VERSION,
+                artifact_digest=self.artifact_digest,
+                model_release_id=self.model.release_id,
+                model_id=self.model.model_id,
+                model_version=self.model.model_version,
+                config_hash=task_config_hash,
+                execution_backend=self.model.backend,
+                model_artifact_digest=self.model.artifact_digest,
+            ),
+        )
+        observation.payload.update(
+            {
+                "text": text,
+                "frame": {"decoded_on_demand": True},
+                "prompt": self.config.prompt,
+                "inference": telemetry,
+            }
+        )
+        return observation
 
     def _request_json(self, path: str, body: dict | None, timeout_s: float) -> dict:
         """`body is None` 表示 GET。方法写错会得到 404，所以这里不做"两个都试"的兜底。"""

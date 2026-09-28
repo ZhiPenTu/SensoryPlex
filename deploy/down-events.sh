@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 停止并移除事件链路常驻服务（relay / index）；默认保留向量库文件 .data/index/。
+# 停止并移除事件链路常驻服务（relay / index / VLM publisher / VLM result fuser）；默认保留向量库文件 .data/index/。
 # - 基础栈（postgres / nats / api / console / gateway）不受影响。
 # - `--volumes` 会连向量库一起删除，请谨慎传参。
 # - 调用：`./deploy/down-events.sh [--volumes]`。
@@ -24,7 +24,8 @@ done
 
 cd "${ROOT}"
 # 只移除这两个服务：`docker compose down` 会把整个项目（含 api/postgres）都拆掉。
-docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" --profile events rm -sf relay index
+docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" --profile events rm -sf \
+    relay index vlm-publisher vlm-result-fuser
 
 if [[ "${remove_volumes}" -eq 1 ]]; then
     rm -rf "${INDEX_DIR}"

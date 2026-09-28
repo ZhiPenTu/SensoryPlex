@@ -4,6 +4,25 @@ from tools import task_executor
 from tools.node_agent import execute_intent
 
 
+def test_legacy_install_never_reports_success_or_writes_fake_install(tmp_path):
+    client = RecordingClient()
+    for action in ("INSTALL", "ROLLBACK", "START"):
+        assert not execute_intent(
+            {
+                "intent_id": "legacy",
+                "instance_id": "legacy-slot",
+                "plugin_id": "org.sensoryplex.ocr-rapidocr",
+                "action": f"DEPLOYMENT_ACTION_{action}",
+                "artifact_digest": "sha256:" + "a" * 64,
+            },
+            client,
+            state_file=str(tmp_path / "agent.json"),
+        )
+        assert client.reports[-1]["success"] is False
+        assert client.reports[-1]["error_code"] == "controlled_release_required"
+    assert not list(tmp_path.rglob("instance.json"))
+
+
 class RecordingClient:
     """仅记录 Agent 上报，不触发网络请求。"""
 

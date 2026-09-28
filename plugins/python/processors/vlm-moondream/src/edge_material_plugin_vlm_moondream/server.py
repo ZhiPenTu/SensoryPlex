@@ -79,9 +79,9 @@ class PluginServicer(runtime_pb2_grpc.ProcessorPluginServiceServicer):
                 state=self.state, error=_failure(common.TRANSIENT_BACKEND_FAILURE, str(error), True)
             )
         try:
-            # per_request 的 handoff 由 Runtime 写入每个 descriptor，启动期不存在
-            # 也不能猜一个地址；静态模式仍在 Start 时真实检查固定数据面。
-            if config.get("data_plane_mode", "static") != "per_request":
+            # 只有 static 在启动时绑定固定数据面；per_request 从 descriptor 领料，
+            # local_decode 按受控媒体引用解码，两者都不要求固定 handoff 地址。
+            if config.get("data_plane_mode", "static") == "static":
                 if self.plugin.buffer_reader is None:
                     self.plugin.buffer_reader = LeaseBufferReader(
                         config["handoff_endpoint"], ttl_ms=int(config.get("ttl_ms", 30_000))

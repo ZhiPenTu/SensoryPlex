@@ -28,13 +28,14 @@ import {
 } from '@ant-design/icons';
 import { PluginFields, readConfig } from './PluginFields';
 import PluginDeployments from './PluginDeployments';
-import { api, post } from '../api/client';
+import { api, post, RequestError } from '../api/client';
 import type {
     NodeList,
     PluginConfigList,
     PluginEntry,
     PluginList,
     PreflightResponse,
+    BatchDeployPluginsResponse,
 } from '../api/contracts';
 import {
     Badge,
@@ -72,6 +73,7 @@ export default function Plugins() {
     const nodes = useQuery({
         queryKey: ['nodes'],
         queryFn: ({ signal }) => api<NodeList>('/admin/v1/nodes?limit=100', { signal }),
+        refetchInterval: 2500,
     });
 
     const preflight = useQuery({
@@ -100,23 +102,19 @@ export default function Plugins() {
         },
     });
 
-    const [batchNotice, setBatchNotice] = useState<string>('');
     const batchDeploy = useMutation({
-        mutationFn: () =>
-            post<{ node_id: string; deployed: string[]; rejected: any[] }>(
+        mutationFn: async () => {
+            await post('/admin/v1/plugin-releases:sync', {});
+            return post<BatchDeployPluginsResponse>(
                 '/admin/v1/nodes/local-host/plugins:batch-deploy',
                 {},
-            ),
+            );
+        },
         onSuccess: (data) => {
             void cache.invalidateQueries({ queryKey: ['nodes'] });
-            message.success(`已向 ${data.node_id} 下发 ${data.deployed.length} 个插件安装意图！`);
-            setBatchNotice(
-                `已向 ${data.node_id} 下发 ${data.deployed.length} 个插件安装意图！` +
-                    (data.rejected.length
-                        ? ` (另有 ${data.rejected.length} 个受预检限制未部署)`
-                        : ''),
-            );
-            setTimeout(() => setBatchNotice(''), 6000);
+            void cache.invalidateQueries({ queryKey: ['plugin-releases'] });
+            void cache.invalidateQueries({ queryKey: ['plugin-deployments'] });
+            if (data.operations.length) setTab('deployments');
         },
     });
 
@@ -141,7 +139,26 @@ export default function Plugins() {
     const readyNodes =
         nodes.data?.items?.filter((node) => node.status === 'NODE_STATUS_READY').length || 0;
     const deployedInstances =
-        nodes.data?.items?.reduce((total, node) => total + (node.instances?.length || 0), 0) || 0;
+        nodes.data?.items?.reduce(
+            (total, node) =>
+                total +
+                (node.instances?.filter(
+                    (instance) =>
+                        instance.actual_state === 'ready' &&
+                        Boolean(instance.active_runtime_instance_id && instance.endpoint),
+                ).length || 0),
+            0,
+        ) || 0;
+    const localInstances =
+        nodes.data?.items?.find((node) => node.node_id === 'local-host')?.instances || [];
+    const isInstalled = (plugin: PluginEntry) =>
+        localInstances.some(
+            (instance) =>
+                instance.plugin_id === plugin.id &&
+                instance.actual_state === 'ready' &&
+                instance.artifact_digest === plugin.digest &&
+                Boolean(instance.active_runtime_instance_id && instance.endpoint),
+        );
 
     const configColumns = [
         {
@@ -259,8 +276,27 @@ export default function Plugins() {
                 </Col>
             </Row>
 
-            {batchNotice ? (
-                <Alert type="success" showIcon message={batchNotice} style={{ marginBottom: 10 }} />
+            {batchDeploy.data ? (
+                <Alert
+                    type={batchDeploy.data.rejected.length ? 'warning' : 'info'}
+                    showIcon
+                    message={`本次装配：${batchDeploy.data.operations.length} 个部署操作，${batchDeploy.data.already_ready.length} 个已就绪，${batchDeploy.data.rejected.length} 个未受理`}
+                    description={
+                        <div>
+                            <div>
+                                安装进度见下方热部署记录；“已受理”表示排队，“已完成”才表示安装并验证成功。
+                            </div>
+                            {batchDeploy.data.rejected.map((item) => (
+                                <div key={item.plugin_id}>
+                                    {catalogItems.find((plugin) => plugin.id === item.plugin_id)
+                                        ?.name || item.plugin_id}
+                                    ：{new RequestError(422, item.reason).message}
+                                </div>
+                            ))}
+                        </div>
+                    }
+                    style={{ marginBottom: 10 }}
+                />
             ) : null}
 
             <ErrorNotice
@@ -344,12 +380,16 @@ export default function Plugins() {
                                                                 <Badge state={plugin.state} />
                                                                 <Tag
                                                                     color={
+                                                                        isInstalled(plugin) ||
                                                                         plugin.trust === 'official'
                                                                             ? 'green'
                                                                             : 'orange'
                                                                     }
                                                                 >
-                                                                    {plugin.trust || 'unverified'}
+                                                                    {isInstalled(plugin)
+                                                                        ? '本机已安装运行'
+                                                                        : plugin.trust ||
+                                                                          'unverified'}
                                                                 </Tag>
                                                             </Space>
                                                         </div>

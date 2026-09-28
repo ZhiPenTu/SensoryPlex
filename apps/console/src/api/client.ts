@@ -59,6 +59,9 @@ const messages: Record<string, string> = {
     no_previous_digest_for_rollback: '该插件实例无历史版本摘要，无法执行回滚。',
     // ── ADR-030 插件热部署 ─────────────────────────────────────────────────
     plugin_release_not_found: '受控制品仓里找不到这个 release 描述符。',
+    node_agent_not_enrolled: '本机安装 Agent 尚未登记，请先启动并登记 Node Agent。',
+    plugin_configuration_required: '缺少有效的插件配置，请先保存参数方案（如本机模型目录）再装配。',
+    plugin_deployment_in_progress: '该插件正在部署，请等待当前操作完成。',
     plugin_release_not_authenticated: '这个 release 不是受控制品仓发布的首方已认证制品，禁止激活。',
     plugin_release_platform_mismatch: 'release 的平台/架构与目标节点不一致，装不上去。',
     plugin_release_plugin_mismatch: '所选 release 与目标插件身份不一致。',

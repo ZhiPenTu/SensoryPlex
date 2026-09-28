@@ -1,8 +1,8 @@
 """BGE 文本向量插件：把上游观测里的真实文字编码成**版本化维度**的归一化向量。
 
-它消费的不是字节，而是**上游已经产出的事实**：`observation.ocr_blocks` 里那些带坐标的文字块。
-因此本插件不接数据面、不读文件、也不自己再去识别一遍——文字从哪来、覆盖哪个时间窗，
-都由上游观测决定并被原样带出。这也意味着一个显式约束：
+它消费的不是字节，而是**上游已经产出的事实**：OCR 的 `observation.ocr_blocks` 或 VLM 的
+`observation.vision.scene_description`。因此本插件不接数据面、不读文件、也不自己再去识别一遍——
+文字从哪来、覆盖哪个时间窗，都由上游观测决定并被原样带出。这也意味着一个显式约束：
 
 **给本插件喂 buffer（原始帧）是错误用法，会以 `buffer_reader_not_attached` 明确拒绝**，
 不会退化成"自己找文件读"。挂载数据面的插件才允许碰字节（见 ADR-010）。
@@ -40,10 +40,10 @@ from . import models
 from . import text as text_module
 
 PLUGIN_NAME = "org.sensoryplex.embed-bge-onnx"
-PLUGIN_VERSION = "0.1.0"
+PLUGIN_VERSION = "0.1.1"
 MODALITY = "text_embedding"
-# 能力串是契约里的名字：消费上游的 ocr_blocks 事实，产出 text_embedding 事实。
-CONSUMES = "observation.ocr_blocks"
+# 能力串来自受控文本契约；不因支持 VLM 文本而接受任意 observation。
+CONSUMES = ("observation.ocr_blocks", "observation.vision.scene_description")
 PRODUCES = "observation.text_embedding"
 POOLING = "cls"
 NORMALIZE = "l2"
@@ -114,7 +114,7 @@ def describe(artifact_digest: str = "") -> runtime.PluginDescription:
         name=PLUGIN_NAME,
         version=PLUGIN_VERSION,
         protocol="v1",
-        consumes=[CONSUMES],
+        consumes=list(CONSUMES),
         produces=[PRODUCES],
         # 本插件不消费任何 buffer：它要的是上游事实，不是字节。空列表就是它的真实能力。
         memory_kinds=[],

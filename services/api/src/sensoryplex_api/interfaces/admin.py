@@ -41,7 +41,10 @@ _MULTIMODAL_CONFIG_DEFAULTS = {
         "endpoint": "http://127.0.0.1:11434",
         "model": "moondream:v2",
         "prompt": "Describe what is visible in this image in one sentence.",
-        "data_plane_mode": "per_request",
+        # ADR-031 的 VLM 只在 Timeline 快路径提交后由 WorkQueue 消费。它不再读取
+        # Runtime descriptor，而是凭受控媒体引用在持有媒体挂载的节点即时解码。
+        "data_plane_mode": "local_decode",
+        "min_free_memory_bytes": 268_435_456,
         "timeout_s": 180.0,
         "ttl_ms": 30_000,
     },
@@ -100,14 +103,26 @@ def register(app, pool, auth, settings):
             k: v for k, v in schema["properties"].items() if k != "handoff_endpoint"
         }
         schema["required"] = [k for k in schema.get("required", []) if k != "handoff_endpoint"]
-        # Console 方案不保存宿主数据面地址。三个首方媒体插件改为每个 Runtime
-        # descriptor 携带受控 loopback handoff；这既能让热部署常驻实例启动，也不会
-        # 让配置版本绑定某一次临时端口。
+        # Console 方案不保存宿主数据面地址。OCR/ASR 的 Runtime descriptor 会携带受控
+        # loopback handoff；ADR-031 的 VLM 则只接受 local_decode，Consumer 从受控媒体根
+        # 按时间锚点解码。这两种路径都不会让配置版本绑定某一次临时端口。
         if req.plugin_id in _MULTIMODAL_CONFIG_DEFAULTS:
             if "model_dir" in config:
                 fail(422, "console_plugin_config_host_path_forbidden")
-            if config.get("data_plane_mode", "per_request") != "per_request":
-                fail(422, "console_plugin_config_requires_per_request_data_plane")
+            expected_data_plane_mode = (
+                "local_decode"
+                if req.plugin_id == "org.sensoryplex.vlm-moondream"
+                else "per_request"
+            )
+            if config.get("data_plane_mode", expected_data_plane_mode) != expected_data_plane_mode:
+                fail(
+                    422,
+                    (
+                        "console_vlm_config_requires_local_decode"
+                        if expected_data_plane_mode == "local_decode"
+                        else "console_plugin_config_requires_per_request_data_plane"
+                    ),
+                )
             config = {**_MULTIMODAL_CONFIG_DEFAULTS[req.plugin_id], **config}
         if list(Draft202012Validator(schema).iter_errors(config)):
             fail(422, "plugin_config_invalid")

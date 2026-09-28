@@ -1,12 +1,13 @@
-"""上游观测 → 待编码文本：只认一种输入形态，越界一律显式失败。
+"""上游 Observation → 待编码文本：只认受控形态，越界一律显式失败。
 
-本插件消费的是**上游观测里已经存在的文字**，不是自己重新识别一遍：`payload.blocks[].text`
-（OCR 插件的输出形态）。因此这里做三件事，且每件事都必须可观测：
+本插件消费的是上游已经产出的文字，不重新识别媒体。首期只接受两种已版本化的事实形态：
 
-- 准入：modality 不是 `ocr_blocks` 就显式拒绝（不猜别的形态、不"尽力而为"）；
-- 抽取：把块文本按固定分隔符拼成一段文本，并把**实际被编码的那段文本**的摘要算出来；
-- 边界：块数量与字符数都有上限，越界是失败而不是静默截断；一段文字都没有也是失败
-  （给空文本算向量等于给"没有内容"编一个语义）。
+- OCR 的 `ocr_blocks`：`payload.blocks[].text`；
+- VLM 的 `vision.scene_description`：`payload.text`。
+
+这不是任意 JSON 文本提取器：ASR 或未知 modality 必须显式拒绝，避免在没有独立语义契约时把
+内容悄悄混入索引。两种形态最终都会计算**实际被编码文本**的摘要；块数和字符数都有上限，空文本
+与越界同样不生成向量。
 """
 
 from __future__ import annotations
@@ -18,6 +19,8 @@ from edge_material_sdk import PluginError
 from edge_material_sdk.generated.common.v1 import common_pb2 as common
 
 INPUT_MODALITY = "ocr_blocks"
+VLM_INPUT_MODALITY = "vision.scene_description"
+INPUT_MODALITIES = frozenset({INPUT_MODALITY, VLM_INPUT_MODALITY})
 BLOCKS_FIELD = "blocks"
 TEXT_FIELD = "text"
 # 拼接分隔符写进结果：同一批块用不同分隔符拼会得到不同向量，读者有权知道用的是哪个。
@@ -58,8 +61,15 @@ def text_digest(text: str) -> str:
 def collect_text(observation) -> TextSource:
     """从上游观测里抽出待编码文本；任何不符合契约的形态都在这里显式失败。"""
     modality = observation.modality
-    if modality != INPUT_MODALITY:
-        raise PluginError(common.INVALID_INPUT, f"unsupported_input_modality:{modality or 'unset'}")
+    if modality == INPUT_MODALITY:
+        return _collect_ocr_text(observation)
+    if modality == VLM_INPUT_MODALITY:
+        return _collect_vlm_text(observation)
+    raise PluginError(common.INVALID_INPUT, f"unsupported_input_modality:{modality or 'unset'}")
+
+
+def _collect_ocr_text(observation) -> TextSource:
+    """拼接 OCR 文字块；块序和分隔符都是向量内容的一部分。"""
     payload = observation.payload
     if BLOCKS_FIELD not in payload:
         raise PluginError(common.INVALID_INPUT, "input_payload_missing_blocks")
@@ -84,7 +94,6 @@ def collect_text(observation) -> TextSource:
             blank += 1
     text = JOIN_SEPARATOR.join(pieces)
     if not text:
-        # 空文本不是"向量为 0 的结果"，是本插件不该被调用的输入：显式失败，不编造语义。
         raise PluginError(common.INVALID_INPUT, "input_text_empty")
     if len(text) > MAX_TOTAL_CHARS:
         raise PluginError(common.INVALID_INPUT, "input_text_exceeds_bound")
@@ -94,6 +103,30 @@ def collect_text(observation) -> TextSource:
         block_count=len(listed),
         blank_blocks=blank,
         char_count=len(text),
-        source_modality=modality,
+        source_modality=INPUT_MODALITY,
         join_separator=JOIN_SEPARATOR,
+    )
+
+
+def _collect_vlm_text(observation) -> TextSource:
+    """读取 VLM 的单句场景描述；prompt 和帧元数据都不是可检索事实。"""
+    payload = observation.payload
+    if TEXT_FIELD not in payload or payload[TEXT_FIELD] is None:
+        raise PluginError(common.INVALID_INPUT, "input_payload_missing_text")
+    value = payload[TEXT_FIELD]
+    if not isinstance(value, str):
+        raise PluginError(common.INVALID_INPUT, "input_text_not_string")
+    text = value.strip()
+    if not text:
+        raise PluginError(common.INVALID_INPUT, "input_text_empty")
+    if len(text) > MAX_TOTAL_CHARS:
+        raise PluginError(common.INVALID_INPUT, "input_text_exceeds_bound")
+    return TextSource(
+        text=text,
+        text_sha256=text_digest(text),
+        block_count=1,
+        blank_blocks=0,
+        char_count=len(text),
+        source_modality=VLM_INPUT_MODALITY,
+        join_separator="",
     )

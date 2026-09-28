@@ -410,6 +410,24 @@ message CreatePluginDeploymentRequest {
   google.protobuf.Struct config = 3;
 }
 
+message BatchDeployPluginsRequest {
+  // Empty selects the four first-party processing plugins.
+  repeated string plugin_ids = 1;
+}
+
+message PluginDeploymentRejection {
+  string plugin_id = 1;
+  string reason = 2;
+}
+
+message BatchDeployPluginsResponse {
+  string node_id = 1;
+  // Accepted operations are not evidence of completed installation.
+  repeated PluginDeploymentOperation operations = 2;
+  repeated string already_ready = 3;
+  repeated PluginDeploymentRejection rejected = 4;
+}
+
 // 制品仓同步：API 重新计算落盘 bundle 字节摘要后导入首方 release 描述符。
 message SyncPluginReleasesRequest {
   bool dry_run = 1;

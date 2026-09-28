@@ -503,38 +503,18 @@ def execute_intent(
             return executor.reconcile(intent)
         return executor.stop_runtime(intent)
 
-    if action in {"install", "rollback"}:
-        target_state = (
-            "PLUGIN_INSTANCE_STATE_READY"
-            if action == "install"
-            else "PLUGIN_INSTANCE_STATE_ROLLED_BACK"
-        )
-        if instance_dir:
-            instance_dir.mkdir(parents=True, exist_ok=True)
-            meta_file = instance_dir / "instance.json"
-            meta_file.write_text(json.dumps(intent, indent=2, ensure_ascii=False))
-
+    if action in {"install", "rollback", "start"}:
+        # 旧意图不含受控 release 与部署操作，写 instance.json 不代表安装或启动成功。
         client.report_deployment(
             intent_id=intent_id,
             instance_id=instance_id,
             action=intent["action"],
-            success=True,
-            actual_state=target_state,
+            success=False,
+            actual_state="PLUGIN_INSTANCE_STATE_FAILED",
+            error_code="controlled_release_required",
+            error_detail="plugin installation requires an ADR-030 release deployment",
         )
-        LOGGER.info("Successfully executed intent", action=action, instance_id=instance_id)
-        return True
-
-    elif action == "start":
-        if instance_dir:
-            instance_dir.mkdir(parents=True, exist_ok=True)
-        client.report_deployment(
-            intent_id=intent_id,
-            instance_id=instance_id,
-            action=intent["action"],
-            success=True,
-            actual_state="PLUGIN_INSTANCE_STATE_READY",
-        )
-        return True
+        return False
 
     elif action == "stop":
         if instance_dir:

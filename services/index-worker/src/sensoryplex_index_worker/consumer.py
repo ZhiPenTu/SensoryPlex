@@ -72,8 +72,10 @@ DEFAULT_CONNECT_TIMEOUT_S = 10.0
 MAX_CONNECT_TIMEOUT_S = 120.0
 MAX_IDLE_EXIT_CYCLES = 10_000
 # 可编码模态与产出模态都取自 BGE 插件：消费侧不另立一套名字，否则"插件进程编码"与
-# "消费侧编码"会各自漂移（同 ADR-023 的查询编码器口径）。
+# "消费侧编码"会各自漂移（同 ADR-023 的查询编码器口径）。保留单数常量只是给旧测试夹具
+# 与 OCR 首期调用方兼容；消费判定必须用完整受控集合。
 EMBEDDABLE_MODALITY = bge_text.INPUT_MODALITY
+EMBEDDABLE_MODALITIES = bge_text.INPUT_MODALITIES
 PRODUCED_MODALITY = bge_plugin.MODALITY
 # "这一帧没有文字"与"这个观测不合契约"是两件事：前者是真实媒体里**常态**
 # （黑场、转场、纯画面帧），插件用 `blocks=[]` + `empty_reason` 明确表达；后者是
@@ -313,8 +315,8 @@ def consume_event(
     report.observations = len(facts.observations)
     model_release_registered = False
     for facts_item in facts.observations:
-        if facts_item.modality != EMBEDDABLE_MODALITY:
-            # 不是"可编码文本"的观测（VLM / ASR 等）：本 sink 不处理，但要计数——静默跳过会让
+        if facts_item.modality not in EMBEDDABLE_MODALITIES:
+            # 不是受控的可编码文本观测（如 ASR）：本 sink 不处理，但要计数——静默跳过会让
             # "这个素材根本没产出向量"变成无从解释的现象。
             report.skipped_modality += 1
             continue

@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "properties": {
     "data_plane_mode": {
-      "enum": ["static", "per_request"],
+      "enum": ["static", "per_request", "local_decode"],
       "default": "static",
       "description": "static 在 Start 时绑定固定 handoff；per_request 仅接受 Runtime 写入 descriptor 的 loopback handoff"
     },
@@ -22,6 +22,11 @@
     "model": {"type": "string", "default": "moondream:v2"},
     "prompt": {"type": "string", "default": "Describe what is visible in this image in one sentence."},
     "ttl_ms": {"type": "integer", "minimum": 50, "maximum": 60000, "default": 30000},
+    "min_free_memory_bytes": {
+      "type": "integer",
+      "minimum": 268435456,
+      "description": "仅 local_decode Consumer：低于此本机可用内存水位时不 Pull 任务；必须显式配置，避免猜测统一内存或显存余量"
+    },
     "timeout_s": {"type": "number", "exclusiveMinimum": 0, "default": 180}
   }
 }

@@ -33,6 +33,8 @@ document; ADR-009 onwards live in `docs/adr/`. The full texts are currently writ
 | ADR-027 | Tiered backpressure and containerised residency for the event chain | The `events` profile and tier admission |
 | ADR-028 | Runtime → Timeline wiring and authorised append | How runtime output becomes authorised facts |
 | ADR-029 | Orchestratable plugin execution core | Immutable revisions, durable runs, multi-node scheduling |
+| ADR-030 | Plugin hot-deploy executor | Versioned blue-green local-native plugin processes |
+| ADR-031 | VLM deferred-enrichment WorkQueue | Base publish, plugin pull and incremental fusion |
 
 ::: tip Numbering
 There is no ADR-018 file in the repository; the numbering is deliberately left with a gap rather than
@@ -42,7 +44,7 @@ renumbered, because ADR identifiers are referenced from code and migrations.
 ## Where to read them
 
 - ADR-001 … ADR-008 — `技术选型ADR与V1实施蓝图.md` in the repository root
-- ADR-009 … ADR-029 — [`docs/adr/`](https://github.com/ZhiPenTu/SensoryPlex/tree/master/docs/adr)
+- ADR-009 … ADR-031 — [`docs/adr/`](https://github.com/ZhiPenTu/SensoryPlex/tree/master/docs/adr)
 
 Related design documents worth reading alongside them:
 
@@ -55,4 +57,3 @@ Related design documents worth reading alongside them:
 | `docs/verification.md` | The reproducibility evidence log |
 | `docs/development-checklist.md` | Current execution order and closeout state |
 | `开放式插件开发文档.md` | The open plugin development specification |
-

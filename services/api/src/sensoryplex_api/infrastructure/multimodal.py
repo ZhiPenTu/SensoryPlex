@@ -237,9 +237,11 @@ def build_graph(
         fail(422, "invalid_multimodal_audio_overlap")
 
     timeline_consumes = ["observation.ocr_blocks", "observation.asr_segment"]
-    if "vlm_enrich" in selected:
-        timeline_consumes.append("observation.vision.scene_description")
-    nodes = [selected[key] for key in sorted(selected)]
+    # VLM 不是 ADR-029 同机数据面 DAG 的一个可调度节点：它在快路径 Timeline 已落库后，
+    # 由独立的 JetStream WorkQueue 竞争消费。把它塞进这里会让 Executor 再次全片解码，
+    # 也会把 VLM 实例可用性错误地变成 L1 准入门槛。
+    delayed_enrichments = [selected["vlm_enrich"]] if "vlm_enrich" in selected else []
+    nodes = [selected[key] for key in sorted(selected) if key != "vlm_enrich"]
     nodes.append(
         {
             "id": "timeline_fusion",
@@ -256,6 +258,9 @@ def build_graph(
             "required": True,
             # 策略属于不可变 Revision，不能让执行器在全局 YAML 里重新猜一次。
             "execution_policy": policy,
+            # 这是 Revision 的不可变元数据，不是 DAG 节点：快路径完成后由底座据此生成
+            # 只含对象引用与时间锚点的 WorkQueue 消息。
+            "delayed_enrichments": delayed_enrichments,
         }
     )
     edges = [
@@ -274,16 +279,6 @@ def build_graph(
             "required": True,
         },
     ]
-    if "vlm_enrich" in selected:
-        edges.append(
-            {
-                "from_node_id": "vlm_enrich",
-                "to_node_id": "timeline_fusion",
-                "modality": "observation.vision.scene_description",
-                "join_policy": "same_stream_window",
-                "required": False,
-            }
-        )
     valid, errors, _, _, _ = orchestration.validate_and_normalize_graph(nodes, edges)
     if not valid:
         fail(422, errors[0])

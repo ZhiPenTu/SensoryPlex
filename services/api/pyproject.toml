@@ -8,6 +8,7 @@ dependencies = [
   "pydantic-settings>=2.8,<3", "psycopg[binary,pool]>=3.2,<4",
   "jsonschema>=4.23,<5", "pyyaml>=6,<7",
   "grpcio>=1.71,<1.72",
+  "nats-py>=2.9,<3",
 ]
 
 [project.scripts]

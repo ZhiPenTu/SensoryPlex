@@ -237,12 +237,26 @@ async def test_observation_identity_is_validated():
     assert response.error.reason_code == "contract_validation_failed"
 
 
-async def test_only_ocr_blocks_observations_are_accepted():
-    """别的形态（比如 ASR 文本段）必须显式拒绝，不做"尽力而为"的猜测。"""
+async def test_unrecognized_observation_modalities_are_rejected():
+    """ASR 等未声明形态必须显式拒绝，不做"尽力而为"的猜测。"""
     plugin = make_plugin()
     response = await plugin.invoke(make_request([upstream_observation(modality="asr_segment")]))
     assert response.error.code == common.INVALID_INPUT
     assert response.error.reason_code == "unsupported_input_modality:asr_segment"
+
+
+async def test_scene_description_observation_is_encoded_as_controlled_text():
+    """VLM 只允许其契约里的 `payload.text` 进入索引，不混入 prompt 或帧元数据。"""
+    plugin = make_plugin()
+    observation = upstream_observation(modality=text_module.VLM_INPUT_MODALITY)
+    observation.ClearField("payload")
+    observation.payload.update({"text": "会议室投影着季度收入图表", "prompt": "ignored"})
+    response = await plugin.invoke(make_request([observation]))
+    assert not response.HasField("error")
+    assert len(response.observations) == 1
+    assert response.observations[0].payload.fields["source_modality"].string_value == (
+        text_module.VLM_INPUT_MODALITY
+    )
 
 
 @pytest.mark.parametrize(
@@ -604,7 +618,14 @@ def test_validate_config_covers_the_admission_surface():
 
 def test_describe_declares_the_real_input_and_output_kinds():
     description = embed.describe()
-    assert description.consumes == [embed.CONSUMES] == ["observation.ocr_blocks"]
+    assert (
+        description.consumes
+        == list(embed.CONSUMES)
+        == [
+            "observation.ocr_blocks",
+            "observation.vision.scene_description",
+        ]
+    )
     assert description.produces == ["observation.text_embedding"]
     # 不消费任何 buffer：这就是"不接数据面"的可观测表达。
     assert description.memory_kinds == []

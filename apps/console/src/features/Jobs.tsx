@@ -42,6 +42,8 @@ import {
 import { usePermission } from '../session';
 
 const { Text } = Typography;
+const REFRESHING_EXECUTION_STATES = new Set(['running', 'ready_for_review']);
+const REVIEWABLE_DRAFT_STATES = new Set(['ready_for_review', 'completed']);
 
 type ExecutionTask = {
     task_id: string;
@@ -98,7 +100,7 @@ function ExecutionDetails({ job, onClose }: { job: JobDraft; onClose: () => void
                 { signal },
             ),
         refetchInterval: (query) =>
-            query.state.data?.execution.state === 'running' ? 3000 : false,
+            REFRESHING_EXECUTION_STATES.has(query.state.data?.execution.state || '') ? 3000 : false,
     });
 
     const data = detail.data;
@@ -142,6 +144,12 @@ function ExecutionDetails({ job, onClose }: { job: JobDraft; onClose: () => void
                         <Notice>
                             必需的 OCR / ASR 与 Timeline 已成功；可选 VLM 慢路径未完成。素材仍可检索，
                             但画面描述应按缺失状态解读，不能当作已补全结果。
+                        </Notice>
+                    ) : null}
+                    {data.execution.state === 'ready_for_review' ? (
+                        <Notice>
+                            OCR / ASR 与 Timeline 的 L1 事实已入库：现在即可查看素材、原片回放和文字定位。
+                            VLM 场景描述仍由后台 Worker 拉取消费；列表会自动刷新，不把它伪装为已经完成。
                         </Notice>
                     ) : null}
 
@@ -247,8 +255,10 @@ export default function Jobs() {
         queryFn: ({ signal }) =>
             api<JobDraftList>(`/v1/job-drafts?limit=20&offset=${offset}`, { signal }),
         refetchInterval: (q) => {
-            const hasProcessing = q.state.data?.items?.some((x) => x.state === 'processing');
-            return hasProcessing ? 3000 : 15000;
+            const hasRefreshingJob = q.state.data?.items?.some((x) =>
+                REFRESHING_EXECUTION_STATES.has(x.execution_state || x.state),
+            );
+            return hasRefreshingJob ? 3000 : 15000;
         },
     });
 
@@ -421,7 +431,7 @@ export default function Jobs() {
                         </Button>
                     ) : null}
 
-                    {item.state === 'completed' ? (
+                    {REVIEWABLE_DRAFT_STATES.has(item.state) ? (
                         <Link
                             to={
                                 item.execution_id
@@ -430,7 +440,7 @@ export default function Jobs() {
                             }
                         >
                             <Button size="small" type="default" icon={<ArrowRightOutlined />}>
-                                查看素材
+                                {item.state === 'ready_for_review' ? '查看基础素材' : '查看素材'}
                             </Button>
                         </Link>
                     ) : null}

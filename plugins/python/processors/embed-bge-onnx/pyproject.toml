@@ -1,6 +1,6 @@
 [project]
 name = "edge-material-plugin-embed-bge-onnx"
-version = "0.1.0"
+version = "0.1.1"
 description = "SensoryPlex text embedding processor plugin (BGE small zh v1.5 via ONNX Runtime; optional CoreML execution provider)"
 requires-python = ">=3.12,<3.13"
 dependencies = [

@@ -99,6 +99,60 @@ def validate_and_normalize_graph(
                 errors.append("invalid_orchestration_execution_policy")
                 continue
             node_map[node_id]["execution_policy"] = policy
+        if "delayed_enrichments" in node:
+            # 仅 Timeline 节点能声明延迟补全；它不是 DAG task，必须随不可变 Revision
+            # 一起摘要，不能由执行器或 Consumer 从当前目录/全局配置重新猜测。
+            delayed = node["delayed_enrichments"]
+            if node_id != "timeline_fusion" or not isinstance(delayed, list) or len(delayed) > 1:
+                errors.append("invalid_orchestration_delayed_enrichment")
+                continue
+            normalized_delayed: list[dict[str, Any]] = []
+            for entry in delayed:
+                if not isinstance(entry, dict):
+                    errors.append("invalid_orchestration_delayed_enrichment")
+                    break
+                required_fields = (
+                    "id",
+                    "plugin_id",
+                    "plugin_version",
+                    "artifact_digest",
+                    "config_id",
+                    "config_hash",
+                    "consumes",
+                    "produces",
+                    "deadline_ms",
+                    "max_attempts",
+                )
+                if any(not entry.get(field) for field in required_fields):
+                    errors.append("invalid_orchestration_delayed_enrichment")
+                    break
+                if (
+                    entry["id"] != "vlm_enrich"
+                    or entry["plugin_id"] != "org.sensoryplex.vlm-moondream"
+                    or sorted(entry["consumes"]) != ["media.video_frame"]
+                    or sorted(entry["produces"]) != ["observation.vision.scene_description"]
+                    or bool(entry.get("required", False))
+                ):
+                    errors.append("invalid_orchestration_delayed_enrichment")
+                    break
+                normalized_delayed.append(
+                    {
+                        "id": "vlm_enrich",
+                        "plugin_id": "org.sensoryplex.vlm-moondream",
+                        "plugin_version": str(entry["plugin_version"]),
+                        "artifact_digest": str(entry["artifact_digest"]),
+                        "config_id": str(entry["config_id"]),
+                        "config_hash": str(entry["config_hash"]),
+                        "consumes": ["media.video_frame"],
+                        "produces": ["observation.vision.scene_description"],
+                        "deadline_ms": int(entry["deadline_ms"]),
+                        "max_attempts": int(entry["max_attempts"]),
+                        "priority": int(entry.get("priority", -10)),
+                        "required": False,
+                    }
+                )
+            if not errors:
+                node_map[node_id]["delayed_enrichments"] = normalized_delayed
 
     if errors:
         return False, errors, "", [], {}
@@ -865,7 +919,10 @@ def _sync_console_execution(conn, run_id: str) -> str | None:
         "WHERE run_id=%s ORDER BY node_id",
         (run_id,),
     )
+    # Timeline 写侧已记录快路径与延迟 VLM 的队列摘要。Task 回执投影只补充 DAG 事实，
+    # 不能把用户正在查看的延迟补全状态覆盖掉。
     summary = {
+        **(execution.get("modality_summary") or {}),
         "tasks": [
             {
                 "node_id": item["node_id"],
@@ -886,13 +943,28 @@ def _sync_console_execution(conn, run_id: str) -> str | None:
         not item["required"] and item["state"] != "succeeded" for item in task_rows
     )
 
+    delayed_rows = rows(
+        conn,
+        "SELECT state FROM vlm_enrichment_task WHERE execution_id=%s",
+        (execution["execution_id"],),
+    )
+    delayed_pending = any(item["state"] not in {"succeeded", "failed"} for item in delayed_rows)
+    delayed_failed = any(item["state"] == "failed" for item in delayed_rows)
+
     state = "running"
     if run["state"] == "cancelled":
         state = "cancelled"
     elif run["state"] in {"failed", "expired"}:
         state = "failed"
+    elif terminal and required_succeeded and delayed_pending:
+        # L1 事实已入库即可进入可审阅状态；等待 VLM 的时间不再占住播放、OCR 或关键词检索。
+        state = "ready_for_review"
     elif terminal and required_succeeded:
-        state = "succeeded_with_partial_enrichment" if optional_incomplete else "succeeded"
+        state = (
+            "succeeded_with_partial_enrichment"
+            if optional_incomplete or delayed_failed
+            else "succeeded"
+        )
         if run["state"] not in {"succeeded", "failed", "cancelled", "expired"}:
             conn.execute(
                 "UPDATE pipeline_run SET state='succeeded',completed_at=now(),updated_at=now() "
@@ -910,7 +982,15 @@ def _sync_console_execution(conn, run_id: str) -> str | None:
         """,
         (state, Jsonb(summary), completed, execution["execution_id"]),
     )
-    if completed:
+    if state == "ready_for_review":
+        conn.execute(
+            """
+            UPDATE console_job_draft SET state='ready_for_review',error_code=NULL,error_detail=NULL,
+                completed_at=NULL WHERE id=%s
+            """,
+            (execution["job_id"],),
+        )
+    elif completed:
         job_state = "completed" if state.startswith("succeeded") else state
         reason = "" if state.startswith("succeeded") else (run.get("error_code") or state)
         conn.execute(

@@ -2,11 +2,11 @@ apiVersion: edge.material.plugin/v1
 kind: ProcessorPlugin
 metadata:
   name: org.sensoryplex.embed-bge-onnx
-  version: 0.1.0
+  version: 0.1.1
   displayName: 文本向量（本机 BGE / ONNX Runtime）
   vendor: SensoryPlex
   license: Apache-2.0
-  description: 消费上游 ocr_blocks 观测里的文字，用本机 BGE 权重产出带维度、池化与归一化声明的 L2 归一化向量。
+  description: 消费上游 OCR 文字块或 VLM 场景描述，用本机 BGE 权重产出带维度、池化与归一化声明的 L2 归一化向量。
 spec:
   sdk:
     runtime: ">=0.1.0 <0.2.0"
@@ -24,6 +24,7 @@ spec:
   capabilities:
     consumes:
       - observation.ocr_blocks
+      - observation.vision.scene_description
     produces:
       - observation.text_embedding
     # 本插件不消费任何 buffer：它要的是上游事实，不是字节；数据面不会挂到它身上。
@@ -53,6 +54,6 @@ spec:
   artifacts:
     form: local_native
     image: local:plugins/python/processors/embed-bge-onnx
-    digest: sha256:deeb0ccc920df22e28445c50286d538395fb2dc703c8c5e9d1014f1488d8bb60
+    digest: sha256:7fcb5d706e91080dd1ef78171333f87c0054ae0cab093c7e8ebc2242a65f3e08
     sbom: sbom.cdx.json
     signatureUnavailableReason: local_native_plugin_is_not_signed_in_v1

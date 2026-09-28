@@ -1,3 +1,5 @@
+from edge_material_sdk.generated.common.v1 import common_pb2 as _common_pb2
+from edge_material_sdk.generated.material.v1 import material_pb2 as _material_pb2
 from google.protobuf import struct_pb2 as _struct_pb2
 from google.protobuf.internal import containers as _containers
 from google.protobuf.internal import enum_type_wrapper as _enum_type_wrapper
@@ -202,7 +204,7 @@ class SchedulerAssignment(_message.Message):
     def __init__(self, assignment_id: _Optional[str] = ..., task_id: _Optional[str] = ..., requested_node_id: _Optional[str] = ..., actual_node_id: _Optional[str] = ..., data_plane_node_id: _Optional[str] = ..., decision: _Optional[str] = ..., reason_code: _Optional[str] = ..., lease_expires_at_unix_ms: _Optional[int] = ..., run_id: _Optional[str] = ..., attempt: _Optional[int] = ..., created_at_unix_ms: _Optional[int] = ...) -> None: ...
 
 class TaskInputManifest(_message.Message):
-    __slots__ = ("run_id", "task_id", "attempt", "assignment_id", "data_plane_node_id", "descriptor_ref", "observation_refs", "stream_id", "start_ms", "end_ms", "content_hash")
+    __slots__ = ("run_id", "task_id", "attempt", "assignment_id", "data_plane_node_id", "descriptor_ref", "observation_refs", "stream_id", "start_ms", "end_ms", "content_hash", "execution_id", "asset_id", "media_locator", "time_range", "prompt", "source_id", "source_item_id", "material_unit_id", "plugin")
     RUN_ID_FIELD_NUMBER: _ClassVar[int]
     TASK_ID_FIELD_NUMBER: _ClassVar[int]
     ATTEMPT_FIELD_NUMBER: _ClassVar[int]
@@ -214,6 +216,15 @@ class TaskInputManifest(_message.Message):
     START_MS_FIELD_NUMBER: _ClassVar[int]
     END_MS_FIELD_NUMBER: _ClassVar[int]
     CONTENT_HASH_FIELD_NUMBER: _ClassVar[int]
+    EXECUTION_ID_FIELD_NUMBER: _ClassVar[int]
+    ASSET_ID_FIELD_NUMBER: _ClassVar[int]
+    MEDIA_LOCATOR_FIELD_NUMBER: _ClassVar[int]
+    TIME_RANGE_FIELD_NUMBER: _ClassVar[int]
+    PROMPT_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_ID_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_ITEM_ID_FIELD_NUMBER: _ClassVar[int]
+    MATERIAL_UNIT_ID_FIELD_NUMBER: _ClassVar[int]
+    PLUGIN_FIELD_NUMBER: _ClassVar[int]
     run_id: str
     task_id: str
     attempt: int
@@ -225,7 +236,34 @@ class TaskInputManifest(_message.Message):
     start_ms: int
     end_ms: int
     content_hash: str
-    def __init__(self, run_id: _Optional[str] = ..., task_id: _Optional[str] = ..., attempt: _Optional[int] = ..., assignment_id: _Optional[str] = ..., data_plane_node_id: _Optional[str] = ..., descriptor_ref: _Optional[str] = ..., observation_refs: _Optional[_Iterable[str]] = ..., stream_id: _Optional[str] = ..., start_ms: _Optional[int] = ..., end_ms: _Optional[int] = ..., content_hash: _Optional[str] = ...) -> None: ...
+    execution_id: str
+    asset_id: str
+    media_locator: str
+    time_range: _common_pb2.TimeRange
+    prompt: str
+    source_id: str
+    source_item_id: str
+    material_unit_id: str
+    plugin: PluginReference
+    def __init__(self, run_id: _Optional[str] = ..., task_id: _Optional[str] = ..., attempt: _Optional[int] = ..., assignment_id: _Optional[str] = ..., data_plane_node_id: _Optional[str] = ..., descriptor_ref: _Optional[str] = ..., observation_refs: _Optional[_Iterable[str]] = ..., stream_id: _Optional[str] = ..., start_ms: _Optional[int] = ..., end_ms: _Optional[int] = ..., content_hash: _Optional[str] = ..., execution_id: _Optional[str] = ..., asset_id: _Optional[str] = ..., media_locator: _Optional[str] = ..., time_range: _Optional[_Union[_common_pb2.TimeRange, _Mapping]] = ..., prompt: _Optional[str] = ..., source_id: _Optional[str] = ..., source_item_id: _Optional[str] = ..., material_unit_id: _Optional[str] = ..., plugin: _Optional[_Union[PluginReference, _Mapping]] = ...) -> None: ...
+
+class VlmTaskResult(_message.Message):
+    __slots__ = ("task", "success", "retryable", "reason_code", "observation", "result_digest", "completed_at_unix_ms")
+    TASK_FIELD_NUMBER: _ClassVar[int]
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    RETRYABLE_FIELD_NUMBER: _ClassVar[int]
+    REASON_CODE_FIELD_NUMBER: _ClassVar[int]
+    OBSERVATION_FIELD_NUMBER: _ClassVar[int]
+    RESULT_DIGEST_FIELD_NUMBER: _ClassVar[int]
+    COMPLETED_AT_UNIX_MS_FIELD_NUMBER: _ClassVar[int]
+    task: TaskInputManifest
+    success: bool
+    retryable: bool
+    reason_code: str
+    observation: _material_pb2.Observation
+    result_digest: str
+    completed_at_unix_ms: int
+    def __init__(self, task: _Optional[_Union[TaskInputManifest, _Mapping]] = ..., success: bool = ..., retryable: bool = ..., reason_code: _Optional[str] = ..., observation: _Optional[_Union[_material_pb2.Observation, _Mapping]] = ..., result_digest: _Optional[str] = ..., completed_at_unix_ms: _Optional[int] = ...) -> None: ...
 
 class TaskExecutionReceipt(_message.Message):
     __slots__ = ("run_id", "task_id", "attempt", "assignment_id", "plugin", "started_at_unix_ms", "completed_at_unix_ms", "input_count", "output_count", "result_manifest_ref", "reason_code", "receipt_digest")

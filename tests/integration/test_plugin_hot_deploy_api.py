@@ -12,9 +12,11 @@ import json
 import os
 import shutil
 import uuid
+from pathlib import Path
 
 import psycopg
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 from psycopg import sql
 from psycopg.conninfo import make_conninfo
@@ -75,6 +77,14 @@ def write_release(
     directory = repository / slug
     directory.mkdir(parents=True, exist_ok=True)
     marker = f"{plugin_id}:{version}:{platform}-{arch}".encode()
+    manifest = yaml.safe_load(
+        (
+            Path(__file__).parents[2]
+            / "plugins/python/processors"
+            / plugin_id.removeprefix("org.sensoryplex.")
+            / "plugin.yaml"
+        ).read_text()
+    )
     bundle = directory / "bundle.tar.gz"
     bundle.write_bytes(b"synthetic-bundle:" + marker)
     descriptor = {
@@ -84,7 +94,7 @@ def write_release(
         "platform": platform,
         "arch": arch,
         "form": "local_native",
-        "artifact_digest": "sha256:" + _sha256(b"artifact:" + marker),
+        "artifact_digest": manifest["spec"]["artifacts"]["digest"],
         "bundle_digest": "sha256:" + _sha256(bundle.read_bytes()),
         "manifest_digest": _sha256(b"manifest:" + marker),
         "config_schema_digest": _sha256(b"schema:" + marker),
@@ -120,7 +130,17 @@ def repository(tmp_path_factory):
             ),
             # 0.3.0 声明 768MiB：验证"余量不足时不停止旧版本、也不隐式降级为停机更新"。
             "0.3.0": write_release(root, plugin_id=CANARY, version="0.3.0", memory_bytes=768 * MIB),
-            "vlm": write_release(root, plugin_id=VLM, version="0.1.0", memory_bytes=1024 * MIB),
+            "vlm": write_release(
+                root,
+                plugin_id=VLM,
+                version=yaml.safe_load(
+                    (
+                        Path(__file__).parents[2]
+                        / "plugins/python/processors/vlm-moondream/plugin.yaml"
+                    ).read_text()
+                )["metadata"]["version"],
+                memory_bytes=1024 * MIB,
+            ),
         },
     }
 
@@ -1044,3 +1064,56 @@ def test_metrics_endpoint_requires_plugin_manage_permission(deployment_database)
     )
     with TestClient(create_app(settings)) as anonymous:
         assert anonymous.get("/admin/v1/plugin-deployments/metrics").status_code == 401
+
+
+def test_batch_deploy_creates_real_operations_and_is_idempotent(client, db, releases):
+    sync(client)
+    node_id = "batch-" + uuid.uuid4().hex[:12]
+    token = enroll(client, node_id, memory_bytes=16 * 1024 * MIB)
+    url = f"/admin/v1/nodes/{node_id}/plugins:batch-deploy"
+    response = client.post(url, json={"plugin_ids": [CANARY, CANARY, "missing.plugin"]})
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["rejected"] == [{"plugin_id": "missing.plugin", "reason": "plugin_not_found"}]
+    assert len(result["operations"]) == 1
+    op = result["operations"][0]
+    assert op["release_id"] == releases["0.1.0"]["release_id"]
+    assert op["stage"] == "PLUGIN_OPERATION_STAGE_ACCEPTED"
+    assert op["candidate"]["state"] == "PLUGIN_RUNTIME_STATE_PLANNED"
+    assert not op.get("active")
+    repeated = client.post(url, json={"plugin_ids": [CANARY]}).json()
+    assert repeated["operations"][0]["operation_id"] == op["operation_id"]
+    assert db.execute(
+        "SELECT action FROM console_deployment_intent WHERE node_id=%s", (node_id,)
+    ).fetchall() == [("stage_release",)]
+    release = next(r for r in releases.values() if r["release_id"] == op["release_id"])
+    cutover(client, node_id, token, op["operation_id"], release)
+    ready = client.post(url, json={"plugin_ids": [CANARY]}).json()
+    assert ready["operations"] == []
+    assert ready["already_ready"] == [CANARY]
+
+
+def test_batch_reserves_pending_resources_and_returns_each_rejection(client):
+    sync(client)
+    node_id = "batch-small-" + uuid.uuid4().hex[:12]
+    enroll(client, node_id, memory_bytes=1100 * MIB)
+    result = client.post(
+        f"/admin/v1/nodes/{node_id}/plugins:batch-deploy",
+        json={"plugin_ids": [CANARY, VLM, "org.sensoryplex.embed-bge-onnx"]},
+    ).json()
+    assert len(result["operations"]) == 1
+    assert result["rejected"] == [
+        {"plugin_id": VLM, "reason": "upgrade_headroom_insufficient"},
+        {"plugin_id": "org.sensoryplex.embed-bge-onnx", "reason": "insufficient_memory"},
+    ]
+
+
+def test_batch_requires_authenticated_agent_and_bounds_request(client, db):
+    node_id = "batch-no-agent-" + uuid.uuid4().hex[:12]
+    enroll(client, node_id, memory_bytes=16 * 1024 * MIB)
+    db.execute("UPDATE console_node SET session_token_hash=NULL WHERE node_id=%s", (node_id,))
+    url = f"/admin/v1/nodes/{node_id}/plugins:batch-deploy"
+    result = client.post(url, json={"plugin_ids": [CANARY]}).json()
+    assert result["operations"] == []
+    assert result["rejected"] == [{"plugin_id": CANARY, "reason": "node_agent_not_enrolled"}]
+    assert client.post(url, json={"plugin_ids": [CANARY] * 17}).status_code == 422

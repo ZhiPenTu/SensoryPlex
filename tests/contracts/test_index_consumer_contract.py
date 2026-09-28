@@ -257,6 +257,19 @@ def test_payload_jsonb_round_trips_into_the_plugin_text_contract():
     assert source.source_modality == consumer.EMBEDDABLE_MODALITY
 
 
+def test_scene_description_round_trips_into_the_same_controlled_text_contract():
+    upstream = consumer.upstream_observation(
+        facts(
+            modality=consumer.bge_text.VLM_INPUT_MODALITY,
+            payload={"text": "主持人站在展示季度业绩的幻灯片前", "prompt": "not indexed"},
+        )
+    )
+    source = consumer.bge_text.collect_text(upstream)
+    assert source.text == "主持人站在展示季度业绩的幻灯片前"
+    assert source.source_modality == consumer.bge_text.VLM_INPUT_MODALITY
+    assert source.join_separator == ""
+
+
 @pytest.mark.parametrize(
     "payload",
     [

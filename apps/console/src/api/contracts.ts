@@ -721,6 +721,19 @@ export interface CreatePluginDeploymentRequest {
   config_id: string;
   config?: JsonObject;
 }
+export interface BatchDeployPluginsRequest {
+  plugin_ids: string[];
+}
+export interface PluginDeploymentRejection {
+  plugin_id: string;
+  reason: string;
+}
+export interface BatchDeployPluginsResponse {
+  node_id: string;
+  operations: PluginDeploymentOperation[];
+  already_ready: string[];
+  rejected: PluginDeploymentRejection[];
+}
 export interface SyncPluginReleasesRequest {
   dry_run: boolean;
 }

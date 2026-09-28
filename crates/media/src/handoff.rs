@@ -846,12 +846,12 @@ impl SharedHandoff {
     ) -> Result<Option<RetainedBuffer>, MediaError> {
         // 一次调用在统计里就是一次"保留请求"；重试不重复计数。
         self.plane()?.note_offered();
-        let deadline_ms = if self.wait_timeout_ms > 0 && !self.wait_exhausted.load(Ordering::Relaxed)
-        {
-            Some(crate::now_unix_ms().saturating_add(self.wait_timeout_ms))
-        } else {
-            None
-        };
+        let deadline_ms =
+            if self.wait_timeout_ms > 0 && !self.wait_exhausted.load(Ordering::Relaxed) {
+                Some(crate::now_unix_ms().saturating_add(self.wait_timeout_ms))
+            } else {
+                None
+            };
         loop {
             let attempt = self.plane()?.retain_without_offering(
                 buffer_id,

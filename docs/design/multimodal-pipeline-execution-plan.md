@@ -12,7 +12,7 @@
 Console Pipeline（单插件配置记录）
   → job/task_process（仅传 pipeline_id）
   → tools/task_worker.py
-  → tools/task_runner.py（无条件 OCR；VLM 仅 with_vlm=true 且 Ollama 就绪；没有 ASR 调用）
+  → tools/task_runner.py（仅 legacy OCR 兼容路径；没有 ASR/VLM 调用）
   → Timeline（按 file-material.yaml 要求 ASR/OCR/VLM，但只能看到 OCR）
 ```
 

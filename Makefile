@@ -73,6 +73,7 @@ TEST_NATS_URL ?= $(if $(filter container,$(EXEC_MODE)),nats://nats:4222,nats://1
 .PHONY: event-pipeline-check events-up events-down events-logs
 .PHONY: media-test resident-probe resident-install resident-uninstall resident-status
 .PHONY: lint-ruff test-py test-contracts test-integration proto-generate plugin-artifact-check
+.PHONY: vlm-workqueue-check
 .PHONY: timeline-check timeline-resident-check
 .PHONY: docs-install docs-build docs-check docs-dev docs-serve
 
@@ -359,7 +360,7 @@ events-down:
 	./deploy/down-events.sh
 
 events-logs:
-	$(COMPOSE) --profile events logs -f --tail 200 relay index
+	$(COMPOSE) --profile events logs -f --tail 200 relay index vlm-publisher vlm-result-fuser
 
 # ── 演示账号种子（一次性） ────────────────────────────────────────────────
 # 在 api 容器内用 sensoryplex-user 创建 demo 账户，密码落到 /workspace/.data/demo-password，
@@ -569,6 +570,11 @@ outbox-check:
 # 只做发布，不做消费；消费侧是 `sensoryplex-index-worker.cli serve --consume`（见 consume-check）。
 outbox-run:
 	$(EXEC_API) $(PY_API) -m sensoryplex_relay.cli --nats-url "$(OUTBOX_NATS)"
+
+# VLM 慢路径只验 JetStream WorkQueue 本身：两个独立 Pull Consumer 竞争十条时间锚点任务，
+# 再验证未 ACK 消息经 AckWait 重投。它不跑模型、不读媒体，不等于 VLM 或 Golden Path 验收。
+vlm-workqueue-check:
+	$(EXEC_API) $(PY_API) tools/verify_vlm_workqueue.py --nats-url "$(OUTBOX_NATS)"
 
 # ── 事件驱动的常驻消费验收（① / ADR-025） ────────────────────────────────────
 # 闭环证据：真实写侧落 outbox（事实与事件同事务）→ 真实 relay 发到 JetStream →

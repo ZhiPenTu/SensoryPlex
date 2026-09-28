@@ -90,6 +90,34 @@ def config(client):
     return result.json()
 
 
+def test_vlm_delayed_config_is_bound_to_local_decode(console_app):
+    """ADR-031 不能让可发布的 VLM Revision 留在 Runtime descriptor 路径。"""
+    with TestClient(console_app) as client:
+        login(client)
+        accepted = client.post(
+            "/admin/v1/plugin-configurations",
+            json={
+                "plugin_id": "org.sensoryplex.vlm-moondream",
+                "name": "delayed-vlm",
+                "config": {},
+            },
+        )
+        assert accepted.status_code == 201, accepted.text
+        assert accepted.json()["config"]["data_plane_mode"] == "local_decode"
+        assert accepted.json()["config"]["min_free_memory_bytes"] == 268_435_456
+
+        rejected = client.post(
+            "/admin/v1/plugin-configurations",
+            json={
+                "plugin_id": "org.sensoryplex.vlm-moondream",
+                "name": "wrong-vlm-path",
+                "config": {"data_plane_mode": "per_request"},
+            },
+        )
+        assert rejected.status_code == 422
+        assert rejected.json()["reason_code"] == "console_vlm_config_requires_local_decode"
+
+
 def pipeline(client, config):
     result = client.post(
         "/admin/v1/pipelines",
@@ -442,8 +470,8 @@ def test_config_versions_pipeline_references_and_drafts(console_app, console_dat
         assert conn.execute("SELECT count(*) FROM processing_job").fetchone()[0] == 0
 
 
-def test_multimodal_pipeline_revision_is_bound_and_requires_active_instances(console_app):
-    """v2 方案锁定三类模型身份；没有匹配 active 实例时不得退回旧 OCR 旁路。"""
+def test_multimodal_pipeline_revision_locks_delayed_vlm_without_blocking_fast_path(console_app):
+    """VLM 身份随 Revision 锁定为延迟补全，只有 L1 节点必须在派发前 ready。"""
     with TestClient(console_app) as client:
         login(client)
 
@@ -484,11 +512,20 @@ def test_multimodal_pipeline_revision_is_bound_and_requires_active_instances(con
         assert unsupported_overlap.status_code == 422
         assert unsupported_overlap.json()["reason_code"] == "invalid_multimodal_audio_overlap"
         graph_digest = validated.json()["graph_digest"]
-        assert {item["id"] for item in validated.json()["nodes"]} == {
+        nodes = validated.json()["nodes"]
+        assert {item["id"] for item in nodes} == {
             "ocr_fast",
             "asr_fast",
-            "vlm_enrich",
             "timeline_fusion",
+        }
+        timeline = next(item for item in nodes if item["id"] == "timeline_fusion")
+        assert len(timeline["delayed_enrichments"]) == 1
+        delayed_vlm = timeline["delayed_enrichments"][0]
+        assert {key: delayed_vlm[key] for key in ("id", "plugin_id", "required", "placement")} == {
+            "id": "vlm_enrich",
+            "plugin_id": "org.sensoryplex.vlm-moondream",
+            "required": False,
+            "placement": "data_plane_local",
         }
 
         plan = client.post("/admin/v1/multimodal-pipelines", json=body)
@@ -556,8 +593,22 @@ def test_v2_agent_manifest_receipt_and_delivery(console_app, console_database):
             json={"node_id": "v2-agent", "session_token": session_token},
         )
         assert heartbeat.status_code == 200, heartbeat.text
-        assert len(heartbeat.json()["pending_intents"]) == 3
+        pending_intents = heartbeat.json()["pending_intents"]
+        assert len(pending_intents) == 2
         with psycopg.connect(console_database) as conn:
+            pending_nodes = {
+                row[0]
+                for row in conn.execute(
+                    """
+                    SELECT task.node_id
+                    FROM console_deployment_intent intent
+                    JOIN pipeline_task task ON task.task_id=intent.config->>'task_id'
+                    WHERE intent.job_id=%s
+                    """,
+                    (drafted.json()["id"],),
+                )
+            }
+            assert pending_nodes == {"ocr_fast", "asr_fast"}
             ocr_intent = conn.execute(
                 """
                 SELECT intent.id

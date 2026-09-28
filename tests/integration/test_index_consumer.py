@@ -366,14 +366,38 @@ def test_malformed_observation_still_fails_the_event(database):
         assert consumer_consumed(conn) == 0
 
 
-def test_materials_without_embeddable_modalities_are_consumed_and_counted(database):
-    """只有 VLM 观测的素材没有向量可写：这种事件必须被消费掉，而不是永远重投。"""
+def test_vlm_scene_description_is_embedded_and_indexed(database):
+    """延迟 VLM 事实经 material outbox 后必须进入同一条语义索引链。"""
     with psycopg.connect(database) as conn:
         insert_material(conn)
         insert_observation(
-            conn, observation_id="obs_vlm", modality="frame_description", payload={"text": "画面"}
+            conn,
+            observation_id="obs_vlm",
+            modality=consumer.bge_text.VLM_INPUT_MODALITY,
+            payload={"text": "主持人站在展示季度业绩的幻灯片前", "prompt": "not indexed"},
         )
         link_observation(conn, observation_id="obs_vlm")
+    report, index, encoder = build(database)
+    assert report.consumed is True
+    assert report.embedded == 1
+    assert report.skipped_modality == 0
+    assert encoder.encoded == ["主持人站在展示季度业绩的幻灯片前"]
+    assert len(index.rows) == 1
+    with psycopg.connect(database) as conn:
+        assert consumer_consumed(conn) == 1
+
+
+def test_materials_without_embeddable_modalities_are_consumed_and_counted(database):
+    """未声明的文本模态不能借 BGE 的 VLM 支持混入索引。"""
+    with psycopg.connect(database) as conn:
+        insert_material(conn)
+        insert_observation(
+            conn,
+            observation_id="obs_unknown",
+            modality="frame_description",
+            payload={"text": "画面"},
+        )
+        link_observation(conn, observation_id="obs_unknown")
     report, index, encoder = build(database)
     assert report.consumed is True
     assert report.embedded == 0

@@ -653,18 +653,11 @@ async fn replay(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     // 真实的 lease 与真实的 arena；若做不到则给出明确原因。
     let (arena_id, stream_id) = arena_identity(&description);
     // 数据面必须在解码**之前**打开并起服务端：消费者要能和生产者并发领料（见 HandoffRunner）。
-    let handoff_plane =
-        open_handoff_plane(&args.run, &arena_id).map_err(std::io::Error::other)?;
+    let handoff_plane = open_handoff_plane(&args.run, &arena_id).map_err(std::io::Error::other)?;
     let runner =
         HandoffRunner::start(&args.run, handoff_plane.clone()).map_err(std::io::Error::other)?;
     let retained;
-    match decode_pass(
-        &args.media,
-        &stream_id,
-        &arena_id,
-        &args.run,
-        handoff_plane,
-    ) {
+    match decode_pass(&args.media, &stream_id, &arena_id, &args.run, handoff_plane) {
         Ok((plane, handoff, decode_truncated)) => {
             report.decoded = plane;
             retained = handoff;
@@ -734,7 +727,7 @@ async fn replay(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                 "handoff_requested_but_no_decoded_bytes: this build cannot serve {}",
                 config.listen
             )
-            .into())
+            .into());
         }
         (_, None) => runner.producer_finished().map_err(std::io::Error::other)?,
     }
@@ -890,8 +883,7 @@ async fn ingest(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // 与 replay 同一口径：数据面先起，消费者才能与拉流并发领料。
-    let handoff_plane =
-        open_handoff_plane(&args.run, &arena_id).map_err(std::io::Error::other)?;
+    let handoff_plane = open_handoff_plane(&args.run, &arena_id).map_err(std::io::Error::other)?;
     let runner =
         HandoffRunner::start(&args.run, handoff_plane.clone()).map_err(std::io::Error::other)?;
     let retained;
@@ -968,7 +960,7 @@ async fn ingest(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                 "handoff_requested_but_no_decoded_bytes: this build cannot serve {}",
                 config.listen
             )
-            .into())
+            .into());
         }
         (_, None) => runner.producer_finished().map_err(std::io::Error::other)?,
     }
@@ -986,7 +978,15 @@ fn live_pass(
     args: &ResolvedRunArgs,
     live: &LiveConfig,
     plane: Option<Arc<SharedHandoff>>,
-) -> Result<(DecodedDataPlane, Option<Arc<SharedHandoff>>, LiveStats, bool), String> {
+) -> Result<
+    (
+        DecodedDataPlane,
+        Option<Arc<SharedHandoff>>,
+        LiveStats,
+        bool,
+    ),
+    String,
+> {
     let run = sensoryplex_media::decode::DecodeRun {
         decode: sensoryplex_media::decode::DecodeConfig::default(),
         max_samples: args.max_points,
@@ -1018,7 +1018,15 @@ fn live_pass(
     args: &ResolvedRunArgs,
     _live: &LiveConfig,
     _plane: Option<Arc<SharedHandoff>>,
-) -> Result<(DecodedDataPlane, Option<Arc<SharedHandoff>>, LiveStats, bool), String> {
+) -> Result<
+    (
+        DecodedDataPlane,
+        Option<Arc<SharedHandoff>>,
+        LiveStats,
+        bool,
+    ),
+    String,
+> {
     validate_run_args(args)?;
     Err("gstreamer_decode_not_implemented".into())
 }
