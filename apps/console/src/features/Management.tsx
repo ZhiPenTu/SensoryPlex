@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
     Alert,
@@ -70,9 +71,9 @@ const multimodalInitialValues = {
         window_ms: 1000,
         sample_interval_ms: 1000,
         audio_segment_ms: 6000,
-        // Runtime 尚未实现 overlap，首期将其锁为 0，避免把未生效的配置写进 Revision。
-    audio_overlap_ms: 500,
-        vlm_sample_interval_ms: 5000,
+        // 音频默认重叠 500 毫秒，与执行器默认策略保持一致。
+        audio_overlap_ms: 500,
+        vlm_sample_interval_ms: 1000,
     },
 };
 
@@ -177,6 +178,9 @@ export function Pipelines() {
     const totalCount = listing.data?.total || 0;
     const configsByPlugin = (pluginId: string) =>
         configs.data?.items.filter((item) => item.plugin_id === pluginId) || [];
+    const missingConfigs = Object.entries(MULTIMODAL_PLUGIN_IDS)
+        .filter(([, pluginId]) => !configsByPlugin(pluginId).length)
+        .map(([modality]) => modality.toUpperCase());
 
     const validateForm = async () => {
         try {
@@ -331,6 +335,8 @@ export function Pipelines() {
                         onClick={() => {
                             save.reset();
                             form.resetFields();
+                            setValidation(null);
+                            void configs.refetch();
                             setOpen(true);
                         }}
                     >
@@ -345,7 +351,14 @@ export function Pipelines() {
             </Notice>
 
             <ErrorNotice
-                error={listing.error || configs.error || archive.error || publish.error || validate.error || save.error}
+                error={
+                    listing.error ||
+                    configs.error ||
+                    archive.error ||
+                    publish.error ||
+                    validate.error ||
+                    save.error
+                }
             />
 
             <Card bodyStyle={{ padding: 0 }}>
@@ -373,6 +386,25 @@ export function Pipelines() {
 
             {open ? (
                 <Modal title="新建多模态处理方案" onClose={() => setOpen(false)} width={680}>
+                    <ErrorNotice error={configs.error || validate.error || save.error} />
+                    {!configs.isPending && !configs.error && missingConfigs.length ? (
+                        <Alert
+                            type="info"
+                            showIcon
+                            message={`${missingConfigs.join('、')} 暂无已保存配置`}
+                            description={
+                                <>
+                                    请到<Link to="/plugins">插件中心</Link>
+                                    一键装配或保存插件配置，再返回选择。
+                                    已安装插件再次装配会补齐配置，不会重复安装。VLM 为可选项。
+                                </>
+                            }
+                            action={
+                                <Button onClick={() => void configs.refetch()}>刷新配置</Button>
+                            }
+                            style={{ marginBottom: 16 }}
+                        />
+                    ) : null}
                     <Form
                         form={form}
                         layout="vertical"
@@ -409,10 +441,13 @@ export function Pipelines() {
                                     <Select
                                         loading={configs.isPending}
                                         placeholder="选择 RapidOCR 配置"
-                                        options={configsByPlugin(MULTIMODAL_PLUGIN_IDS.ocr).map((item) => ({
-                                            label: `${item.name} · v${item.revision}`,
-                                            value: item.id,
-                                        }))}
+                                        notFoundContent="暂无 OCR 配置，请先在插件中心保存配置"
+                                        options={configsByPlugin(MULTIMODAL_PLUGIN_IDS.ocr).map(
+                                            (item) => ({
+                                                label: `${item.name} · v${item.revision}`,
+                                                value: item.id,
+                                            }),
+                                        )}
                                     />
                                 </Form.Item>
                             </Col>
@@ -425,10 +460,13 @@ export function Pipelines() {
                                     <Select
                                         loading={configs.isPending}
                                         placeholder="选择 Whisper 配置"
-                                        options={configsByPlugin(MULTIMODAL_PLUGIN_IDS.asr).map((item) => ({
-                                            label: `${item.name} · v${item.revision}`,
-                                            value: item.id,
-                                        }))}
+                                        notFoundContent="暂无 ASR 配置，请先在插件中心保存配置"
+                                        options={configsByPlugin(MULTIMODAL_PLUGIN_IDS.asr).map(
+                                            (item) => ({
+                                                label: `${item.name} · v${item.revision}`,
+                                                value: item.id,
+                                            }),
+                                        )}
                                     />
                                 </Form.Item>
                             </Col>
@@ -443,6 +481,7 @@ export function Pipelines() {
                                 allowClear
                                 loading={configs.isPending}
                                 placeholder="可选：选择 Moondream 画面描述配置"
+                                notFoundContent="暂无 VLM 配置，可暂不启用画面描述"
                                 options={configsByPlugin(MULTIMODAL_PLUGIN_IDS.vlm).map((item) => ({
                                     label: `${item.name} · v${item.revision}`,
                                     value: item.id,
@@ -453,7 +492,10 @@ export function Pipelines() {
                         <Card size="small" title="时间轴与采样策略" style={{ marginBottom: 16 }}>
                             <Row gutter={12}>
                                 <Col xs={24} md={8}>
-                                    <Form.Item name={['policy', 'window_ms']} label="Coverage 窗口（毫秒）">
+                                    <Form.Item
+                                        name={['policy', 'window_ms']}
+                                        label="Coverage 窗口（毫秒）"
+                                    >
                                         <InputNumber disabled style={{ width: '100%' }} />
                                     </Form.Item>
                                 </Col>
@@ -461,22 +503,49 @@ export function Pipelines() {
                                     <Form.Item
                                         name={['policy', 'sample_interval_ms']}
                                         label="视频采样最小间隔（毫秒）"
-                                        rules={[{ required: true, type: 'number', min: 250, max: 60000 }]}
+                                        rules={[
+                                            {
+                                                required: true,
+                                                type: 'number',
+                                                min: 250,
+                                                max: 60000,
+                                            },
+                                        ]}
                                     >
-                                        <InputNumber min={250} max={60000} step={250} style={{ width: '100%' }} />
+                                        <InputNumber
+                                            min={250}
+                                            max={60000}
+                                            step={250}
+                                            style={{ width: '100%' }}
+                                        />
                                     </Form.Item>
                                 </Col>
                                 <Col xs={24} md={8}>
                                     <Form.Item
                                         name={['policy', 'audio_segment_ms']}
                                         label="ASR 音频切段（毫秒）"
-                                        rules={[{ required: true, type: 'number', min: 1000, max: 60000 }]}
+                                        rules={[
+                                            {
+                                                required: true,
+                                                type: 'number',
+                                                min: 1000,
+                                                max: 60000,
+                                            },
+                                        ]}
                                     >
-                                        <InputNumber min={1000} max={60000} step={1000} style={{ width: '100%' }} />
+                                        <InputNumber
+                                            min={1000}
+                                            max={60000}
+                                            step={1000}
+                                            style={{ width: '100%' }}
+                                        />
                                     </Form.Item>
                                 </Col>
                                 <Col xs={24} md={12}>
-                                    <Form.Item name={['policy', 'audio_overlap_ms']} label="ASR 重叠（毫秒）">
+                                    <Form.Item
+                                        name={['policy', 'audio_overlap_ms']}
+                                        label="ASR 重叠（毫秒）"
+                                    >
                                         <InputNumber disabled style={{ width: '100%' }} />
                                     </Form.Item>
                                 </Col>
@@ -484,14 +553,27 @@ export function Pipelines() {
                                     <Form.Item
                                         name={['policy', 'vlm_sample_interval_ms']}
                                         label="VLM 采样间隔（毫秒）"
-                                        rules={[{ required: true, type: 'number', min: 1000, max: 60000 }]}
+                                        rules={[
+                                            {
+                                                required: true,
+                                                type: 'number',
+                                                min: 1000,
+                                                max: 60000,
+                                            },
+                                        ]}
                                     >
-                                        <InputNumber min={1000} max={60000} step={1000} style={{ width: '100%' }} />
+                                        <InputNumber
+                                            min={1000}
+                                            max={60000}
+                                            step={1000}
+                                            style={{ width: '100%' }}
+                                        />
                                     </Form.Item>
                                 </Col>
                             </Row>
                             <Text type="secondary" style={{ fontSize: 12 }}>
-                                1 秒窗口是不可变协议；音频 overlap 尚未接入 Runtime，当前强制为 0，避免配置看似生效而实际无效。
+                                Coverage 窗口固定为 1 秒，音频切段重叠为 500
+                                毫秒；这些策略会随方案版本保存。
                             </Text>
                         </Card>
 
@@ -518,7 +600,10 @@ export function Pipelines() {
                             }}
                         >
                             <Button onClick={() => setOpen(false)}>取消</Button>
-                            <Button loading={validate.isPending} onClick={() => void validateForm()}>
+                            <Button
+                                loading={validate.isPending}
+                                onClick={() => void validateForm()}
+                            >
                                 校验方案
                             </Button>
                             <Button

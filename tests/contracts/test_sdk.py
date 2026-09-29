@@ -30,6 +30,20 @@ def test_material_time_and_lineage(material):
         validate_material(material)
 
 
+def test_source_second_without_observations_must_be_pending_or_failed(material):
+    material.ClearField("observations")
+    material.status = "partial"
+    material.pending_enrichments[:] = ["vision.scene_description"]
+    validate_material(material)
+    material.status = "fast_ready"
+    with pytest.raises(ValueError, match="missing_observations"):
+        validate_material(material)
+    material.status = "partial"
+    material.ClearField("pending_enrichments")
+    with pytest.raises(ValueError, match="missing_observations"):
+        validate_material(material)
+
+
 class Echo(ProcessorPlugin):
     """测试替身，绝不会注册为模型插件。"""
 

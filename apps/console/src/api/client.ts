@@ -24,8 +24,7 @@ const messages: Record<string, string> = {
     upload_length_mismatch: '文件未完整上传，请重试。',
     upload_capacity_exhausted: '有其他文件正在上传，请稍后重试。',
     pipeline_referenced_by_drafts: '此方案仍被任务草稿引用，请先归档相关任务。',
-    invalid_multimodal_audio_overlap:
-        '当前 Runtime 尚未实现音频切段重叠；请将 overlap 设为 0，避免保存未实际执行的策略。',
+    invalid_multimodal_audio_overlap: '音频重叠须小于音频切段长度，并在 0–59000 毫秒范围内。',
     record_already_exists: '记录已存在，请使用其他名称。',
     password_length_12_to_256_required: '密码长度需要为 12–256 位。',
     token_scope_exceeds_grant: '凭据权限不能超出你的业务权限。',
@@ -61,6 +60,8 @@ const messages: Record<string, string> = {
     plugin_release_not_found: '受控制品仓里找不到这个 release 描述符。',
     node_agent_not_enrolled: '本机安装 Agent 尚未登记，请先启动并登记 Node Agent。',
     plugin_configuration_required: '缺少有效的插件配置，请先保存参数方案（如本机模型目录）再装配。',
+    deployed_plugin_configuration_not_publishable:
+        '当前运行配置不能直接用于处理方案，请在插件中心保存兼容配置并升级插件。',
     plugin_deployment_in_progress: '该插件正在部署，请等待当前操作完成。',
     plugin_release_not_authenticated: '这个 release 不是受控制品仓发布的首方已认证制品，禁止激活。',
     plugin_release_platform_mismatch: 'release 的平台/架构与目标节点不一致，装不上去。',

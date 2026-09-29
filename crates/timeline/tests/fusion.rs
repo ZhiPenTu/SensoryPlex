@@ -162,6 +162,20 @@ fn empty_retry_is_a_noop_but_empty_initial_input_is_an_error() {
 }
 
 #[test]
+fn source_window_without_facts_requires_explicit_pending_state() {
+    let mut material = fuse(&[input("a", ASR, "final", 0, 5000)]).material;
+    material.observations.clear();
+    material.status = "partial".into();
+    material.pending_enrichments = vec![VLM.into()];
+    assert!(sensoryplex_timeline::validate_material(&material).is_ok());
+    material.status = "fast_ready".into();
+    assert!(sensoryplex_timeline::validate_material(&material).is_err());
+    material.status = "partial".into();
+    material.pending_enrichments.clear();
+    assert!(sensoryplex_timeline::validate_material(&material).is_err());
+}
+
+#[test]
 fn conflicting_observation_identity_is_rejected_atomically() {
     let a = input("a", ASR, "final", 0, 5000);
     let first = fuse(std::slice::from_ref(&a));

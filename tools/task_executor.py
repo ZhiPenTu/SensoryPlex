@@ -54,8 +54,7 @@ RETENTION_REJECTED = "data_plane_retention_rejected"
 # 逐帧账本的轮询间隔：解码还在进行时，消费者必须按窗口及时领料、及时归还，
 # 否则有界保留面（arena 字节 + 保留条数）在长媒体上必然被顶满。
 LEDGER_POLL_INTERVAL_S = 0.02
-# 音频节点只等报告落盘，不需要逐窗口领料；这个间隔同时充当"消费者在线"的心跳，
-# 太长会让数据面在长媒体解码期间判定消费者已离开，太短则是没有意义的轮询风暴。
+# 音频节点边解码边转写；没有待消费段时短暂等待，避免无意义的轮询风暴。
 AUDIO_PLANE_POLL_INTERVAL_S = 0.25
 # 视频节点在"这一轮没有新窗口"时的清扫间隔：它同时充当消费者心跳，并把本节点不消费的
 # kind 有节奏地还回去。两次清扫之间没有新的保留进来时，重复 List 只是徒增 RPC。
@@ -855,71 +854,73 @@ class TaskExecutor:
         report_path: Path,
         producer: subprocess.Popen[str],
     ) -> tuple[int, int, str]:
-        """音频段不走语义计划：解码期间保持消费者在线，等报告落盘后按保留表逐段转写。
-
-        音频段的条数与体积都远小于整段视频的证据窗口，因此不需要像视频那样逐窗口领料；
-        但消费者**必须从解码期就在场**：Runtime 只有在见过消费者之后才会为"等消费者"付预算，
-        否则解码一结束它就按"没有消费者"收尾，保留表里的段一个也领不到。这同样是消费侧的
-        真背压——本节点不消费的 kind（视频帧、音频 PCM）当场归还，音频段才不会因为一堆
-        没有归宿的邻居被挤成容量拒绝。
-        """
-        report: media_pb2.ReplayReport | None = None
+        """音频段边解码边转写：每次只领取保留面内的一批，长视频不会耗尽段配额。"""
+        source_id, stream_id = _source_identity(manifest)
         reader = LeaseBufferReader(handoff_endpoint, ttl_ms=30_000, timeout_s=10)
-        started_at = time.monotonic()
+        channel = grpc.insecure_channel(endpoint.endpoint)
+        plugin = runtime_pb2_grpc.ProcessorPluginServiceStub(channel)
+        observations: list[dict] = []
+        frames: list[dict] = []
+        consumed: set[str] = set()
+        inputs = 0
+        failure = ""
+        report = None
+        active_at = time.monotonic()
         try:
-            while report is None and producer.poll() is None:
+            while True:
                 report = self._replay_report_ready(report_path)
+                if producer.poll() is not None:
+                    break
+                buffers = self._list_buffers(handoff_endpoint)
+                foreign = [entry.buffer_id for entry in buffers if entry.kind != AUDIO_SEGMENT_KIND]
+                self._return_buffers(reader, foreign)
+                available = {
+                    entry.buffer_id: entry
+                    for entry in buffers
+                    if entry.kind == AUDIO_SEGMENT_KIND and entry.buffer_id not in consumed
+                }
+                groups = self._audio_groups(available)
+                for group in groups:
+                    if inputs >= MAX_MODEL_REQUESTS_PER_TASK:
+                        raise TaskExecutionError(
+                            "task_execution_input_budget_exceeded", inputs=inputs
+                        )
+                    produced, records, used, failure = self._run_group(
+                        manifest, plugin, source_id, group, available, handoff_endpoint
+                    )
+                    inputs += len(group.frame_ids)
+                    observations.extend(produced)
+                    frames.extend(records)
+                    consumed.update(used)
+                    self._release_foreign(reader, AUDIO_SEGMENT_KIND)
+                    if failure:
+                        break
+                if failure:
+                    break
                 if report is not None:
                     break
-                if self._release_foreign(reader, AUDIO_SEGMENT_KIND):
-                    # 归还成功就是"生产者还在推进"的证据：把"无事可做"的计时重置。
-                    started_at = time.monotonic()
-                if time.monotonic() - started_at > RUNTIME_STALL_S:
+                if groups or foreign:
+                    active_at = time.monotonic()
+                if producer.poll() is not None:
+                    report = report or self._replay_report_ready(report_path)
+                    if not groups:
+                        break
+                if time.monotonic() - active_at > RUNTIME_STALL_S:
                     raise TaskExecutionError("runtime_replay_stalled", retryable=True)
-                time.sleep(AUDIO_PLANE_POLL_INTERVAL_S)
+                if not groups:
+                    time.sleep(AUDIO_PLANE_POLL_INTERVAL_S)
         finally:
             reader.close()
-        report = report or self._replay_report_ready(report_path)
-        if report is None:
-            raise TaskExecutionError("runtime_replay_report_unavailable")
-        if "decode_failed" in report.blockers:
+            channel.close()
+        if report is None or "decode_failed" in report.blockers:
             raise TaskExecutionError("runtime_replay_failed", retryable=True)
-        all_buffers = self._list_buffers(handoff_endpoint)
-        available = {
-            entry.buffer_id: entry for entry in all_buffers if entry.kind == AUDIO_SEGMENT_KIND
-        }
-        groups = self._audio_groups(available)
-        if not groups:
-            self._discard_buffers(handoff_endpoint, all_buffers)
-            exit_code = self._await_replay(producer)
-            if exit_code != 0:
-                raise TaskExecutionError("runtime_replay_failed", retryable=True)
-            if not any(track.track_kind == "audio" for track in report.source.tracks):
-                return self._write_worker_report(
-                    workspace, manifest, report_path, [], [], input_count=0, reason="no_audio_track"
-                )
+        if (report.source.source.source_id, report.source.source.stream_id) != (
+            source_id,
+            stream_id,
+        ):
+            raise TaskExecutionError("task_execution_source_identity_mismatch")
+        if not inputs and any(track.track_kind == "audio" for track in report.source.tracks):
             raise TaskExecutionError("no_audio_segment_buffer_to_process")
-        if len(groups) > MAX_MODEL_REQUESTS_PER_TASK:
-            self._discard_buffers(handoff_endpoint, all_buffers)
-            raise TaskExecutionError("task_execution_input_budget_exceeded", inputs=len(groups))
-        observations, frames, used, failure = self._process_groups(
-            manifest,
-            endpoint,
-            report.source.source.source_id,
-            groups,
-            available,
-            all_buffers,
-            handoff_endpoint,
-        )
-        inputs = sum(len(group.frame_ids) for group in groups)
-        # 逐帧转写已经把保留表还干净；Runtime 因此在生产者结束之后立刻收尾，
-        # 不必空等一次空闲超时。
-        settled_reader = LeaseBufferReader(handoff_endpoint, ttl_ms=30_000, timeout_s=10)
-        try:
-            self._drain_plane_quietly(settled_reader, used)
-        finally:
-            settled_reader.close()
-        exit_code = self._await_replay(producer)
         _, _, result_ref = self._write_worker_report(
             workspace,
             manifest,
@@ -937,7 +938,7 @@ class TaskExecutor:
                 outputs=len(observations),
                 result_ref=result_ref,
             )
-        if exit_code != 0:
+        if self._await_replay(producer) != 0:
             raise TaskExecutionError("runtime_replay_failed", retryable=True)
         return inputs, len(observations), result_ref
 
@@ -998,11 +999,12 @@ class TaskExecutor:
                 handled = bool(groups or refused_units or discards)
                 available: dict | None = None
                 for group in groups:
-                    if available is None:
+                    if available is None or time.monotonic() - swept_at >= PLANE_SWEEP_INTERVAL_S:
                         available, foreign = self._describe_plane(handoff_endpoint, stream_id)
                         # 本节点不消费的 kind（音频 PCM / 音频段）立刻归还：它们不是这条
                         # 模态的输入，却同样占着有界保留面。
                         returned.update(self._return_buffers(reader, foreign))
+                        swept_at = time.monotonic()
                     missing = [
                         frame_id for frame_id in group.frame_ids if frame_id not in available
                     ]
@@ -1201,9 +1203,10 @@ class TaskExecutor:
             "--handoff-ttl-ms",
             "30000",
             "--handoff-wait-timeout-ms",
-            "30000",
+            "300000",
+            "--handoff-lossless",
             "--handoff-idle-timeout-ms",
-            "60000",
+            "300000",
         ]
         # Runtime 的输出只有计数与原因码，落进本次任务的日志文件里便于复核失败原因；
         # 它不进控制消息，也不含原始帧、音频或密钥。

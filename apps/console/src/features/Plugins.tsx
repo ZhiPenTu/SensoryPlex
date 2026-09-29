@@ -112,6 +112,7 @@ export default function Plugins() {
         },
         onSuccess: (data) => {
             void cache.invalidateQueries({ queryKey: ['nodes'] });
+            void cache.invalidateQueries({ queryKey: ['configs'] });
             void cache.invalidateQueries({ queryKey: ['plugin-releases'] });
             void cache.invalidateQueries({ queryKey: ['plugin-deployments'] });
             if (data.operations.length) setTab('deployments');

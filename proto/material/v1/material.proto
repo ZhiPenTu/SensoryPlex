@@ -45,6 +45,8 @@ message MaterialUnit {
   string material_unit_id = 1;
   string stream_id = 2;
   edge.material.common.v1.TimeRange time_range = 3;
+  // A source-backed second may be partial with no observations only when
+  // pending_enrichments is non-empty. It never implies model success.
   string status = 4;
   uint32 revision = 5;
   repeated Observation observations = 6;

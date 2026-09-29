@@ -46,6 +46,68 @@ def _source(duration_ms: int, kinds: tuple[str, ...] = ("video",)):
     )
 
 
+def test_audio_consumes_before_final_report_to_release_bounded_capacity(tmp_path, monkeypatch):
+    """生产者只容得下一段；前一段未消费时绝不产生下一段或最终报告。"""
+    from tools import task_executor as module
+
+    executor = TaskExecutor(None, base_dir=tmp_path)
+    processed = []
+    manifest = {"asset": {"content_hash": "sha256:" + "a" * 64}, "task": {"node_id": "asr_fast"}}
+    source_id, stream_id = module._source_identity(manifest)
+    report = media_pb2.ReplayReport(
+        source=media_pb2.MediaSourceDescription(
+            source={"source_id": source_id, "stream_id": stream_id},
+            tracks=[{"track_kind": "audio"}],
+            duration_ms=3000,
+        )
+    )
+    monkeypatch.setattr(
+        executor, "_replay_report_ready", lambda _: report if len(processed) == 3 else None
+    )
+    monkeypatch.setattr(
+        executor,
+        "_list_buffers",
+        lambda _: (
+            []
+            if len(processed) == 3
+            else [
+                SimpleNamespace(
+                    buffer_id=str(len(processed)),
+                    kind="audio_segment",
+                    time_range=SimpleNamespace(start_ms=len(processed) * 1000),
+                )
+            ]
+        ),
+    )
+    monkeypatch.setattr(executor, "_return_buffers", lambda *args: set())
+    monkeypatch.setattr(executor, "_release_foreign", lambda *args: set())
+    monkeypatch.setattr(executor, "_await_replay", lambda _: 0)
+    monkeypatch.setattr(
+        module, "LeaseBufferReader", lambda *a, **kw: SimpleNamespace(close=lambda: None)
+    )
+    monkeypatch.setattr(
+        module.grpc, "insecure_channel", lambda _: SimpleNamespace(close=lambda: None)
+    )
+    monkeypatch.setattr(module.runtime_pb2_grpc, "ProcessorPluginServiceStub", lambda _: None)
+
+    def consume(_manifest, _plugin, _source, group, available, _handoff):
+        assert len(available) == 1
+        processed.extend(group.frame_ids)
+        return [], [], set(group.frame_ids), ""
+
+    monkeypatch.setattr(executor, "_run_group", consume)
+    result = executor._consume_audio(
+        manifest,
+        tmp_path,
+        SimpleNamespace(endpoint="test"),
+        "handoff",
+        tmp_path / "replay.pb",
+        SimpleNamespace(poll=lambda: None),
+    )
+    assert processed == ["0", "1", "2"]
+    assert result[:2] == (3, 0)
+
+
 def test_runtime_pipeline_does_not_declare_vlm_when_revision_has_no_vlm():
     without_vlm = _runtime_pipeline(policy(), has_vlm=False)
     with_vlm = _runtime_pipeline(policy(), has_vlm=True)

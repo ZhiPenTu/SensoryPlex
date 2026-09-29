@@ -158,6 +158,7 @@ struct HandoffArgs {
     retained_limit: usize,
     wait_timeout_ms: u64,
     idle_timeout_ms: u64,
+    lossless: bool,
 }
 
 impl HandoffArgs {
@@ -197,6 +198,7 @@ struct MediaRunArgs {
     handoff_retained_limit: usize,
     handoff_ttl_ms: u32,
     handoff_wait_timeout_ms: u64,
+    handoff_lossless: bool,
     handoff_idle_timeout_ms: u64,
     /// 是否启用语义覆盖判别。`false` 时报告里不会出现语义账本，
     /// 因此"没有语义账本"永远不会被读成"每一帧都没变"。
@@ -264,6 +266,7 @@ impl MediaRunArgs {
             handoff_retained_limit: sensoryplex_media::handoff::DEFAULT_RETAINED_LIMIT,
             handoff_ttl_ms: DEFAULT_HANDOFF_TTL_MS,
             handoff_wait_timeout_ms: DEFAULT_HANDOFF_WAIT_TIMEOUT_MS,
+            handoff_lossless: false,
             handoff_idle_timeout_ms: DEFAULT_HANDOFF_IDLE_TIMEOUT_MS,
             evidence_enabled: false,
             evidence_max_gap_ms: DEFAULT_MAX_SEMANTIC_GAP_MS,
@@ -323,6 +326,10 @@ impl MediaRunArgs {
             }
             "--handoff-wait-timeout-ms" => {
                 self.handoff_wait_timeout_ms = parse_arg(flag, args.get(index + 1))?;
+            }
+            "--handoff-lossless" => {
+                self.handoff_lossless = true;
+                return Ok(Some(index + 1));
             }
             "--handoff-idle-timeout-ms" => {
                 self.handoff_idle_timeout_ms = parse_arg(flag, args.get(index + 1))?;
@@ -426,6 +433,7 @@ impl MediaRunArgs {
                     retained_limit: self.handoff_retained_limit,
                     wait_timeout_ms: self.handoff_wait_timeout_ms,
                     idle_timeout_ms: self.handoff_idle_timeout_ms,
+                    lossless: self.handoff_lossless,
                 })
             }
         };
@@ -1169,9 +1177,15 @@ fn open_handoff_plane(
         .handoff
         .as_ref()
         .map_or(0, |config| config.wait_timeout_ms as i64);
-    policy
+    let plane = policy
         .open(arena_id, wait_timeout_ms)
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    if run.handoff.as_ref().is_some_and(|config| config.lossless) {
+        if let Some(plane) = &plane {
+            plane.require_lossless();
+        }
+    }
+    Ok(plane)
 }
 
 /// 数据面的收尾判据。生产者与消费者是两个方向，服务端必须能分辨

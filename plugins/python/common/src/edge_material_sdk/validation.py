@@ -87,7 +87,9 @@ def validate_material(value: MaterialUnit):
     validate_range(value.time_range)
     if not value.source_refs:
         raise ValueError("missing_source_references")
-    if not value.observations and value.status != "failed":
+    # 逐秒来源切片可以先于模型结果存在，但必须明确仍待补充，不能冒充已完成素材。
+    pending_window = value.status == "partial" and bool(value.pending_enrichments)
+    if not value.observations and value.status != "failed" and not pending_window:
         raise ValueError("missing_observations")
     ids = set()
     for observation in value.observations:

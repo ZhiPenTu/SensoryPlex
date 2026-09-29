@@ -108,7 +108,7 @@ def _policy(raw: object) -> dict[str, int]:
         ),
         "vlm_sample_interval_ms": _bounded_int(
             value.get("vlm_sample_interval_ms"),
-            default=5_000,
+            default=1_000,
             lower=1_000,
             upper=MAX_POLICY_INTERVAL_MS,
             code="invalid_multimodal_vlm_sample_interval",

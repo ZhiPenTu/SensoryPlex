@@ -118,6 +118,29 @@ def test_vlm_delayed_config_is_bound_to_local_decode(console_app):
         assert rejected.json()["reason_code"] == "console_vlm_config_requires_local_decode"
 
 
+@pytest.mark.parametrize(
+    "plugin_id",
+    [
+        "org.sensoryplex.ocr-rapidocr",
+        "org.sensoryplex.asr-whisper-mlx",
+        "org.sensoryplex.vlm-moondream",
+    ],
+)
+def test_configuration_roundtrip_preserves_deployment_hash(console_app, plugin_id):
+    """从列表重新保存时，Struct 的浮点转换不得改变配置摘要。"""
+    with TestClient(console_app) as client:
+        login(client)
+        body = {"plugin_id": plugin_id, "name": "roundtrip", "config": {}}
+        first = client.post("/admin/v1/plugin-configurations", json=body)
+        assert first.status_code == 201, first.text
+        second = client.post(
+            "/admin/v1/plugin-configurations", json={**body, "config": first.json()["config"]}
+        )
+        assert second.status_code == 201, second.text
+        assert second.json()["revision"] == 2
+        assert second.json()["config_hash"] == first.json()["config_hash"]
+
+
 def pipeline(client, config):
     result = client.post(
         "/admin/v1/pipelines",
@@ -691,7 +714,7 @@ def test_v2_agent_manifest_receipt_and_delivery(console_app, console_database):
 
 
 def test_v2_timeline_allows_empty_materials_but_requires_coverage(console_app, console_database):
-    """没有 Observation 的片段不造假素材，却必须有完整的 1 秒覆盖事实。"""
+    """没有 Observation 也保留完整来源切片，明确待分析且不合成模型事实。"""
     with TestClient(console_app) as client:
         login(client)
         plan = multimodal_pipeline(client)
@@ -820,8 +843,25 @@ def test_v2_timeline_allows_empty_materials_but_requires_coverage(console_app, c
             },
         )
         assert ingested.status_code == 200, ingested.text
-        assert ingested.json()["materials"] == 0
+        assert ingested.json()["materials"] == 10
         assert ingested.json()["coverage_windows"] == 10
+        execution_id = timeline["execution_id"]
+        overview = client.get(f"/v1/executions/{execution_id}/timeline")
+        assert overview.status_code == 200, overview.text
+        assert len(overview.json()["material_references"]) == 10
+        assert all(u["observation_count"] == 0 for u in overview.json()["material_references"])
+        tail = client.get(f"/v1/executions/{execution_id}/materials?offset=9&limit=1")
+        assert tail.status_code == 200, tail.text
+        assert tail.json()["materials"][0]["time_range"] == {"start_ms": "9000", "end_ms": "9056"}
+        patched = client.post(f"/v1/executions/{execution_id}:segment-seconds")
+        assert patched.status_code == 200, patched.text
+        assert patched.json()["materials"] == 10
+        assert (
+            client.post(f"/v1/executions/{execution_id}:segment-seconds").json()[
+                "vlm_tasks_enqueued"
+            ]
+            == 0
+        )
         assert (
             client.post(
                 f"/v1/agent/tasks/{timeline['task']['task_id']}:result",
@@ -857,7 +897,7 @@ def test_v2_timeline_allows_empty_materials_but_requires_coverage(console_app, c
             (drafted.json()["id"],),
         ).fetchone()
         assert last_window == (9000, 9056)
-        assert conn.execute("SELECT count(*) FROM material_unit").fetchone()[0] == 0
+        assert conn.execute("SELECT count(*) FROM material_unit").fetchone()[0] == 10
 
 
 def test_task_dispatch_surfaces_unattached_runtime(console_app, console_database):

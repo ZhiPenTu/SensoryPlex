@@ -141,6 +141,22 @@ def repository(tmp_path_factory):
                 )["metadata"]["version"],
                 memory_bytes=1024 * MIB,
             ),
+            **{
+                modality: write_release(
+                    root,
+                    plugin_id=f"org.sensoryplex.{modality}",
+                    version=yaml.safe_load(
+                        (
+                            Path(__file__).parents[2]
+                            / "plugins/python/processors"
+                            / modality
+                            / "plugin.yaml"
+                        ).read_text()
+                    )["metadata"]["version"],
+                    memory_bytes=1024 * MIB,
+                )
+                for modality in ("ocr-rapidocr", "asr-whisper-mlx")
+            },
         },
     }
 
@@ -291,12 +307,13 @@ def stage_report(client, token, intent, stage, **fields):
     return report(client, token, intent, stage=stage, **fields)
 
 
-def cutover(client, node_id, token, operation_id, release, *, expected="succeeded"):
+def cutover(client, node_id, token, operation_id, release, *, expected="succeeded", intent=None):
     """按真实执行器顺序把候选推到切换完成：staging → starting → validating → candidate_ready。
 
     只有 `candidate_ready` 请求切换；`validating` 之后必须仍然没有切换 active 指针。
     """
-    intent = pending_intent(client, node_id, token, "DEPLOYMENT_ACTION_STAGE_RELEASE")
+    if intent is None:
+        intent = pending_intent(client, node_id, token, "DEPLOYMENT_ACTION_STAGE_RELEASE")
     staging = stage_report(client, token, intent, "PLUGIN_OPERATION_STAGE_STAGING", staging_ms=1200)
     assert staging.status_code == 200, staging.text
     starting = stage_report(
@@ -1117,3 +1134,105 @@ def test_batch_requires_authenticated_agent_and_bounds_request(client, db):
     assert result["operations"] == []
     assert result["rejected"] == [{"plugin_id": CANARY, "reason": "node_agent_not_enrolled"}]
     assert client.post(url, json={"plugin_ids": [CANARY] * 17}).status_code == 422
+
+
+def test_batch_configs_are_reusable_and_repair_ready_installations(client, db, releases):
+    """配置必须实际入库、匹配部署摘要，并能创建多模态 Revision；重试不生成新版本。"""
+    sync(client)
+    node_id = "batch-configs-" + uuid.uuid4().hex[:12]
+    token = enroll(client, node_id, memory_bytes=32 * 1024 * MIB)
+    url = f"/admin/v1/nodes/{node_id}/plugins:batch-deploy"
+    components = {
+        "ocr_fast": "org.sensoryplex.ocr-rapidocr",
+        "asr_fast": "org.sensoryplex.asr-whisper-mlx",
+        "vlm_enrich": VLM,
+    }
+    body = {"plugin_ids": list(components.values())}
+    created = client.post(url, json=body)
+    assert created.status_code == 200, created.text
+    assert created.json()["rejected"] == []
+    assert len(created.json()["operations"]) == 3
+
+    def configs():
+        return db.execute(
+            "SELECT c.id,c.plugin_id,c.config_hash,c.revision FROM console_plugin_config c "
+            "JOIN console_plugin_instance i ON i.plugin_id=c.plugin_id "
+            "AND i.config_hash=c.config_hash WHERE i.node_id=%s ORDER BY c.plugin_id",
+            (node_id,),
+        ).fetchall()
+
+    initial = configs()
+    assert len(initial) == 3
+    pending = client.post(url, json=body).json()
+    assert [item["operation_id"] for item in pending["operations"]] == [
+        item["operation_id"] for item in created.json()["operations"]
+    ]
+    assert configs() == initial
+    intents = {
+        intent["operation_id"]: intent
+        for intent in heartbeat(client, node_id, token)["pending_intents"]
+    }
+    for operation in created.json()["operations"]:
+        release = next(
+            release
+            for release in releases.values()
+            if release["release_id"] == operation["release_id"]
+        )
+        cutover(
+            client,
+            node_id,
+            token,
+            operation["operation_id"],
+            release,
+            intent=intents[operation["operation_id"]],
+        )
+
+    # 模拟旧一键部署遗留：已经 ready，但没有任何可选的配置记录。
+    db.execute("DELETE FROM console_plugin_config WHERE id = ANY(%s)", ([c[0] for c in initial],))
+    repaired = client.post(url, json=body).json()
+    assert repaired["operations"] == []
+    assert repaired["rejected"] == []
+    assert set(repaired["already_ready"]) == set(components.values())
+    restored = configs()
+    assert len(restored) == 3
+    assert [(c[1], c[2]) for c in restored] == [(c[1], c[2]) for c in initial]
+    client.post(url, json=body).raise_for_status()
+    assert configs() == restored
+
+    available = client.get("/admin/v1/plugin-configurations?limit=100").json()["items"]
+    ids = {c[1]: c[0] for c in restored}
+    assert set(ids.values()) <= {c["id"] for c in available}
+    plan = {
+        "name": node_id,
+        "components": [
+            {"node_id": key, "config_id": ids[value]} for key, value in components.items()
+        ],
+    }
+    validation = client.post("/admin/v1/multimodal-pipelines:validate", json=plan)
+    assert validation.status_code == 200, validation.text
+    assert validation.json()["valid"] is True
+    saved = client.post("/admin/v1/multimodal-pipelines", json=plan)
+    assert saved.status_code == 201, saved.text
+    assert saved.json()["graph_digest"] == validation.json()["graph_digest"]
+
+
+def test_batch_reuses_explicit_saved_config_without_overwriting_it(client, db):
+    sync(client)
+    config = client.post(
+        "/admin/v1/plugin-configurations",
+        json={"plugin_id": VLM, "name": "custom-batch", "config": {"prompt": "保留自定义描述"}},
+    ).json()
+    node_id = "batch-custom-" + uuid.uuid4().hex[:12]
+    enroll(client, node_id, memory_bytes=16 * 1024 * MIB)
+    count = db.execute("SELECT count(*) FROM console_plugin_config").fetchone()[0]
+    result = client.post(
+        f"/admin/v1/nodes/{node_id}/plugins:batch-deploy", json={"plugin_ids": [VLM]}
+    ).json()
+    assert result["rejected"] == []
+    assert len(result["operations"]) == 1
+    assert db.execute("SELECT count(*) FROM console_plugin_config").fetchone()[0] == count
+    stored = db.execute(
+        "SELECT config_hash,config FROM console_plugin_instance WHERE node_id=%s", (node_id,)
+    ).fetchone()
+    assert stored[0] == config["config_hash"]
+    assert stored[1]["prompt"] == "保留自定义描述"

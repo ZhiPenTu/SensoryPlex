@@ -19,11 +19,20 @@ from edge_material_sdk.generated.gateway.v1.gateway_pb2 import (
     SearchRequest,
     SearchResponse,
 )
+from edge_material_sdk.generated.material.v1 import material_pb2
+from edge_material_sdk.generated.media.v1 import media_pb2
 from fastapi import Body, Depends, Query
 from psycopg.types.json import Jsonb
 
 from ..contracts import audit, fail, identifier, one, out, parse, rows, text_field
-from ..infrastructure import materials, multimodal, orchestration, semantic
+from ..infrastructure import (
+    materials,
+    multimodal,
+    orchestration,
+    second_windows,
+    semantic,
+    vlm_delayed,
+)
 
 KEYWORD_INDEX_VERSION = "postgres-literal-v1"
 DEFAULT_LIMIT = 20
@@ -569,9 +578,16 @@ def register(app, pool, auth, settings):
             materials_for_execution = rows(
                 conn,
                 """
-                SELECT material_unit_id,material_revision
-                FROM material_execution WHERE execution_id=%s
-                ORDER BY material_unit_id,material_revision
+                SELECT DISTINCT ON (m.material_unit_id)
+                       m.material_unit_id,m.revision AS material_revision,m.stream_id,
+                       m.start_ms,m.end_ms,m.status,
+                       (SELECT count(*) FROM material_observation o
+                        WHERE (o.material_unit_id,o.revision)=(m.material_unit_id,m.revision))
+                       AS observation_count
+                FROM material_execution e JOIN material_unit m
+                  ON (m.material_unit_id,m.revision)=(e.material_unit_id,e.material_revision)
+                WHERE e.execution_id=%s
+                ORDER BY m.material_unit_id,m.revision DESC
                 """,
                 (execution_id,),
             )
@@ -580,6 +596,133 @@ def register(app, pool, auth, settings):
             "windows": windows,
             "material_references": materials_for_execution,
         }
+
+    @app.get("/v1/executions/{execution_id}/materials")
+    def execution_materials(
+        execution_id: str,
+        offset: int = Query(0, ge=0, le=7200),
+        limit: int = Query(100, ge=1, le=100),
+        p: Annotated[object, Depends(auth.require("materials:read"))] = None,
+    ):
+        """按时间分页水合素材；完整时间轴使用轻量摘要，不一次加载全部模型载荷。"""
+        with pool.connection() as conn:
+            if not one(
+                conn,
+                """SELECT e.execution_id FROM console_job_execution e
+                JOIN console_job_draft j ON j.id=e.job_id
+                WHERE e.execution_id=%s AND j.owner=%s""",
+                (execution_id, p.name),
+            ):
+                fail(404, "execution_not_found")
+            data = conn.execute(
+                """
+                WITH latest AS (
+                    SELECT DISTINCT ON (m.material_unit_id) m.*
+                    FROM material_execution e JOIN material_unit m
+                      ON (m.material_unit_id,m.revision)=(e.material_unit_id,e.material_revision)
+                    WHERE e.execution_id=%s ORDER BY m.material_unit_id,m.revision DESC
+                ) SELECT contract_bytes FROM latest
+                ORDER BY stream_id,start_ms,material_unit_id LIMIT %s OFFSET %s
+                """,
+                (execution_id, limit, offset),
+            ).fetchall()
+        return {"materials": [out(material_pb2.MaterialUnit.FromString(row[0])) for row in data]}
+
+    @app.post("/v1/executions/{execution_id}:segment-seconds")
+    def segment_seconds(
+        execution_id: str,
+        p: Annotated[object, Depends(auth.require("jobs:write"))] = None,
+    ):
+        """显式补齐历史执行：保留原方案和事实，记录本次每秒摘要请求。"""
+        with pool.connection() as conn:
+            execution = one(
+                conn,
+                """SELECT e.* FROM console_job_execution e
+                JOIN console_job_draft j ON j.id=e.job_id
+                WHERE e.execution_id=%s AND j.owner=%s FOR UPDATE OF e""",
+                (execution_id, p.name),
+            )
+            if not execution:
+                fail(404, "execution_not_found")
+            if execution["state"] not in {
+                "ready_for_review",
+                "succeeded",
+                "succeeded_with_partial_enrichment",
+            }:
+                fail(409, "execution_fast_path_not_ready")
+            revision = one(
+                conn,
+                "SELECT * FROM pipeline_revision WHERE pipeline_id=%s AND revision=%s",
+                (execution["pipeline_id"], execution["pipeline_revision"]),
+            )
+            delayed = next(
+                (
+                    n.get("delayed_enrichments")
+                    for n in revision["definition_json"]["nodes"]
+                    if n.get("id") == "timeline_fusion"
+                ),
+                None,
+            )
+            if not delayed:
+                fail(409, "execution_delayed_model_missing")
+            asset = one(
+                conn,
+                """SELECT a.*,s.source_id FROM media_asset a
+                JOIN stream_session s ON s.stream_id=a.stream_id
+                JOIN console_job_draft j ON a.object_uri='upload://' || j.asset_id
+                WHERE j.id=%s AND j.owner=%s""",
+                (execution["job_id"], p.name),
+            )
+            if not asset:
+                fail(409, "timeline_source_missing")
+            try:
+                units = second_windows.ensure_materials(
+                    conn,
+                    execution_id=execution_id,
+                    asset_id=asset["asset_id"],
+                    pending=[vlm_delayed.VLM_MODALITY],
+                )
+                description = media_pb2.MediaSourceDescription(
+                    source={
+                        "stream_id": asset["stream_id"],
+                        "source_id": asset["source_id"],
+                        "content_hash": asset["sha256"],
+                    },
+                    duration_ms=asset["duration_ms"],
+                )
+                queued = vlm_delayed.enqueue_vlm_tasks(
+                    conn,
+                    execution=execution,
+                    revision=revision,
+                    description=description,
+                    items={},
+                    units=units,
+                    full_seconds=True,
+                )
+            except ValueError as error:
+                fail(422, str(error))
+            conn.execute(
+                """UPDATE console_job_execution
+                SET state=CASE WHEN %s>0 THEN 'ready_for_review' ELSE state END,
+                    completed_at=CASE WHEN %s>0 THEN NULL ELSE completed_at END,
+                    modality_summary=modality_summary || %s::jsonb WHERE execution_id=%s""",
+                (
+                    len(queued),
+                    len(queued),
+                    Jsonb(
+                        {
+                            "segmentation": {
+                                "window_ms": 1000,
+                                "windows": len(units),
+                                "vlm_interval_override_ms": 1000,
+                            }
+                        }
+                    ),
+                    execution_id,
+                ),
+            )
+            audit(conn, p.name, "execution.segment_seconds", execution_id)
+        return {"materials": len(units), "vlm_tasks_enqueued": len(queued)}
 
     @app.post("/v1/job-drafts", status_code=201)
     def create_draft(

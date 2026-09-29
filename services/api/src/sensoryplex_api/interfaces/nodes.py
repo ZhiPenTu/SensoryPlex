@@ -1281,6 +1281,14 @@ def register(app, pool, auth, settings):
                 # OCR/ASR 与完整覆盖层已经作为快路径事实落库；在同一事务内仅创建 VLM
                 # 时间锚点任务和 outbox，不连 NATS、更不解压任何帧。提交之后用户即可审阅，
                 # 发布器/Consumer 的可用性不再阻塞 L1。
+                from ..infrastructure import second_windows
+
+                units = second_windows.ensure_materials(
+                    conn,
+                    execution_id=execution["execution_id"],
+                    asset_id=f"asset-{description.source.content_hash[7:19]}",
+                    pending=[vlm_delayed.VLM_MODALITY] if node.get("delayed_enrichments") else [],
+                )
                 vlm_task_ids = vlm_delayed.enqueue_vlm_tasks(
                     conn,
                     execution=execution,

@@ -30,7 +30,7 @@ from google.protobuf.message import DecodeError
 from psycopg.types.json import Jsonb
 
 from ..contracts import one
-from . import materials
+from . import materials, second_windows
 
 TASK_STREAM_MAX_MSGS = 100_000
 TASK_STREAM_MAX_BYTES = 128 << 20
@@ -244,8 +244,9 @@ def enqueue_vlm_tasks(
     description,
     items: dict[str, tuple[str, int, int]],
     units: list[material_pb2.MaterialUnit],
+    full_seconds: bool = False,
 ) -> list[str]:
-    """为快路径完成的真实帧锚点原子生成慢路径任务和发布 outbox。"""
+    """按完整媒体时长生成可重新解码的锚点；显式补齐操作可请求每秒摘要。"""
     nodes = revision["definition_json"].get("nodes", [])
     timeline = next((item for item in nodes if item.get("id") == "timeline_fusion"), {})
     delayed = timeline.get("delayed_enrichments") or []
@@ -260,12 +261,30 @@ def enqueue_vlm_tasks(
     interval_ms = int(policy.get("vlm_sample_interval_ms") or 5_000)
     if not 1_000 <= interval_ms <= 60_000:
         raise VlmDelayedError("vlm_task_sampling_policy_invalid")
+    if full_seconds:
+        interval_ms = 1000
     prompt = _prompt_for_revision(conn, node)
     source = description.source
     asset_id = f"asset-{source.content_hash[7:19]}"
     media_locator = f"media_asset:{asset_id}"
     created: list[str] = []
-    for source_item_id, start_ms, end_ms in _candidate_video_items(items, interval_ms=interval_ms):
+    candidates = second_windows.anchors(
+        conn,
+        stream_id=source.stream_id,
+        content_hash=source.content_hash,
+        duration_ms=int(description.duration_ms),
+        interval_ms=interval_ms,
+    )
+    existing_seconds = {
+        row[0] // 1000
+        for row in conn.execute(
+            "SELECT start_ms FROM vlm_enrichment_task WHERE execution_id=%s",
+            (execution["execution_id"],),
+        ).fetchall()
+    }
+    for source_item_id, start_ms, end_ms in candidates:
+        if start_ms // 1000 in existing_seconds:
+            continue
         task_id = _task_id()
         task = orchestration_pb2.TaskInputManifest(
             run_id=str(execution["run_id"]),
@@ -654,6 +673,12 @@ def _sync_delayed_execution(conn, execution_id: str) -> None:
 def apply_vlm_result(conn, result: orchestration_pb2.VlmTaskResult) -> dict[str, Any]:
     """以 task_id/result_digest 幂等收敛 VLM 返回，并在同一事务里写事实和 outbox。"""
     with conn.transaction():
+        # 补齐请求和结果融合采用同一锁序：先执行批次，再任务与素材，避免并发修复死锁。
+        conn.execute(
+            """SELECT execution_id FROM console_job_execution WHERE execution_id=(
+                SELECT execution_id FROM vlm_enrichment_task WHERE task_id=%s) FOR UPDATE""",
+            (result.task.task_id,),
+        )
         task = _task_row(conn, result.task.task_id)
         if not task:
             raise VlmDelayedError("vlm_result_task_not_found")
@@ -697,6 +722,26 @@ def apply_vlm_result(conn, result: orchestration_pb2.VlmTaskResult) -> dict[str,
             if result.retryable:
                 # 可重试失败不 ACK 任务；Consumer 会让 AckWait 重投给可用节点。
                 raise VlmDelayedError("vlm_result_retryable_must_not_be_published")
+            row = conn.execute(
+                "SELECT contract_bytes FROM material_unit WHERE material_unit_id=%s "
+                "ORDER BY revision DESC LIMIT 1",
+                (task["material_unit_id"],),
+            ).fetchone()
+            if row:
+                unit = material_pb2.MaterialUnit.FromString(row[0])
+                if VLM_MODALITY in unit.pending_enrichments:
+                    unit.revision += 1
+                    unit.pending_enrichments[:] = [
+                        p for p in unit.pending_enrichments if p != VLM_MODALITY
+                    ]
+                    if not unit.observations:
+                        unit.status = "failed"
+                    materials.append_material(
+                        conn,
+                        unit,
+                        trace_id=f"vlm-task:{task['task_id']}",
+                        execution_id=task["execution_id"],
+                    )
             conn.execute(
                 """
                 UPDATE vlm_enrichment_task SET state='failed',result_digest=%s,reason_code=%s,

@@ -38,7 +38,9 @@ pub fn validate_material(material: &MaterialUnit) -> Result<(), ContractError> {
     if material.source_refs.is_empty() {
         return Err(ContractError("missing_source_references"));
     }
-    if material.observations.is_empty() && material.status != "failed" {
+    // 来源切片允许先落库；没有观测时必须显式声明待补充，不能宣称完成。
+    let pending_window = material.status == "partial" && !material.pending_enrichments.is_empty();
+    if material.observations.is_empty() && material.status != "failed" && !pending_window {
         return Err(ContractError("missing_observations"));
     }
     for observation in &material.observations {

@@ -12,7 +12,7 @@ from edge_material_sdk.vlm_tasks import result_digest
 from psycopg import sql
 from psycopg.conninfo import make_conninfo
 from psycopg.types.json import Jsonb
-from sensoryplex_api.infrastructure import vlm_delayed
+from sensoryplex_api.infrastructure import second_windows, vlm_delayed
 
 from tools.migrate import migrate
 
@@ -166,12 +166,13 @@ def _seed_fast_path(conn):
 
 def _description():
     return media_pb2.MediaSourceDescription(
+        duration_ms=2000,
         source=media_pb2.MediaSourceRef(
             stream_id="stream",
             source_id="source",
             kind=media_pb2.MEDIA_SOURCE_KIND_FILE,
             content_hash=DIGEST,
-        )
+        ),
     )
 
 
@@ -284,3 +285,70 @@ def test_fast_path_is_reviewable_before_delayed_results_and_fuser_is_idempotent(
             "succeeded_with_partial_enrichment"
         )
         assert conn.execute("SELECT state FROM console_job_draft").fetchone()[0] == "completed"
+
+
+def test_long_video_has_all_seconds_without_retained_frames(delayed_database):
+    """717.007 秒必须有 718 个来源切片和任务；重放不得重复，尾秒保留毫秒精度。"""
+    with psycopg.connect(delayed_database) as conn:
+        revision = _seed_fast_path(conn)
+        conn.execute("UPDATE media_asset SET duration_ms=717007")
+        units = second_windows.ensure_materials(
+            conn,
+            execution_id="execution",
+            asset_id=ASSET_ID,
+            pending=[vlm_delayed.VLM_MODALITY],
+        )
+        assert len(units) == 718
+        assert [
+            (u.time_range.start_ms, u.time_range.end_ms) for u in units
+        ] == second_windows.ranges(717007)
+        assert not any(u.observations for u in units)
+        assert all(u.status == "partial" and u.pending_enrichments for u in units)
+        description = _description()
+        description.duration_ms = 717007
+        kwargs = dict(
+            execution={"execution_id": "execution", "run_id": "run"},
+            revision={"definition_json": revision},
+            description=description,
+            items={},
+            units=units,
+        )
+        assert len(vlm_delayed.enqueue_vlm_tasks(conn, **kwargs)) == 718
+        assert vlm_delayed.enqueue_vlm_tasks(conn, **kwargs) == []
+        assert (
+            second_windows.ensure_materials(
+                conn,
+                execution_id="execution",
+                asset_id=ASSET_ID,
+                pending=[vlm_delayed.VLM_MODALITY],
+            )
+            == units
+        )
+        task_bytes = conn.execute("""SELECT o.contract_bytes FROM vlm_task_outbox o
+            JOIN vlm_enrichment_task t ON t.task_id=o.task_id
+            WHERE t.start_ms=717000""").fetchone()[0]
+        task = orchestration_pb2.TaskInputManifest.FromString(task_bytes)
+        assert (task.time_range.start_ms, task.time_range.end_ms) == (717000, 717007)
+        assert not task.descriptor_ref
+        vlm_delayed.apply_vlm_result(conn, _success(task))
+        current = second_windows.ensure_materials(
+            conn, execution_id="execution", asset_id=ASSET_ID, pending=[vlm_delayed.VLM_MODALITY]
+        )
+        assert len(current) == 718
+        assert current[-1].revision == 2 and len(current[-1].observations) == 1
+        assert not current[-1].pending_enrichments
+        failed_bytes = conn.execute("""SELECT o.contract_bytes FROM vlm_task_outbox o
+            JOIN vlm_enrichment_task t ON t.task_id=o.task_id
+            WHERE t.start_ms=716000""").fetchone()[
+            0
+        ]
+        failed_task = orchestration_pb2.TaskInputManifest.FromString(failed_bytes)
+        vlm_delayed.apply_vlm_result(conn, _failure(failed_task))
+        failed_unit = second_windows.ensure_materials(
+            conn,
+            execution_id="execution",
+            asset_id=ASSET_ID,
+            pending=[vlm_delayed.VLM_MODALITY],
+        )[-2]
+        assert failed_unit.status == "failed"
+        assert not failed_unit.observations and not failed_unit.pending_enrichments

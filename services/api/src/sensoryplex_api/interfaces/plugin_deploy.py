@@ -21,6 +21,11 @@ from psycopg.types.json import Jsonb
 
 from ..contracts import audit, fail, hash_token, identifier, one, out, parse, rows, text_field
 from ..infrastructure.catalog import plugin as catalog_plugin
+from ..infrastructure.plugin_configurations import (
+    MULTIMODAL_CONFIG_DEFAULTS,
+    normalize_configuration,
+    save_deployment_configuration,
+)
 from ..infrastructure.preflight import check_preflight
 
 # 候选实例从 accepted 到 candidate_ready 的默认总时限（ADR-030 §2.8）。
@@ -806,6 +811,7 @@ def register(app, pool, auth, settings):
                         (node_id, plugin_id),
                     )
                     if pending:
+                        save_deployment_configuration(conn, entry, pending["config"], p.name)
                         operations.append(operation_proto(conn, pending))
                         continue
                     slot = one(
@@ -818,6 +824,7 @@ def register(app, pool, auth, settings):
                         and slot["active_runtime_instance_id"]
                         and slot["actual_state"] == "ready"
                     ):
+                        save_deployment_configuration(conn, entry, slot["config"], p.name)
                         already_ready.append(plugin_id)
                         continue
                     release = one(
@@ -847,13 +854,13 @@ def register(app, pool, auth, settings):
                     elif slot:
                         config = slot["config"]
                     else:
-                        from .admin import _MULTIMODAL_CONFIG_DEFAULTS
-
-                        config = _MULTIMODAL_CONFIG_DEFAULTS.get(plugin_id, {})
+                        config = MULTIMODAL_CONFIG_DEFAULTS.get(plugin_id, {})
                     from jsonschema import Draft202012Validator
 
                     if list(Draft202012Validator(entry["config_schema"]).iter_errors(config)):
                         fail(422, "plugin_configuration_required")
+                    if plugin_id in MULTIMODAL_CONFIG_DEFAULTS:
+                        config = normalize_configuration(entry, config)
                     result = create_operation(
                         node_id,
                         plugin_id,
@@ -862,6 +869,7 @@ def register(app, pool, auth, settings):
                         "upgrade" if slot and slot["active_runtime_instance_id"] else "provision",
                         connection=conn,
                     )
+                    save_deployment_configuration(conn, entry, config, p.name)
                     operations.append(result)
             except HTTPException as error:
                 rejected.append({"plugin_id": plugin_id, "reason": str(error.detail)})

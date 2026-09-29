@@ -701,6 +701,8 @@ pub struct SharedHandoff {
     /// 是否已经为等待付出过一次完整预算。它让一次运行的总延迟有上界：
     /// 消费者如果真的跟不上，后面每一帧只会立刻记拒绝，而不是每帧各等一个预算。
     wait_exhausted: AtomicBool,
+    /// 文件离线处理采用无丢帧背压；一次等待超时即显式失败，不丢弃后续整段输入。
+    lossless: AtomicBool,
 }
 
 impl std::fmt::Debug for SharedHandoff {
@@ -737,6 +739,7 @@ impl SharedHandoff {
             last_activity_ms: AtomicI64::new(crate::now_unix_ms()),
             wait_timeout_ms,
             wait_exhausted: AtomicBool::new(false),
+            lossless: AtomicBool::new(false),
         })
     }
 
@@ -756,6 +759,10 @@ impl SharedHandoff {
 
     pub fn consumer_connected(&self) -> bool {
         self.consumer.load(Ordering::Relaxed)
+    }
+
+    pub fn require_lossless(&self) {
+        self.lossless.store(true, Ordering::Relaxed);
     }
 
     pub fn last_activity_ms(&self) -> i64 {
@@ -846,12 +853,14 @@ impl SharedHandoff {
     ) -> Result<Option<RetainedBuffer>, MediaError> {
         // 一次调用在统计里就是一次"保留请求"；重试不重复计数。
         self.plane()?.note_offered();
-        let deadline_ms =
-            if self.wait_timeout_ms > 0 && !self.wait_exhausted.load(Ordering::Relaxed) {
-                Some(crate::now_unix_ms().saturating_add(self.wait_timeout_ms))
-            } else {
-                None
-            };
+        let lossless = self.lossless.load(Ordering::Relaxed);
+        let deadline_ms = if self.wait_timeout_ms > 0
+            && (lossless || !self.wait_exhausted.load(Ordering::Relaxed))
+        {
+            Some(crate::now_unix_ms().saturating_add(self.wait_timeout_ms))
+        } else {
+            None
+        };
         loop {
             let attempt = self.plane()?.retain_without_offering(
                 buffer_id,
@@ -870,13 +879,16 @@ impl SharedHandoff {
                 // 契约违规：等多久都不会变好。
                 return Err(error);
             };
-            let wait_until = deadline_ms.filter(|_| self.consumer_connected());
+            let wait_until = deadline_ms.filter(|_| lossless || self.consumer_connected());
             let Some(wait_until) = wait_until else {
                 // 没有消费者（或本次运行不允许等待）：这仍然是一次被记录的拒绝。
                 self.plane()?.note_retain_rejection(kind, &reason);
                 return Ok(None);
             };
             if crate::now_unix_ms() >= wait_until {
+                if lossless {
+                    return Err(MediaError::IoFailed("handoff_consumer_stalled".into()));
+                }
                 // 预算用尽：把这一次记成拒绝，并停止后续等待，避免总延迟随帧数增长。
                 self.wait_exhausted.store(true, Ordering::Relaxed);
                 self.plane()?.note_retain_rejection(kind, &reason);
@@ -930,6 +942,28 @@ mod tests {
 
     fn handoff(limit: usize) -> BufferHandoff {
         BufferHandoff::new("arena-handoff", 4 * MB, None, limit).unwrap()
+    }
+
+    #[test]
+    fn lossless_stall_is_an_error_and_the_next_frame_can_resume() {
+        let plane = SharedHandoff::new(handoff(2), 10);
+        plane.require_lossless();
+        let retain = |id: &str| {
+            plane.retain_or_reject(
+                id,
+                "video_frame",
+                "stream-1",
+                range(0, 40),
+                frame_format(),
+                &[0; 64],
+            )
+        };
+        assert!(retain("first").unwrap().is_some());
+        let error = retain("blocked").unwrap_err();
+        assert!(error.to_string().contains("handoff_consumer_stalled"));
+        plane.plane().unwrap().release_lease_for_test("first");
+        assert!(retain("resumed").unwrap().is_some());
+        assert_eq!(plane.stats().unwrap().retain_rejections, 0);
     }
 
     #[test]

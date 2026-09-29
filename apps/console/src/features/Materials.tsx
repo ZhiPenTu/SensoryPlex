@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button, Card, Col, Drawer, Input, Row, Segmented, Space, Tag, Typography } from 'antd';
 import {
     SearchOutlined,
@@ -37,6 +37,7 @@ import {
     statusNames,
 } from './material-utils';
 import AlignmentTimeline from './AlignmentTimeline';
+import ExecutionSeconds, { type ExecutionTimeline } from './ExecutionSeconds';
 import './materials.css';
 
 export { default as MaterialDetail } from './MaterialDetail';
@@ -74,6 +75,33 @@ function findAssetForStream(streamId: string, assets: Upload[] = []): Upload | u
 
 export default function Materials() {
     const [params, setParams] = useSearchParams();
+    const queryClient = useQueryClient();
+    const executionId = params.get('execution') || '';
+    const secondPage = Math.max(1, Math.min(72, Math.floor(Number(params.get('page')) || 1)));
+    const fullExecution =
+        !!executionId &&
+        !['q', 'stream', 'start', 'end', 'tags', 'modalities', 'confidence'].some((key) =>
+            params.get(key),
+        );
+    const timeline = useQuery({
+        queryKey: ['execution-timeline', executionId],
+        queryFn: ({ signal }) =>
+            api<ExecutionTimeline>(`/v1/executions/${encodeURIComponent(executionId)}/timeline`, {
+                signal,
+            }),
+        enabled: fullExecution,
+        refetchInterval: 10000,
+    });
+    const completeSeconds = useMutation({
+        mutationFn: () =>
+            api(`/v1/executions/${encodeURIComponent(executionId)}:segment-seconds`, {
+                method: 'POST',
+            }),
+        onSuccess: () => {
+            void queryClient.invalidateQueries({ queryKey: ['execution-timeline'] });
+            void queryClient.invalidateQueries({ queryKey: ['materials'] });
+        },
+    });
     const [formError, setFormError] = useState<Error | null>(null);
     const [viewMode, setViewMode] = useState<'timeline' | 'grid'>('timeline');
     const [expandedStreams, setExpandedStreams] = useState<Record<string, boolean>>({});
@@ -101,15 +129,21 @@ export default function Materials() {
     });
 
     const result = useQuery({
-        queryKey: ['materials', request],
+        queryKey: ['materials', request, fullExecution ? secondPage : 0],
         queryFn: ({ signal }) =>
-            api<SearchResponse>('/v1/materials:search', {
-                method: 'POST',
-                body: JSON.stringify(request),
-                signal,
-            }),
+            fullExecution
+                ? api<SearchResponse>(
+                      `/v1/executions/${encodeURIComponent(executionId)}/materials?offset=${(secondPage - 1) * 100}&limit=100`,
+                      { signal },
+                  )
+                : api<SearchResponse>('/v1/materials:search', {
+                      method: 'POST',
+                      body: JSON.stringify(request),
+                      signal,
+                  }),
         enabled: !!request,
         retry: false,
+        refetchInterval: fullExecution ? 10000 : false,
     });
 
     const values = result.data?.materials || [];
@@ -235,7 +269,10 @@ export default function Materials() {
                     <Button
                         icon={<ReloadOutlined />}
                         disabled={result.isFetching || !request}
-                        onClick={() => void result.refetch()}
+                        onClick={() => {
+                            void result.refetch();
+                            if (fullExecution) void timeline.refetch();
+                        }}
                     >
                         刷新结果
                     </Button>
@@ -433,7 +470,28 @@ export default function Materials() {
                 </Card>
             </form>
 
-            <ErrorNotice error={formError || validationError || result.error} />
+            <ErrorNotice
+                error={
+                    formError ||
+                    validationError ||
+                    result.error ||
+                    timeline.error ||
+                    completeSeconds.error
+                }
+            />
+            {fullExecution && timeline.data ? (
+                <ExecutionSeconds
+                    timeline={timeline.data}
+                    page={secondPage}
+                    onPage={(page) => {
+                        const next = new URLSearchParams(params);
+                        next.set('page', String(page));
+                        setParams(next);
+                    }}
+                    onComplete={() => completeSeconds.mutate()}
+                    completing={completeSeconds.isPending}
+                />
+            ) : null}
 
             {/* 列表控制栏：视图切换与聚合统计 */}
             <div
@@ -464,7 +522,11 @@ export default function Materials() {
                             {videoGroups.length} 部视频母带
                         </Text>
                         <Text type="secondary" style={{ fontSize: 12 }}>
-                            (共 {values.length} 条时间轴切片)
+                            (
+                            {fullExecution
+                                ? `本页 ${values.length} 条 / 共 ${timeline.data?.material_references.length ?? 0} 条逐秒切片`
+                                : `共 ${values.length} 条时间轴切片`}
+                            )
                         </Text>
                     </div>
 
@@ -498,7 +560,7 @@ export default function Materials() {
                                 label: (
                                     <Space size={4}>
                                         <AppstoreOutlined />
-                                        <span>全量切片平铺</span>
+                                        <span>切片卡片</span>
                                     </Space>
                                 ),
                                 value: 'grid',
@@ -672,6 +734,7 @@ export default function Materials() {
                                         {/* 时间线列表展示（时间轴总线置于底部，切片明细通过独立抽屉入口查看） */}
                                         {expanded ? (
                                             <AlignmentTimeline
+                                                key={`${group.streamId}:${fullExecution ? secondPage : 0}`}
                                                 materials={group.materials}
                                                 startMs={group.startMs}
                                                 endMs={group.endMs}
@@ -696,7 +759,7 @@ export default function Materials() {
                             })}
                         </div>
                     ) : (
-                        /* ── 全量切片平铺卡片视图 ────────────────────────────────────────── */
+                        /* ── 切片卡片卡片视图 ────────────────────────────────────────── */
                         <Row gutter={[8, 8]}>
                             {values.map((item) => (
                                 <Col
