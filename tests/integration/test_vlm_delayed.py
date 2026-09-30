@@ -339,9 +339,7 @@ def test_long_video_has_all_seconds_without_retained_frames(delayed_database):
         assert not current[-1].pending_enrichments
         failed_bytes = conn.execute("""SELECT o.contract_bytes FROM vlm_task_outbox o
             JOIN vlm_enrichment_task t ON t.task_id=o.task_id
-            WHERE t.start_ms=716000""").fetchone()[
-            0
-        ]
+            WHERE t.start_ms=716000""").fetchone()[0]
         failed_task = orchestration_pb2.TaskInputManifest.FromString(failed_bytes)
         vlm_delayed.apply_vlm_result(conn, _failure(failed_task))
         failed_unit = second_windows.ensure_materials(

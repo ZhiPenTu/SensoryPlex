@@ -605,3 +605,16 @@ parallelism-check:
 	@test -n "$(MEDIA)" || { echo "usage: make parallelism-check MEDIA=\"/abs/sample-a.webm [/abs/sample-b.webm ...]\" [INPUTS=4] [PROVIDER=cpu|coreml] [MODEL_DIR=/path/to/bge-weights] [OCR_MODEL_DIR=/path/to/rapidocr]"; exit 1; }
 	$(CARGO_HOST) build --locked --release -p sensoryplex-runtime --features "$(MEDIA_FEATURES)"
 	$(PY_HOST) tools/verify_model_parallelism.py $(foreach item,$(MEDIA),--media "$(item)") --inputs "$(if $(INPUTS),$(INPUTS),4)" --provider "$(if $(PROVIDER),$(PROVIDER),cpu)" $(if $(MODEL_DIR),--model-dir "$(MODEL_DIR)",) $(if $(OCR_MODEL_DIR),--ocr-model-dir "$(OCR_MODEL_DIR)",)
+
+# ── MCP Server 与 AI Skills 接入 ─────────────────────────────────────────────
+# 一键自动检测并配置本地 Claude Desktop、Codex CLI/Desktop 以及 Cursor：
+mcp-setup:
+	python3 tools/setup_mcp.py --auto
+
+# 单独安装/更新 SensoryPlex Codex Skill：
+skill-install:
+	python3 tools/setup_mcp.py --codex-only
+
+# 验证 MCP 协议与自动化配置契约：
+mcp-test:
+	cd services/mcp-server && uv run pytest tests

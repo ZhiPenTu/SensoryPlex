@@ -28,7 +28,8 @@ const EN_SIDEBAR = [
       { text: 'Introduction', link: '/guide/introduction' },
       { text: 'Quickstart', link: '/guide/quickstart' },
       { text: 'Installation', link: '/guide/installation' },
-      { text: 'Console walkthrough', link: '/guide/console-walkthrough' }
+      { text: 'Console walkthrough', link: '/guide/console-walkthrough' },
+      { text: 'AI Agents (MCP & Skills)', link: '/guide/mcp-and-skills' }
     ]
   },
   {
@@ -86,7 +87,8 @@ const ZH_SIDEBAR = [
       { text: '项目简介', link: '/zh/guide/introduction' },
       { text: '快速上手', link: '/zh/guide/quickstart' },
       { text: '安装与前置要求', link: '/zh/guide/installation' },
-      { text: '控制台全流程', link: '/zh/guide/console-walkthrough' }
+      { text: '控制台全流程', link: '/zh/guide/console-walkthrough' },
+      { text: '大模型集成 (MCP & Skills)', link: '/zh/guide/mcp-and-skills' }
     ]
   },
   {

@@ -347,10 +347,17 @@ export default function Jobs() {
                                 ID: {item.id.slice(0, 18)}…
                             </span>
                         </div>
-                        {item.reason ? (
+                        {item.state === "failed" && item.reason ? (
                             <div style={{ marginTop: 4 }}>
                                 <Text type="danger" style={{ fontSize: 11 }}>
                                     失败原因: {item.reason}
+                                </Text>
+                            </div>
+                        ) : item.execution_state === "succeeded_with_partial_enrichment" ||
+                          item.reason === "vlm_enrichment_partial_failure" ? (
+                            <div style={{ marginTop: 4 }}>
+                                <Text style={{ fontSize: 11, color: "#d97706" }}>
+                                    部分补全: VLM 慢路径个别切片未完成
                                 </Text>
                             </div>
                         ) : null}

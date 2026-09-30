@@ -56,6 +56,64 @@ def available_memory() -> int:
     return macos_available_memory(output.stdout, os.sysconf("SC_PAGE_SIZE"))
 
 
+def decode_anchor(media: Path, start_ms: int, timeout_s: float = 30.0) -> bytes:
+    try:
+        return consumer._decode_anchor(media, start_ms, timeout_s)
+    except consumer.SlowConsumerError as error:
+        if str(error) == "vlm_consumer_anchor_decode_failed" and start_ms > 0:
+            completed = subprocess.run(
+                [
+                    "ffmpeg",
+                    "-v",
+                    "error",
+                    "-ss",
+                    f"{max(0, start_ms - 100) / 1000:.3f}",
+                    "-i",
+                    str(media),
+                    "-frames:v",
+                    "1",
+                    "-f",
+                    "image2pipe",
+                    "-vcodec",
+                    "png",
+                    "pipe:1",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=timeout_s,
+            )
+            if completed.returncode == 0 and completed.stdout.startswith(b"\x89PNG\r\n\x1a\n"):
+                return completed.stdout
+            completed = subprocess.run(
+                [
+                    "ffmpeg",
+                    "-v",
+                    "error",
+                    "-sseof",
+                    "-1",
+                    "-i",
+                    str(media),
+                    "-update",
+                    "1",
+                    "-frames:v",
+                    "1",
+                    "-f",
+                    "image2pipe",
+                    "-vcodec",
+                    "png",
+                    "pipe:1",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=timeout_s,
+            )
+            if completed.returncode == 0 and completed.stdout.startswith(b"\x89PNG\r\n\x1a\n"):
+                return completed.stdout
+        raise
+
+
 async def keep_lease(message, stop):
     """推理不阻塞事件循环；长于 AckWait 的推理仍只有一个持有者。"""
     while not stop.is_set():
@@ -116,7 +174,7 @@ async def run(args):
 
                     def infer(task=task):
                         media = resolver.resolve(task)
-                        png = consumer._decode_anchor(media, task.time_range.start_ms, 30)
+                        png = decode_anchor(media, task.time_range.start_ms, 30)
                         return plugin.describe_decoded_anchor(
                             stream_id=task.stream_id,
                             source_id=task.source_id,
