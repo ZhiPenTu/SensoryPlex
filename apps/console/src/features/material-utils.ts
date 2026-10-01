@@ -10,6 +10,7 @@ export const searchFields = [
     'execution',
     'confidence',
     'limit',
+    'mode',
 ] as const;
 export const modalityNames: Record<string, string> = {
     asr_segment: '语音转写',
@@ -100,6 +101,9 @@ function list(value: string | null): string[] {
 }
 
 export function searchRequest(params: URLSearchParams): SearchRequest {
+    const modeParam = params.get('mode');
+    const mode = modeParam === 'semantic' ? 'semantic' : 'keyword';
+
     const start = secondsToMs(params.get('start') || ''),
         end = secondsToMs(params.get('end') || '');
     if (end != null && BigInt(end) <= BigInt(start || '0'))
@@ -120,16 +124,37 @@ export function searchRequest(params: URLSearchParams): SearchRequest {
         execution = params.get('execution') || '';
     if (query.length > 2000 || stream.length > 256 || execution.length > 128)
         throw new Error('查询条件过长。');
+
+    const modalities = list(params.get('modalities'));
+    const tags = list(params.get('tags'));
+
+    if (mode === 'semantic') {
+        const hasFilters = Boolean(
+            stream ||
+            execution ||
+            start != null ||
+            end != null ||
+            confidence ||
+            modalities.length > 0 ||
+            tags.length > 0
+        );
+        if (hasFilters) {
+            throw new Error(
+                '后端语义检索基于全局跨视频向量索引，暂不支持附加视频母带或时间范围等筛选条件。请清除筛选或切换至关键词检索。'
+            );
+        }
+    }
+
     return {
         query,
         stream_id: stream,
         ...(start == null ? {} : { start_ms: start }),
         ...(end == null ? {} : { end_ms: end }),
-        modalities: list(params.get('modalities')),
-        tags: list(params.get('tags')),
+        modalities,
+        tags,
         ...(confidence ? { min_confidence: Number(confidence) } : {}),
         limit: Number(limit),
-        mode: 'keyword',
+        mode,
         execution_id: execution,
     };
 }

@@ -26,6 +26,7 @@ KNOWN_PLUGINS = {
     "plugins/python/processors/embed-bge-onnx": "edge_material_plugin_embed_bge_onnx.artifact",
     "plugins/python/processors/ocr-rapidocr": "edge_material_plugin_ocr_rapidocr.artifact",
     "plugins/python/processors/vlm-moondream": "edge_material_plugin_vlm_moondream.artifact",
+    "plugins/python/processors/vlm-vllm": "edge_material_plugin_vlm_vllm.artifact",
 }
 
 
@@ -37,6 +38,9 @@ def _artifact_module(plugin_dir: pathlib.Path):
     module_name = KNOWN_PLUGINS.get(relative)
     if module_name is None:
         raise SystemExit(f"no artifact module registered for {relative}")
+    src_dir = str(plugin_dir.resolve() / "src")
+    if src_dir not in sys.path:
+        sys.path.insert(0, src_dir)
     return importlib.import_module(module_name)
 
 

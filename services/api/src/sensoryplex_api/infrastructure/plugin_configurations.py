@@ -38,6 +38,16 @@ MULTIMODAL_CONFIG_DEFAULTS = {
         "timeout_s": 180.0,
         "ttl_ms": 30_000,
     },
+    "org.sensoryplex.vlm-vllm": {
+        "base_url": "http://127.0.0.1:8000/v1",
+        "api_key": "",
+        "max_concurrency": 2,
+        "model": "",
+        "prompt": "Describe what is visible in this image in one sentence.",
+        "data_plane_mode": "static",
+        "timeout_s": 180.0,
+        "ttl_ms": 30_000,
+    },
 }
 
 
@@ -53,7 +63,10 @@ def normalize_configuration(entry: dict, config: dict) -> dict:
         if "model_dir" in config:
             fail(422, "console_plugin_config_host_path_forbidden")
         expected_mode = defaults["data_plane_mode"]
-        if config.get("data_plane_mode", expected_mode) != expected_mode:
+        if (
+            entry["id"] != "org.sensoryplex.vlm-vllm"
+            and config.get("data_plane_mode", expected_mode) != expected_mode
+        ):
             fail(
                 422,
                 "console_vlm_config_requires_local_decode"
@@ -63,8 +76,9 @@ def normalize_configuration(entry: dict, config: dict) -> dict:
         config = {**defaults, **config}
     if list(Draft202012Validator(schema).iter_errors(config)):
         fail(422, "plugin_config_invalid")
-    if config.get("endpoint", "http://127.0.0.1:11434") != "http://127.0.0.1:11434":
-        fail(422, "only_local_model_endpoint_allowed")
+    if entry["id"] == "org.sensoryplex.vlm-moondream":
+        if config.get("endpoint", "http://127.0.0.1:11434") != "http://127.0.0.1:11434":
+            fail(422, "only_local_model_endpoint_allowed")
     if (
         not 1 <= config.get("timeout_s", 180) <= 300
         or len(config.get("prompt", "")) > 4000

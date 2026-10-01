@@ -477,3 +477,36 @@
     font-size: 13px;
     color: var(--ink);
 }
+
+/* 语义检索模式专属样式 */
+.semantic-results-container {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+.semantic-hit-card {
+    border-radius: 8px;
+    border: 1px solid #cbd5e1;
+    background: #ffffff;
+    box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05);
+    transition: all 0.2s ease-in-out;
+}
+.semantic-hit-card:hover {
+    border-color: #3b82f6;
+    box-shadow: 0 4px 6px -1px rgba(59, 130, 246, 0.1), 0 2px 4px -2px rgba(59, 130, 246, 0.1);
+}
+.semantic-evidence-quote {
+    padding: 10px 14px;
+    border-radius: 6px;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-left: 3px solid #3b82f6;
+    color: #1e293b;
+    font-size: 13px;
+    line-height: 1.6;
+}
+.semantic-filter-disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    background: #f1f5f9 !important;
+}

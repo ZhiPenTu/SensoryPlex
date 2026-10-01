@@ -1,0 +1,58 @@
+apiVersion: edge.material.plugin/v1
+kind: ProcessorPlugin
+metadata:
+  name: org.sensoryplex.vlm-vllm
+  version: 0.1.0
+  displayName: VLM 场景描述（远程 vLLM）
+  vendor: SensoryPlex
+  license: Apache-2.0
+  description: 读取 Runtime 数据面里的真实视频帧，通过兼容 OpenAI 的 Vision API 远程调用 vLLM 多模态模型产出场景描述 observation。
+spec:
+  sdk:
+    runtime: ">=0.1.0 <0.2.0"
+    protocol: v1
+  entrypoint:
+    transport: grpc
+    command:
+      - uv
+      - run
+      - --frozen
+      - python
+      - -m
+      - edge_material_plugin_vlm_vllm
+    port: 50072
+  capabilities:
+    consumes:
+      - media.video_frame
+    produces:
+      - observation.vision.scene_description
+    acceptsMemoryKinds:
+      - cpu_shared_memory
+    ordering: per_stream
+    supports:
+      batch: false
+      cancellation: true
+      retry: idempotent
+  resources:
+    cpu: "1"
+    memory: 1Gi
+    maxConcurrency: 64
+    maxBatchSize: 1
+    defaultDeadlineMs: 180000
+  config:
+    schema: config.schema.json
+    secretRefs: []
+  security:
+    network: allowlist
+    allowedHosts:
+      - "*"
+    dataEgress: local_only
+    filesystem:
+      readOnly: true
+      writablePaths: []
+  artifacts:
+    form: local_native
+    image: local:plugins/python/processors/vlm-vllm
+    digest: sha256:2ec2d27a90778844460d616ba2cf3789ce357b166fce1fe4a5b36d947e07267a
+    sbom: sbom.cdx.json
+    signatureUnavailableReason: local_native_plugin_is_not_signed_in_v1

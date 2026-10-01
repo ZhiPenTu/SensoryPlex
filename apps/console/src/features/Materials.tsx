@@ -1,6 +1,18 @@
 import { useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Button, Card, Col, Drawer, Input, Row, Segmented, Space, Tag, Typography } from 'antd';
+import {
+    Alert,
+    Button,
+    Card,
+    Col,
+    Drawer,
+    Input,
+    Row,
+    Segmented,
+    Space,
+    Tag,
+    Typography,
+} from 'antd';
 import {
     SearchOutlined,
     ReloadOutlined,
@@ -16,9 +28,12 @@ import {
     AppstoreOutlined,
     AimOutlined,
     UnorderedListOutlined,
+    InfoCircleOutlined,
+    ExclamationCircleOutlined,
+    LoadingOutlined,
 } from '@ant-design/icons';
 import { Link, useSearchParams } from 'react-router-dom';
-import { api } from '../api/client';
+import { api, RequestError } from '../api/client';
 import type {
     MaterialUnit,
     SearchRequest,
@@ -73,16 +88,77 @@ function findAssetForStream(streamId: string, assets: Upload[] = []): Upload | u
     );
 }
 
+function isIndexUnavailableError(error: unknown): boolean {
+    if (!error) return false;
+    if (error instanceof RequestError) {
+        return (
+            [
+                'semantic_search_unavailable',
+                'semantic_index_unreachable',
+                'semantic_index_unauthenticated',
+                'semantic_index_protocol_error',
+                'vector_store_locked',
+                'vector_store_not_ready',
+                'query_encoder_failed',
+                'dimension_mismatch',
+                'vector_index_key_mismatch',
+            ].includes(error.reason) ||
+            error.status === 502 ||
+            error.status === 503
+        );
+    }
+    return false;
+}
+
 export default function Materials() {
     const [params, setParams] = useSearchParams();
     const queryClient = useQueryClient();
     const executionId = params.get('execution') || '';
+    const activeMode = params.get('mode') === 'semantic' ? 'semantic' : 'keyword';
+    const [showConflictModal, setShowConflictModal] = useState(false);
     const secondPage = Math.max(1, Math.min(72, Math.floor(Number(params.get('page')) || 1)));
     const fullExecution =
         !!executionId &&
         !['q', 'stream', 'start', 'end', 'tags', 'modalities', 'confidence'].some((key) =>
             params.get(key),
         );
+
+    const hasConflictingFilters = useMemo(() => {
+        return ['stream', 'start', 'end', 'confidence', 'modalities', 'tags', 'execution'].some(
+            (key) => Boolean(params.get(key)),
+        );
+    }, [params]);
+
+    const handleModeChange = (targetMode: 'keyword' | 'semantic') => {
+        if (targetMode === activeMode) return;
+        if (targetMode === 'semantic') {
+            if (hasConflictingFilters) {
+                setShowConflictModal(true);
+                return;
+            }
+            const next = new URLSearchParams(params);
+            next.set('mode', 'semantic');
+            setFormError(null);
+            setParams(next);
+        } else {
+            const next = new URLSearchParams(params);
+            next.delete('mode');
+            setFormError(null);
+            setParams(next);
+        }
+    };
+
+    const handleConfirmClearAndSwitch = () => {
+        const next = new URLSearchParams();
+        const q = params.get('q');
+        if (q) next.set('q', q);
+        const limit = params.get('limit');
+        if (limit) next.set('limit', limit);
+        next.set('mode', 'semantic');
+        setShowConflictModal(false);
+        setFormError(null);
+        setParams(next);
+    };
     const timeline = useQuery({
         queryKey: ['execution-timeline', executionId],
         queryFn: ({ signal }) =>
@@ -128,6 +204,13 @@ export default function Materials() {
         staleTime: 60000,
     });
 
+    const query = params.get('q') || '';
+    const shouldFetch = fullExecution
+        ? true
+        : activeMode === 'semantic'
+          ? Boolean(request && query.trim())
+          : Boolean(request);
+
     const result = useQuery({
         queryKey: ['materials', request, fullExecution ? secondPage : 0],
         queryFn: ({ signal }) =>
@@ -141,12 +224,27 @@ export default function Materials() {
                       body: JSON.stringify(request),
                       signal,
                   }),
-        enabled: !!request,
+        enabled: shouldFetch,
         retry: false,
         refetchInterval: fullExecution ? 10000 : false,
     });
 
     const values = result.data?.materials || [];
+
+    const semanticHits = useMemo(() => {
+        if (result.data?.mode !== 'semantic' || !result.data.hits) return [];
+        const hits = result.data.hits;
+        const mats = result.data.materials || [];
+        return hits
+            .map((h, i) => ({
+                hit: h,
+                material: mats[i] || mats.find((m) => m.material_unit_id === h.material_unit_id),
+                index: i,
+            }))
+            .filter((item): item is { hit: typeof item.hit; material: MaterialUnit; index: number } =>
+                Boolean(item.material),
+            );
+    }, [result.data]);
 
     // 按视频母带 (Stream / Video Asset) 进行聚合分组
     const videoGroups = useMemo<VideoGroup[]>(() => {
@@ -249,6 +347,31 @@ export default function Materials() {
             const value = String(data.get(key) || '').trim();
             if (value) next.set(key, value);
         }
+        if (activeMode === 'semantic') {
+            next.set('mode', 'semantic');
+            for (const f of [
+                'stream',
+                'start',
+                'end',
+                'confidence',
+                'modalities',
+                'tags',
+                'execution',
+            ]) {
+                next.delete(f);
+            }
+            const q = next.get('q') || '';
+            if (!q.trim()) {
+                setFormError(
+                    new Error(
+                        '语义检索请输入自然语言描述内容（例如“有人正在黑板前写字”、“红色轿车开过”、“系统报错提示”）。',
+                    ),
+                );
+                return;
+            }
+        } else {
+            next.delete('mode');
+        }
         try {
             searchRequest(next);
             setFormError(null);
@@ -281,29 +404,99 @@ export default function Materials() {
 
             <form key={params.toString()} onSubmit={handleSearchSubmit}>
                 <Card style={{ marginBottom: 10 }} bodyStyle={{ padding: 10 }}>
+                    {/* 关键词 / 语义双模式切换栏 */}
+                    <div
+                        style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            marginBottom: 12,
+                            flexWrap: 'wrap',
+                            gap: 10,
+                        }}
+                    >
+                        <Space size={12} align="center">
+                            <Segmented
+                                value={activeMode}
+                                onChange={(v) => handleModeChange(v as 'keyword' | 'semantic')}
+                                options={[
+                                    { label: '关键词检索 (字面)', value: 'keyword' },
+                                    { label: '语义检索 (自然语言/向量)', value: 'semantic' },
+                                ]}
+                            />
+                            {activeMode === 'semantic' ? (
+                                <Tag color="blue" style={{ margin: 0 }}>
+                                    全局跨视频向量特征索引
+                                </Tag>
+                            ) : (
+                                <Tag color="default" style={{ margin: 0 }}>
+                                    时间节点文字/语音精确匹配
+                                </Tag>
+                            )}
+                        </Space>
+                        {activeMode === 'semantic' ? (
+                            <span style={{ fontSize: 12, color: '#64748b' }}>
+                                支持用自然语言直接定位场景、台词或视觉特征；前置标量筛选已禁用
+                            </span>
+                        ) : null}
+                    </div>
+
+                    {activeMode === 'semantic' ? (
+                        <div
+                            style={{
+                                marginBottom: 12,
+                                padding: '8px 12px',
+                                background: '#eff6ff',
+                                border: '1px solid #bfdbfe',
+                                borderRadius: 6,
+                                fontSize: 12,
+                                color: '#1e40af',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 8,
+                            }}
+                        >
+                            <InfoCircleOutlined />
+                            <span>
+                                语义检索说明：通过自然语言描述直接查找多模态视频片段与观测。后端语义检索基于全局向量空间检索，暂不支持单视频、任务批次或起止时间预筛选。
+                            </span>
+                        </div>
+                    ) : null}
+
                     <div
                         style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}
                     >
-                        <div className="material-video-picker">
+                        <div className={`material-video-picker ${activeMode === 'semantic' ? 'semantic-filter-disabled' : ''}`}>
                             <VideoCameraOutlined />
                             <select
                                 name="stream"
                                 aria-label="视频母带"
-                                defaultValue={params.get('stream') || ''}
+                                defaultValue={activeMode === 'semantic' ? '' : (params.get('stream') || '')}
+                                disabled={activeMode === 'semantic'}
                             >
-                                <option value="">全部视频母带</option>
-                                {videoOptions.map((option) => (
-                                    <option key={option.streamId} value={option.streamId}>
-                                        {option.label}
-                                    </option>
-                                ))}
+                                <option value="">
+                                    {activeMode === 'semantic'
+                                        ? '全部视频母带（语义模式下不支持单视频预过滤）'
+                                        : '全部视频母带'}
+                                </option>
+                                {activeMode !== 'semantic'
+                                    ? videoOptions.map((option) => (
+                                          <option key={option.streamId} value={option.streamId}>
+                                              {option.label}
+                                          </option>
+                                      ))
+                                    : null}
                             </select>
                         </div>
                         <Input
                             prefix={<SearchOutlined style={{ color: '#1668dc', fontSize: 16 }} />}
                             name="q"
                             aria-label="素材关键词"
-                            placeholder="输入关键词检索画面文字 (OCR)、语音转写、视觉描述或语义意图…"
+                            placeholder={
+                                activeMode === 'semantic'
+                                    ? '输入自然语言描述寻找视频片段（例如：“有人正在黑板前写字”、“红色轿车开过”、“系统报错提示”）…'
+                                    : '输入关键词检索画面文字 (OCR)、语音转写、视觉描述或语义意图…'
+                            }
                             defaultValue={params.get('q') || ''}
                             maxLength={2000}
                             allowClear
@@ -315,14 +508,15 @@ export default function Materials() {
                             loading={result.isFetching}
                             style={{ minWidth: 100 }}
                         >
-                            检索素材
+                            {activeMode === 'semantic' ? '语义检索' : '检索素材'}
                         </Button>
                         <Button
                             icon={<FilterOutlined />}
-                            type={advancedOpen ? 'dashed' : 'default'}
-                            onClick={() => setAdvancedOpen(!advancedOpen)}
+                            disabled={activeMode === 'semantic'}
+                            type={advancedOpen && activeMode !== 'semantic' ? 'dashed' : 'default'}
+                            onClick={() => activeMode !== 'semantic' && setAdvancedOpen(!advancedOpen)}
                         >
-                            高级筛选
+                            {activeMode === 'semantic' ? '高级筛选（已禁用）' : '高级筛选'}
                         </Button>
                     </div>
 
@@ -454,7 +648,7 @@ export default function Materials() {
                                         icon={<ClearOutlined />}
                                         onClick={() => {
                                             setFormError(null);
-                                            setParams({});
+                                            setParams(activeMode === 'semantic' ? { mode: 'semantic' } : {});
                                         }}
                                     >
                                         重置清空条件
@@ -470,15 +664,75 @@ export default function Materials() {
                 </Card>
             </form>
 
-            <ErrorNotice
-                error={
-                    formError ||
-                    validationError ||
-                    result.error ||
-                    timeline.error ||
-                    completeSeconds.error
-                }
-            />
+            {/* 筛选冲突拦截弹窗 */}
+            {showConflictModal ? (
+                <Modal
+                    title="切换至语义检索"
+                    onClose={() => setShowConflictModal(false)}
+                    width={520}
+                >
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                        <Alert
+                            type="warning"
+                            showIcon
+                            message="后端语义检索限制提示"
+                            description="后端语义检索基于全局跨视频向量索引，暂不支持指定视频母带、执行批次、起止时间或置信度等前置筛选条件。切换将清空上述筛选条件以发起全局语义检索。"
+                        />
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 8 }}>
+                            <Button onClick={() => setShowConflictModal(false)}>
+                                取消（保留当前关键词筛选）
+                            </Button>
+                            <Button type="primary" onClick={handleConfirmClearAndSwitch}>
+                                确认清空并切换为语义检索
+                            </Button>
+                        </div>
+                    </div>
+                </Modal>
+            ) : null}
+
+            {/* 索引不可用专属警示卡片 */}
+            {activeMode === 'semantic' && isIndexUnavailableError(result.error) ? (
+                <Card style={{ marginBottom: 16, borderColor: '#fca5a5', background: '#fff5f5' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                        <Space size={8} align="center">
+                            <ExclamationCircleOutlined style={{ color: '#ef4444', fontSize: 18 }} />
+                            <Text strong style={{ fontSize: 15, color: '#991b1b' }}>
+                                向量语义检索服务不可用
+                            </Text>
+                            <Tag color="error">
+                                {result.error instanceof RequestError ? result.error.reason : 'error'}
+                            </Tag>
+                        </Space>
+                        <Text style={{ fontSize: 13, color: '#7f1d1d' }}>
+                            {result.error instanceof Error ? result.error.message : '向量检索服务暂时不可用。'}
+                            {' '}在本地或开发环境中，请确认已通过 <code>./deploy/up-events.sh</code> 启动常驻事件与检索服务（index:50077）。
+                        </Text>
+                        <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+                            <Button
+                                type="primary"
+                                onClick={() => {
+                                    const next = new URLSearchParams(params);
+                                    next.delete('mode');
+                                    setParams(next);
+                                }}
+                            >
+                                一键切换至关键词检索
+                            </Button>
+                            <Button onClick={() => void result.refetch()}>重试连接</Button>
+                        </div>
+                    </div>
+                </Card>
+            ) : (
+                <ErrorNotice
+                    error={
+                        formError ||
+                        validationError ||
+                        result.error ||
+                        timeline.error ||
+                        completeSeconds.error
+                    }
+                />
+            )}
             {fullExecution && timeline.data ? (
                 <ExecutionSeconds
                     timeline={timeline.data}
@@ -505,413 +759,689 @@ export default function Materials() {
                     gap: 8,
                 }}
             >
-                <Space size={12} align="center">
-                    <div
-                        style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 8,
-                            background: '#f8fafc',
-                            padding: '4px 12px',
-                            borderRadius: 6,
-                            border: '1px solid #e2e8f0',
-                        }}
-                    >
-                        <VideoCameraOutlined style={{ color: '#1668dc' }} />
-                        <Text strong style={{ fontSize: 13, color: '#0f172a' }}>
-                            {videoGroups.length} 部视频母带
-                        </Text>
-                        <Text type="secondary" style={{ fontSize: 12 }}>
-                            (
-                            {fullExecution
-                                ? `本页 ${values.length} 条 / 共 ${timeline.data?.material_references.length ?? 0} 条逐秒切片`
-                                : `共 ${values.length} 条时间轴切片`}
-                            )
-                        </Text>
-                    </div>
+                {activeMode === 'semantic' ? (
+                    <Space size={12} align="center">
+                        <div
+                            style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 8,
+                                background: '#f8fafc',
+                                padding: '4px 12px',
+                                borderRadius: 6,
+                                border: '1px solid #e2e8f0',
+                            }}
+                        >
+                            <AimOutlined style={{ color: '#1668dc' }} />
+                            <Text strong style={{ fontSize: 13, color: '#0f172a' }}>
+                                语义相关性结果流
+                            </Text>
+                            <Text type="secondary" style={{ fontSize: 12 }}>
+                                (共 {semanticHits.length} 条命中片段)
+                            </Text>
+                        </div>
+                        <Tag color="purple" style={{ margin: 0, fontSize: 11 }}>
+                            向量相关性降序排序 · 相似度非置信度
+                        </Tag>
+                    </Space>
+                ) : (
+                    <Space size={12} align="center">
+                        <div
+                            style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 8,
+                                background: '#f8fafc',
+                                padding: '4px 12px',
+                                borderRadius: 6,
+                                border: '1px solid #e2e8f0',
+                            }}
+                        >
+                            <VideoCameraOutlined style={{ color: '#1668dc' }} />
+                            <Text strong style={{ fontSize: 13, color: '#0f172a' }}>
+                                {videoGroups.length} 部视频母带
+                            </Text>
+                            <Text type="secondary" style={{ fontSize: 12 }}>
+                                (
+                                {fullExecution
+                                    ? `本页 ${values.length} 条 / 共 ${timeline.data?.material_references.length ?? 0} 条逐秒切片`
+                                    : `共 ${values.length} 条时间轴切片`}
+                                )
+                            </Text>
+                        </div>
 
-                    {viewMode === 'timeline' && videoGroups.length > 0 ? (
-                        <Space size={8}>
-                            <Button size="small" type="text" onClick={expandAll}>
-                                全部展开
-                            </Button>
-                            <Button size="small" type="text" onClick={collapseAll}>
-                                全部收起
-                            </Button>
-                        </Space>
-                    ) : null}
-                </Space>
+                        {viewMode === 'timeline' && videoGroups.length > 0 ? (
+                            <Space size={8}>
+                                <Button size="small" type="text" onClick={expandAll}>
+                                    全部展开
+                                </Button>
+                                <Button size="small" type="text" onClick={collapseAll}>
+                                    全部收起
+                                </Button>
+                            </Space>
+                        ) : null}
+                    </Space>
+                )}
 
-                <Space size={12} align="center">
-                    <Segmented
-                        value={viewMode}
-                        onChange={(v) => setViewMode(v as 'timeline' | 'grid')}
-                        options={[
-                            {
-                                label: (
-                                    <Space size={4}>
-                                        <BarsOutlined />
-                                        <span>多模态时间轴</span>
-                                    </Space>
-                                ),
-                                value: 'timeline',
-                            },
-                            {
-                                label: (
-                                    <Space size={4}>
-                                        <AppstoreOutlined />
-                                        <span>切片卡片</span>
-                                    </Space>
-                                ),
-                                value: 'grid',
-                            },
-                        ]}
-                    />
-                </Space>
+                {activeMode !== 'semantic' ? (
+                    <Space size={12} align="center">
+                        <Segmented
+                            value={viewMode}
+                            onChange={(v) => setViewMode(v as 'timeline' | 'grid')}
+                            options={[
+                                {
+                                    label: (
+                                        <Space size={4}>
+                                            <BarsOutlined />
+                                            <span>多模态时间轴</span>
+                                        </Space>
+                                    ),
+                                    value: 'timeline',
+                                },
+                                {
+                                    label: (
+                                        <Space size={4}>
+                                            <AppstoreOutlined />
+                                            <span>切片卡片</span>
+                                        </Space>
+                                    ),
+                                    value: 'grid',
+                                },
+                            ]}
+                        />
+                    </Space>
+                ) : (
+                    <span style={{ fontSize: 12, color: '#64748b' }}>
+                        点击「定位回看」可在原片中精确跳转至该证据毫秒时间点
+                    </span>
+                )}
             </div>
 
             {request && result.isPending ? (
                 <Loading tip="正在检索素材单元…" />
             ) : !validationError && !result.error && result.data ? (
-                values.length ? (
-                    viewMode === 'timeline' ? (
-                        /* ── 按视频母带分组的时间线视图 ────────────────────────────────────────── */
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-                            {videoGroups.map((group) => {
-                                const expanded = isStreamExpanded(group.streamId);
-                                return (
-                                    <Card
-                                        key={group.streamId}
-                                        style={{
-                                            borderRadius: 12,
-                                            borderColor: '#cbd5e1',
-                                            boxShadow: '0 1px 3px 0 rgba(0, 0, 0, 0.05)',
-                                            overflow: 'hidden',
-                                        }}
-                                        bodyStyle={{ padding: 0 }}
-                                    >
-                                        {/* 视频母带头部概要卡片 */}
-                                        <div
-                                            style={{
-                                                padding: '16px 20px',
-                                                background: '#f8fafc',
-                                                borderBottom: expanded
-                                                    ? '1px solid #e2e8f0'
-                                                    : 'none',
-                                                display: 'flex',
-                                                justifyContent: 'space-between',
-                                                alignItems: 'center',
-                                                cursor: 'pointer',
-                                                transition: 'background 0.2s',
-                                            }}
-                                            onClick={() => toggleStream(group.streamId)}
-                                        >
-                                            <Space align="center" size={14}>
-                                                <div
-                                                    style={{
-                                                        width: 44,
-                                                        height: 44,
-                                                        borderRadius: 10,
-                                                        background: '#eff6ff',
-                                                        border: '1px solid #bfdbfe',
-                                                        color: '#1d4ed8',
-                                                        display: 'grid',
-                                                        placeItems: 'center',
-                                                        fontSize: 22,
-                                                        flexShrink: 0,
-                                                    }}
-                                                >
-                                                    <VideoCameraOutlined />
-                                                </div>
-                                                <div>
-                                                    <div
-                                                        style={{
-                                                            display: 'flex',
-                                                            alignItems: 'center',
-                                                            gap: 8,
-                                                        }}
-                                                    >
-                                                        <Text
-                                                            strong
-                                                            style={{
-                                                                fontSize: 15,
-                                                                color: '#0f172a',
-                                                            }}
-                                                        >
-                                                            {group.title}
-                                                        </Text>
-                                                        {group.asset ? (
-                                                            <Tag
-                                                                color="geekblue"
-                                                                style={{ margin: 0, fontSize: 11 }}
-                                                            >
-                                                                {group.asset.content_type}
-                                                            </Tag>
-                                                        ) : null}
-                                                    </div>
-                                                    <Space size={12} style={{ marginTop: 4 }} wrap>
-                                                        <span
-                                                            className="mono"
-                                                            style={{
-                                                                fontSize: 11,
-                                                                color: '#64748b',
-                                                            }}
-                                                        >
-                                                            ID: {group.streamId}
-                                                        </span>
-                                                        {group.asset ? (
-                                                            <Text
-                                                                type="secondary"
-                                                                style={{ fontSize: 11 }}
-                                                            >
-                                                                大小:{' '}
-                                                                {bytes(group.asset.size_bytes)}
-                                                            </Text>
-                                                        ) : null}
-                                                        <Space
-                                                            size={4}
-                                                            style={{
-                                                                color: '#059669',
-                                                                fontSize: 11,
-                                                            }}
-                                                        >
-                                                            <ClockCircleOutlined />
-                                                            <span>
-                                                                覆盖区间:{' '}
-                                                                {formatTime(
-                                                                    group.startMs.toString(),
-                                                                )}{' '}
-                                                                ~{' '}
-                                                                {formatTime(group.endMs.toString())}
-                                                            </span>
-                                                        </Space>
-                                                        <Tag
-                                                            color="blue"
-                                                            style={{ margin: 0, fontSize: 11 }}
-                                                        >
-                                                            {group.materials.length} 个时间轴单元
-                                                        </Tag>
-                                                    </Space>
-                                                </div>
-                                            </Space>
+                <>
+                    {/* 慢路径补全或未索引就绪提示 */}
+                    {result.data.unindexed_hits > 0 && values.length > 0 ? (
+                        <Alert
+                            type="info"
+                            showIcon
+                            style={{ marginBottom: 12, borderRadius: 6 }}
+                            message={
+                                <span>
+                                    提示：检索结果中包含部分处理中的切片（<strong>{result.data.unindexed_hits}</strong> 条潜在命中仍在索引构建或慢路径融合中，已就绪的素材可直接回看）。
+                                </span>
+                            }
+                        />
+                    ) : null}
 
-                                            <Space size={12} onClick={(e) => e.stopPropagation()}>
-                                                {group.asset ? (
-                                                    <Button
-                                                        size="small"
-                                                        icon={<PlayCircleOutlined />}
-                                                        onClick={() =>
-                                                            setPreviewAsset(
-                                                                group.asset
-                                                                    ? { asset: group.asset }
-                                                                    : null,
-                                                            )
-                                                        }
-                                                    >
-                                                        原片预览
-                                                    </Button>
-                                                ) : null}
-                                                <Button
-                                                    size="small"
-                                                    icon={<UnorderedListOutlined />}
-                                                    onClick={() => setViewingSliceGroup(group)}
-                                                >
-                                                    切片明细 ({group.materials.length})
-                                                </Button>
-                                                <Button
-                                                    size="small"
-                                                    type="text"
-                                                    icon={
-                                                        expanded ? <UpOutlined /> : <DownOutlined />
-                                                    }
-                                                    onClick={() => toggleStream(group.streamId)}
-                                                >
-                                                    {expanded ? '收起时间线' : '展开时间线'}
-                                                </Button>
-                                            </Space>
-                                        </div>
+                    {values.length ? (
+                        activeMode === 'semantic' ? (
+                            /* ── 语义相关性结果流（严格保序，不重排为时间轴） ─────────────── */
+                            <div className="semantic-results-container">
+                                {semanticHits.map(({ hit, material, index }) => {
+                                    const asset = findAssetForStream(material.stream_id, assetsListing.data?.items);
+                                    const targetObs = material.observations.find((o) => o.observation_id === hit.observation_id) || material.observations[0];
+                                    const range = targetObs?.time_range || material.time_range;
+                                    const startStr = formatTime(range?.start_ms);
+                                    const endStr = formatTime(range?.end_ms);
+                                    const durationSec = range?.start_ms && range?.end_ms
+                                        ? ((Number(range.end_ms) - Number(range.start_ms)) / 1000).toFixed(1)
+                                        : '1.0';
+                                    const textExcerpt = targetObs ? payloadText(targetObs.payload, 600) : '';
 
-                                        {/* 时间线列表展示（时间轴总线置于底部，切片明细通过独立抽屉入口查看） */}
-                                        {expanded ? (
-                                            <AlignmentTimeline
-                                                key={`${group.streamId}:${fullExecution ? secondPage : 0}`}
-                                                materials={group.materials}
-                                                startMs={group.startMs}
-                                                endMs={group.endMs}
-                                                detailHref={(materialUnitId) =>
-                                                    `/materials/${encodeURIComponent(materialUnitId)}?${searchParamsOnly(params)}`
-                                                }
-                                                onLocate={(ms) =>
-                                                    setPreviewAsset(
-                                                        group.asset
-                                                            ? { asset: group.asset, seekMs: ms }
-                                                            : null,
-                                                    )
-                                                }
-                                                onOpenDetails={() => setViewingSliceGroup(group)}
-                                                asset={group.asset}
-                                                streamId={group.streamId}
-                                                streamTitle={group.title}
-                                            />
-                                        ) : null}
-                                    </Card>
-                                );
-                            })}
-                        </div>
-                    ) : (
-                        /* ── 切片卡片卡片视图 ────────────────────────────────────────── */
-                        <Row gutter={[8, 8]}>
-                            {values.map((item) => (
-                                <Col
-                                    xs={24}
-                                    md={12}
-                                    lg={8}
-                                    key={`${item.material_unit_id}:${item.revision}`}
-                                >
-                                    <Link
-                                        to={`/materials/${encodeURIComponent(item.material_unit_id)}?${searchParamsOnly(params)}`}
-                                        style={{ display: 'block', height: '100%' }}
-                                    >
+                                    return (
                                         <Card
-                                            hoverable
-                                            style={{
-                                                height: '100%',
-                                                display: 'flex',
-                                                flexDirection: 'column',
-                                                borderRadius: 6,
-                                                borderColor: '#e2e8f0',
-                                            }}
-                                            bodyStyle={{
-                                                padding: 10,
-                                                flex: 1,
-                                                display: 'flex',
-                                                flexDirection: 'column',
-                                            }}
+                                            key={`${hit.material_unit_id}:${hit.revision}:${hit.embedding_id || index}`}
+                                            className="semantic-hit-card"
+                                            bodyStyle={{ padding: 16 }}
                                         >
+                                            {/* 头部：排名、来源视频母带、相关度指标、状态 */}
                                             <div
                                                 style={{
                                                     display: 'flex',
                                                     justifyContent: 'space-between',
                                                     alignItems: 'center',
-                                                    marginBottom: 10,
-                                                }}
-                                            >
-                                                <Tag
-                                                    color={statusTagColor[item.status] || 'default'}
-                                                    style={{ margin: 0, fontWeight: 500 }}
-                                                >
-                                                    {statusNames[item.status] || item.status}
-                                                </Tag>
-                                                <ArrowRightOutlined
-                                                    style={{ color: '#94a3b8', fontSize: 12 }}
-                                                />
-                                            </div>
-
-                                            <div
-                                                style={{
-                                                    fontSize: 13,
-                                                    lineHeight: 1.6,
-                                                    color: '#1e293b',
+                                                    flexWrap: 'wrap',
+                                                    gap: 10,
                                                     marginBottom: 12,
-                                                    flex: 1,
-                                                    display: '-webkit-box',
-                                                    WebkitLineClamp: 3,
-                                                    WebkitBoxOrient: 'vertical',
-                                                    overflow: 'hidden',
                                                 }}
                                             >
-                                                {item.observations
-                                                    .map((o) => payloadText(o.payload, 400))
-                                                    .filter(Boolean)
-                                                    .join(' ') ||
-                                                    '暂无文本摘要，可点击查看多模态向量特征与原始时间轴。'}
-                                            </div>
+                                                <Space size={10} align="center">
+                                                    <Tag
+                                                        color={index === 0 ? 'gold' : index < 3 ? 'blue' : 'default'}
+                                                        style={{ fontWeight: 700, fontSize: 12, margin: 0, padding: '2px 8px' }}
+                                                    >
+                                                        #{index + 1} {index === 0 ? '最佳匹配' : '语义命中'}
+                                                    </Tag>
+                                                    <Space size={6} align="center">
+                                                        <VideoCameraOutlined style={{ color: '#1668dc' }} />
+                                                        <Text strong style={{ fontSize: 14, color: '#0f172a' }}>
+                                                            {asset?.filename || `视频母带 (${material.stream_id})`}
+                                                        </Text>
+                                                        {asset ? (
+                                                            <Tag color="geekblue" style={{ margin: 0, fontSize: 11 }}>
+                                                                {asset.content_type}
+                                                            </Tag>
+                                                        ) : null}
+                                                    </Space>
+                                                </Space>
 
-                                            <div style={{ marginBottom: 10 }}>
-                                                <Space size={[4, 4]} wrap>
-                                                    {[
-                                                        ...new Set(
-                                                            item.observations.map(
-                                                                (o) => o.modality,
-                                                            ),
-                                                        ),
-                                                    ].map((m) => (
-                                                        <Tag
-                                                            key={m}
-                                                            color="cyan"
-                                                            style={{
-                                                                fontSize: 11,
-                                                                margin: 0,
-                                                                borderRadius: 4,
-                                                            }}
-                                                        >
-                                                            {modalityNames[m] || m}
-                                                        </Tag>
-                                                    ))}
+                                                <Space size={8} align="center">
+                                                    {/* 严格标注为语义相关度 / 向量距离，杜绝标注为置信度 */}
+                                                    <Tag color="purple" style={{ margin: 0, fontWeight: 600, fontSize: 12 }}>
+                                                        语义相关度 {(Math.max(0, 1 - hit.distance) * 100).toFixed(1)}% (距离 {hit.distance.toFixed(4)})
+                                                    </Tag>
+                                                    <Tag color={statusTagColor[material.status] || 'default'} style={{ margin: 0 }}>
+                                                        {statusNames[material.status] || material.status}
+                                                    </Tag>
+                                                    <Tag color="default" style={{ margin: 0, fontSize: 11 }}>
+                                                        v{material.revision}
+                                                    </Tag>
                                                 </Space>
                                             </div>
 
-                                            {item.tags.length ? (
+                                            {/* 时序与片段区间 */}
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 10, fontSize: 12, flexWrap: 'wrap' }}>
+                                                <Space size={4} style={{ color: '#059669', fontWeight: 600 }}>
+                                                    <ClockCircleOutlined />
+                                                    <span className="mono">
+                                                        命中片段: {startStr} ~ {endStr} ({durationSec} 秒)
+                                                    </span>
+                                                </Space>
+                                                <span className="mono" style={{ color: '#94a3b8', fontSize: 11 }}>
+                                                    素材 ID: {material.material_unit_id}
+                                                </span>
+                                            </div>
+
+                                            {/* 观测证据引文区域 */}
+                                            <div className="semantic-evidence-quote" style={{ marginBottom: 14 }}>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6, flexWrap: 'wrap', gap: 6 }}>
+                                                    <Space size={6} wrap>
+                                                        <Tag color="cyan" style={{ margin: 0, fontWeight: 600 }}>
+                                                            {targetObs ? (modalityNames[targetObs.modality] || targetObs.modality) : '观测事实'}
+                                                        </Tag>
+                                                        {targetObs?.provenance?.model_id ? (
+                                                            <span style={{ fontSize: 11, color: '#64748b' }}>
+                                                                来源模型: {targetObs.provenance.model_id}
+                                                            </span>
+                                                        ) : null}
+                                                        {/* 观测自身的模型识别置信度，与相关度严格区分 */}
+                                                        {targetObs?.confidence != null ? (
+                                                            <Tag color="green" style={{ margin: 0, fontSize: 11 }}>
+                                                                模型识别置信度: {(targetObs.confidence * 100).toFixed(1)}%
+                                                            </Tag>
+                                                        ) : null}
+                                                    </Space>
+                                                    <span className="mono" style={{ fontSize: 11, color: '#94a3b8' }}>
+                                                        {hit.observation_id ? `观测: ${hit.observation_id}` : ''}
+                                                    </span>
+                                                </div>
+                                                <div style={{ color: textExcerpt ? '#1e293b' : '#94a3b8', fontStyle: textExcerpt ? 'normal' : 'italic' }}>
+                                                    {textExcerpt || '（该观测未提取到文本描述，请在详情页查看结构化特征）'}
+                                                </div>
+                                            </div>
+
+                                            {/* 底部动作：回看入口接入 */}
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid #f1f5f9', paddingTop: 10, flexWrap: 'wrap', gap: 10 }}>
+                                                <Space size={6} wrap>
+                                                    {material.tags.length ? material.tags.map((t) => (
+                                                        <Tag key={t} style={{ fontSize: 10, margin: 0, background: '#f1f5f9' }}>
+                                                            #{t}
+                                                        </Tag>
+                                                    )) : null}
+                                                </Space>
+
+                                                <Space size={10}>
+                                                    {asset ? (
+                                                        <Button
+                                                            type="primary"
+                                                            size="small"
+                                                            icon={<AimOutlined />}
+                                                            onClick={() => {
+                                                                const seekMs = Number(range?.start_ms ?? 0);
+                                                                setPreviewAsset({
+                                                                    asset,
+                                                                    seekMs,
+                                                                });
+                                                            }}
+                                                            style={{ background: '#10b981', borderColor: '#10b981' }}
+                                                        >
+                                                            定位回看 ({startStr})
+                                                        </Button>
+                                                    ) : (
+                                                        <Button
+                                                            size="small"
+                                                            disabled
+                                                            icon={<PlayCircleOutlined />}
+                                                            title="未找到对应视频母带资产文件"
+                                                        >
+                                                            原片不可用
+                                                        </Button>
+                                                    )}
+
+                                                    <Link
+                                                        to={`/materials/${encodeURIComponent(material.material_unit_id)}?revision=${material.revision}&observation=${encodeURIComponent(hit.observation_id || '')}&${searchParamsOnly(params)}`}
+                                                    >
+                                                        <Button
+                                                            size="small"
+                                                            icon={<ArrowRightOutlined />}
+                                                        >
+                                                            切片详情与观测追溯
+                                                        </Button>
+                                                    </Link>
+                                                </Space>
+                                            </div>
+                                        </Card>
+                                    );
+                                })}
+                            </div>
+                        ) : viewMode === 'timeline' ? (
+                            /* ── 按视频母带分组的时间线视图 ────────────────────────────────────────── */
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+                                {videoGroups.map((group) => {
+                                    const expanded = isStreamExpanded(group.streamId);
+                                    return (
+                                        <Card
+                                            key={group.streamId}
+                                            style={{
+                                                borderRadius: 12,
+                                                borderColor: '#cbd5e1',
+                                                boxShadow: '0 1px 3px 0 rgba(0, 0, 0, 0.05)',
+                                                overflow: 'hidden',
+                                            }}
+                                            bodyStyle={{ padding: 0 }}
+                                        >
+                                            {/* 视频母带头部概要卡片 */}
+                                            <div
+                                                style={{
+                                                    padding: '16px 20px',
+                                                    background: '#f8fafc',
+                                                    borderBottom: expanded
+                                                        ? '1px solid #e2e8f0'
+                                                        : 'none',
+                                                    display: 'flex',
+                                                    justifyContent: 'space-between',
+                                                    alignItems: 'center',
+                                                    cursor: 'pointer',
+                                                    transition: 'background 0.2s',
+                                                }}
+                                                onClick={() => toggleStream(group.streamId)}
+                                            >
+                                                <Space align="center" size={14}>
+                                                    <div
+                                                        style={{
+                                                            width: 44,
+                                                            height: 44,
+                                                            borderRadius: 10,
+                                                            background: '#eff6ff',
+                                                            border: '1px solid #bfdbfe',
+                                                            color: '#1d4ed8',
+                                                            display: 'grid',
+                                                            placeItems: 'center',
+                                                            fontSize: 22,
+                                                            flexShrink: 0,
+                                                        }}
+                                                    >
+                                                        <VideoCameraOutlined />
+                                                    </div>
+                                                    <div>
+                                                        <div
+                                                            style={{
+                                                                display: 'flex',
+                                                                alignItems: 'center',
+                                                                gap: 8,
+                                                            }}
+                                                        >
+                                                            <Text
+                                                                strong
+                                                                style={{
+                                                                    fontSize: 15,
+                                                                    color: '#0f172a',
+                                                                }}
+                                                            >
+                                                                {group.title}
+                                                            </Text>
+                                                            {group.asset ? (
+                                                                <Tag
+                                                                    color="geekblue"
+                                                                    style={{ margin: 0, fontSize: 11 }}
+                                                                >
+                                                                    {group.asset.content_type}
+                                                                </Tag>
+                                                            ) : null}
+                                                        </div>
+                                                        <Space size={12} style={{ marginTop: 4 }} wrap>
+                                                            <span
+                                                                className="mono"
+                                                                style={{
+                                                                    fontSize: 11,
+                                                                    color: '#64748b',
+                                                                }}
+                                                            >
+                                                                ID: {group.streamId}
+                                                            </span>
+                                                            {group.asset ? (
+                                                                <Text
+                                                                    type="secondary"
+                                                                    style={{ fontSize: 11 }}
+                                                                >
+                                                                    大小:{' '}
+                                                                    {bytes(group.asset.size_bytes)}
+                                                                </Text>
+                                                            ) : null}
+                                                            <Space
+                                                                size={4}
+                                                                style={{
+                                                                    color: '#059669',
+                                                                    fontSize: 11,
+                                                                }}
+                                                            >
+                                                                <ClockCircleOutlined />
+                                                                <span>
+                                                                    覆盖区间:{' '}
+                                                                    {formatTime(
+                                                                        group.startMs.toString(),
+                                                                    )}{' '}
+                                                                    ~{' '}
+                                                                    {formatTime(group.endMs.toString())}
+                                                                </span>
+                                                            </Space>
+                                                            <Tag
+                                                                color="blue"
+                                                                style={{ margin: 0, fontSize: 11 }}
+                                                            >
+                                                                {group.materials.length} 个时间轴单元
+                                                            </Tag>
+                                                        </Space>
+                                                    </div>
+                                                </Space>
+
+                                                <Space size={12} onClick={(e) => e.stopPropagation()}>
+                                                    {group.asset ? (
+                                                        <Button
+                                                            size="small"
+                                                            icon={<PlayCircleOutlined />}
+                                                            onClick={() =>
+                                                                setPreviewAsset(
+                                                                    group.asset
+                                                                        ? { asset: group.asset }
+                                                                        : null,
+                                                                )
+                                                            }
+                                                        >
+                                                            原片预览
+                                                        </Button>
+                                                    ) : null}
+                                                    <Button
+                                                        size="small"
+                                                        icon={<UnorderedListOutlined />}
+                                                        onClick={() => setViewingSliceGroup(group)}
+                                                    >
+                                                        切片明细 ({group.materials.length})
+                                                    </Button>
+                                                    <Button
+                                                        size="small"
+                                                        type="text"
+                                                        icon={
+                                                            expanded ? <UpOutlined /> : <DownOutlined />
+                                                        }
+                                                        onClick={() => toggleStream(group.streamId)}
+                                                    >
+                                                        {expanded ? '收起时间线' : '展开时间线'}
+                                                    </Button>
+                                                </Space>
+                                            </div>
+
+                                            {/* 时间线列表展示 */}
+                                            {expanded ? (
+                                                <AlignmentTimeline
+                                                    key={`${group.streamId}:${fullExecution ? secondPage : 0}`}
+                                                    materials={group.materials}
+                                                    startMs={group.startMs}
+                                                    endMs={group.endMs}
+                                                    detailHref={(materialUnitId) =>
+                                                        `/materials/${encodeURIComponent(materialUnitId)}?${searchParamsOnly(params)}`
+                                                    }
+                                                    onLocate={(ms) =>
+                                                        setPreviewAsset(
+                                                            group.asset
+                                                                ? { asset: group.asset, seekMs: ms }
+                                                                : null,
+                                                        )
+                                                    }
+                                                    onOpenDetails={() => setViewingSliceGroup(group)}
+                                                    asset={group.asset}
+                                                    streamId={group.streamId}
+                                                    streamTitle={group.title}
+                                                />
+                                            ) : null}
+                                        </Card>
+                                    );
+                                })}
+                            </div>
+                        ) : (
+                            /* ── 切片卡片卡片视图 ────────────────────────────────────────── */
+                            <Row gutter={[8, 8]}>
+                                {values.map((item) => (
+                                    <Col
+                                        xs={24}
+                                        md={12}
+                                        lg={8}
+                                        key={`${item.material_unit_id}:${item.revision}`}
+                                    >
+                                        <Link
+                                            to={`/materials/${encodeURIComponent(item.material_unit_id)}?${searchParamsOnly(params)}`}
+                                            style={{ display: 'block', height: '100%' }}
+                                        >
+                                            <Card
+                                                hoverable
+                                                style={{
+                                                    height: '100%',
+                                                    display: 'flex',
+                                                    flexDirection: 'column',
+                                                    borderRadius: 6,
+                                                    borderColor: '#e2e8f0',
+                                                }}
+                                                bodyStyle={{
+                                                    padding: 10,
+                                                    flex: 1,
+                                                    display: 'flex',
+                                                    flexDirection: 'column',
+                                                }}
+                                            >
+                                                <div
+                                                    style={{
+                                                        display: 'flex',
+                                                        justifyContent: 'space-between',
+                                                        alignItems: 'center',
+                                                        marginBottom: 10,
+                                                    }}
+                                                >
+                                                    <Tag
+                                                        color={statusTagColor[item.status] || 'default'}
+                                                        style={{ margin: 0, fontWeight: 500 }}
+                                                    >
+                                                        {statusNames[item.status] || item.status}
+                                                    </Tag>
+                                                    <ArrowRightOutlined
+                                                        style={{ color: '#94a3b8', fontSize: 12 }}
+                                                    />
+                                                </div>
+
+                                                <div
+                                                    style={{
+                                                        fontSize: 13,
+                                                        lineHeight: 1.6,
+                                                        color: '#1e293b',
+                                                        marginBottom: 12,
+                                                        flex: 1,
+                                                        display: '-webkit-box',
+                                                        WebkitLineClamp: 3,
+                                                        WebkitBoxOrient: 'vertical',
+                                                        overflow: 'hidden',
+                                                    }}
+                                                >
+                                                    {item.observations
+                                                        .map((o) => payloadText(o.payload, 400))
+                                                        .filter(Boolean)
+                                                        .join(' ') ||
+                                                        '暂无文本摘要，可点击查看多模态向量特征与原始时间轴。'}
+                                                </div>
+
                                                 <div style={{ marginBottom: 10 }}>
                                                     <Space size={[4, 4]} wrap>
-                                                        {item.tags.map((tag) => (
+                                                        {[
+                                                            ...new Set(
+                                                                item.observations.map(
+                                                                    (o) => o.modality,
+                                                                ),
+                                                            ),
+                                                        ].map((m) => (
                                                             <Tag
-                                                                key={tag}
+                                                                key={m}
+                                                                color="cyan"
                                                                 style={{
                                                                     fontSize: 11,
                                                                     margin: 0,
-                                                                    background: '#f8fafc',
+                                                                    borderRadius: 4,
                                                                 }}
                                                             >
-                                                                #{tag}
+                                                                {modalityNames[m] || m}
                                                             </Tag>
                                                         ))}
                                                     </Space>
                                                 </div>
-                                            ) : null}
 
-                                            <div
-                                                style={{
-                                                    marginTop: 'auto',
-                                                    paddingTop: 10,
-                                                    borderTop: '1px solid #f1f5f9',
-                                                    display: 'flex',
-                                                    justifyContent: 'space-between',
-                                                    alignItems: 'center',
-                                                    fontSize: 12,
+                                                {item.tags.length ? (
+                                                    <div style={{ marginBottom: 10 }}>
+                                                        <Space size={[4, 4]} wrap>
+                                                            {item.tags.map((tag) => (
+                                                                <Tag
+                                                                    key={tag}
+                                                                    style={{
+                                                                        fontSize: 11,
+                                                                        margin: 0,
+                                                                        background: '#f8fafc',
+                                                                    }}
+                                                                >
+                                                                    #{tag}
+                                                                </Tag>
+                                                            ))}
+                                                        </Space>
+                                                    </div>
+                                                ) : null}
+
+                                                <div
+                                                    style={{
+                                                        marginTop: 'auto',
+                                                        paddingTop: 10,
+                                                        borderTop: '1px solid #f1f5f9',
+                                                        display: 'flex',
+                                                        justifyContent: 'space-between',
+                                                        alignItems: 'center',
+                                                        fontSize: 12,
+                                                    }}
+                                                >
+                                                    <Space size={4} style={{ color: '#059669' }}>
+                                                        <ClockCircleOutlined style={{ fontSize: 12 }} />
+                                                        <span className="mono" style={{ fontSize: 11 }}>
+                                                            {formatTime(item.time_range?.start_ms)} ~{' '}
+                                                            {formatTime(item.time_range?.end_ms)}
+                                                        </span>
+                                                    </Space>
+                                                    <Tag
+                                                        color="purple"
+                                                        style={{ margin: 0, fontSize: 11 }}
+                                                    >
+                                                        v{item.revision}
+                                                    </Tag>
+                                                </div>
+                                            </Card>
+                                        </Link>
+                                    </Col>
+                                ))}
+                            </Row>
+                        )
+                    ) : (result.data.unindexed_hits ?? 0) > 0 ? (
+                        /* ── 处理尚未完成状态（有命中向量但索引尚未就绪） ───────── */
+                        <Card style={{ borderColor: '#93c5fd', background: '#eff6ff' }}>
+                            <div
+                                style={{
+                                    display: 'flex',
+                                    flexDirection: 'column',
+                                    gap: 10,
+                                    alignItems: 'center',
+                                    padding: '24px 0',
+                                }}
+                            >
+                                <LoadingOutlined style={{ fontSize: 28, color: '#2563eb' }} />
+                                <Text strong style={{ fontSize: 15, color: '#1e40af' }}>
+                                    素材向量索引正在处理中
+                                </Text>
+                                <Text style={{ fontSize: 13, color: '#3b82f6', textAlign: 'center' }}>
+                                    检测到 {result.data.unindexed_hits} 条潜在匹配素材正在建立向量索引或等待快慢路径融合（state != 'ready'）。
+                                    <br />数据处理完成后将自动生效，请稍后刷新查看。
+                                </Text>
+                                <Button
+                                    type="primary"
+                                    icon={<ReloadOutlined />}
+                                    onClick={() => void result.refetch()}
+                                    style={{ marginTop: 8 }}
+                                >
+                                    刷新结果
+                                </Button>
+                            </div>
+                        </Card>
+                    ) : (
+                        /* ── 没有匹配状态 ────────────────────────────────────────── */
+                        <Card>
+                            <Empty
+                                title={
+                                    activeMode === 'semantic'
+                                        ? (params.get('q') ? '未找到符合语义的视频片段' : '请输入自然语言描述开始检索')
+                                        : (params.toString() ? '未找到符合条件的素材' : '素材库暂无数据')
+                                }
+                            >
+                                {activeMode === 'semantic' ? (
+                                    params.get('q') ? (
+                                        <div
+                                            style={{
+                                                display: 'flex',
+                                                flexDirection: 'column',
+                                                alignItems: 'center',
+                                                gap: 8,
+                                            }}
+                                        >
+                                            <span>
+                                                在已索引的多模态观测中，未匹配到与“{params.get('q')}”语义相近的片段。
+                                            </span>
+                                            <span style={{ fontSize: 12, color: '#64748b' }}>
+                                                建议尝试更换自然语言描述（如描述具体画面动作、物体或文字），或切换至关键词检索。
+                                            </span>
+                                            <Button
+                                                type="link"
+                                                onClick={() => {
+                                                    const next = new URLSearchParams(params);
+                                                    next.delete('mode');
+                                                    setParams(next);
                                                 }}
                                             >
-                                                <Space size={4} style={{ color: '#059669' }}>
-                                                    <ClockCircleOutlined style={{ fontSize: 12 }} />
-                                                    <span className="mono" style={{ fontSize: 11 }}>
-                                                        {formatTime(item.time_range?.start_ms)} ~{' '}
-                                                        {formatTime(item.time_range?.end_ms)}
-                                                    </span>
-                                                </Space>
-                                                <Tag
-                                                    color="purple"
-                                                    style={{ margin: 0, fontSize: 11 }}
-                                                >
-                                                    v{item.revision}
-                                                </Tag>
-                                            </div>
-                                        </Card>
-                                    </Link>
-                                </Col>
-                            ))}
-                        </Row>
-                    )
-                ) : (
-                    <Card>
-                        <Empty
-                            title={params.toString() ? '未找到符合条件的素材' : '素材库暂无数据'}
-                        >
-                            {params.toString()
-                                ? '可尝试放宽时间范围、降低置信度阈值或更换关键词。'
-                                : '这里展示已完成推理与切片的素材单元。请在处理任务中下发视频流水线。'}
-                        </Empty>
-                    </Card>
-                )
+                                                切换至关键词检索
+                                            </Button>
+                                        </div>
+                                    ) : (
+                                        '语义检索基于多模态向量特征匹配，请输入如“有人正在写字”、“会议总结汇报”等自然语言语句。'
+                                    )
+                                ) : params.toString() ? (
+                                    '可尝试放宽时间范围、降低置信度阈值或更换关键词。'
+                                ) : (
+                                    '这里展示已完成推理与切片的素材单元。请在处理任务中下发视频流水线。'
+                                )}
+                            </Empty>
+                        </Card>
+                    )}
+                </>
             ) : null}
 
             {/* 视频母带全量原片预览弹窗 */}

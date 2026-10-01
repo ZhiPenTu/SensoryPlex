@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sensoryplex:plugin:vlm-vllm:config:v1",
+  "title": "vlm-vllm Start(config)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["base_url"],
+  "properties": {
+    "base_url": {
+      "type": "string",
+      "description": "远程 vLLM 服务地址（例如 http://192.168.1.100:8000 或 https://api.example.com/v1）"
+    },
+    "api_key": {
+      "type": "string",
+      "default": "",
+      "description": "API Key（若自建未开启认证的 vLLM 可留空）"
+    },
+    "max_concurrency": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 64,
+      "default": 2,
+      "description": "远程 API 最大并行请求限制"
+    },
+    "model": {
+      "type": "string",
+      "default": "",
+      "description": "模型名称；留空时自动请求 /v1/models 探测加载的模型"
+    },
+    "prompt": {
+      "type": "string",
+      "default": "Describe what is visible in this image in one sentence.",
+      "description": "视觉场景描述提示词"
+    },
+    "data_plane_mode": {
+      "enum": ["static", "per_request", "local_decode"],
+      "default": "static",
+      "description": "static 在 Start 时绑定固定 handoff；per_request 仅接受 Runtime 写入 descriptor 的 loopback handoff；local_decode 用于本地按需解码"
+    },
+    "handoff_endpoint": {
+      "type": "string",
+      "description": "Runtime 数据面 gRPC 地址（只允许 host:port，不含 scheme）"
+    },
+    "ttl_ms": {
+      "type": "integer",
+      "minimum": 50,
+      "maximum": 60000,
+      "default": 30000
+    },
+    "min_free_memory_bytes": {
+      "type": "integer",
+      "minimum": 268435456,
+      "description": "仅 local_decode Consumer：低于此本机可用内存水位时不拉取任务"
+    },
+    "timeout_s": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "default": 180.0,
+      "description": "单次远程调用超时时间（秒）"
+    }
+  }
+}

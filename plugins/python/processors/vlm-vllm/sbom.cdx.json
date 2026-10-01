@@ -1,0 +1,41 @@
+{
+  "bomFormat": "CycloneDX",
+  "components": [
+    {
+      "name": "edge-material-sdk",
+      "type": "library",
+      "version": "unspecified"
+    },
+    {
+      "name": "grpcio>=1.71,<1.72",
+      "type": "library",
+      "version": "unspecified"
+    },
+    {
+      "name": "nats-py>=2.9,<3",
+      "type": "library",
+      "version": "unspecified"
+    }
+  ],
+  "metadata": {
+    "component": {
+      "name": "edge-material-plugin-vlm-vllm",
+      "properties": [
+        {
+          "name": "sensoryplex:package_digest",
+          "value": "sha256:2ec2d27a90778844460d616ba2cf3789ce357b166fce1fe4a5b36d947e07267a"
+        }
+      ],
+      "type": "application",
+      "version": "0.1.0"
+    },
+    "tools": [
+      {
+        "name": "sensoryplex-plugin-artifact",
+        "version": "0.1.0"
+      }
+    ]
+  },
+  "specVersion": "1.5",
+  "version": 1
+}

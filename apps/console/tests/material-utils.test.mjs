@@ -101,3 +101,34 @@ test('revision URLs only accept positive bounded integers', () => {
     for (const value of ['', '0', '-1', '1.1', '1e2', 'NaN', '2147483648'])
         assert.equal(validRevision(value), false);
 });
+
+test('mode defaults to keyword and parses semantic mode', () => {
+    const kw = searchRequest(new URLSearchParams('q=测试'));
+    assert.equal(kw.mode, 'keyword');
+    const sem = searchRequest(new URLSearchParams('q=测试&mode=semantic'));
+    assert.equal(sem.mode, 'semantic');
+});
+
+test('semantic mode throws explicit error when scalar filters are supplied', () => {
+    for (const qs of [
+        'q=测试&mode=semantic&stream=stream-1',
+        'q=测试&mode=semantic&start=0',
+        'q=测试&mode=semantic&end=10',
+        'q=测试&mode=semantic&confidence=0.5',
+        'q=测试&mode=semantic&execution=exec-1',
+        'q=测试&mode=semantic&tags=财务',
+        'q=测试&mode=semantic&modalities=ocr_blocks',
+    ]) {
+        assert.throws(
+            () => searchRequest(new URLSearchParams(qs)),
+            /后端语义检索基于全局跨视频向量索引，暂不支持附加视频母带或时间范围等筛选条件/
+        );
+    }
+});
+
+test('searchParamsOnly retains mode parameter', () => {
+    const value = searchParamsOnly(new URLSearchParams('q=测试&mode=semantic&revision=2'));
+    assert.equal(value.get('mode'), 'semantic');
+    assert.equal(value.get('q'), '测试');
+    assert.equal(value.has('revision'), false);
+});
