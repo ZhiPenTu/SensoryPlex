@@ -21,7 +21,7 @@ make task-worker-daemon                     # 宿主常驻工作器
 | `/plugins` | 插件 | 插件配置版本与校验结果 |
 | `/nodes` | 节点 | 节点拓扑、安装位置与预检结果 |
 | `/pipelines` | 方案 | 编排方案草稿与发布 |
-| `/users`、`/audit`、`/access`、`/system` | 管理 | 账号与角色、审计轨迹、作用域凭据、系统状态 |
+| `/users`、`/audit`、`/access` | 管理 | 账号与角色、审计轨迹、作用域凭据 |
 
 ## 1. 导入媒体 —— `/assets`
 

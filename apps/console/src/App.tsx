@@ -23,7 +23,6 @@ import {
     TeamOutlined,
     SafetyCertificateOutlined,
     KeyOutlined,
-    DashboardOutlined,
     LogoutOutlined,
     MenuFoldOutlined,
     MenuUnfoldOutlined,
@@ -36,7 +35,7 @@ import type { DemoAccount, Identity } from './api/contracts';
 import { Empty, ErrorNotice, Loading } from './components';
 import { SessionContext, useSession } from './session';
 import { antdTheme } from './theme';
-import { Access, Audit, Pipelines, System, Users as UserPage } from './features/Management';
+import { Access, Audit, Pipelines, Users as UserPage } from './features/Management';
 
 const Assets = lazy(() => import('./features/Assets'));
 const Jobs = lazy(() => import('./features/Jobs'));
@@ -110,13 +109,6 @@ const navigation = [
         path: '/access',
         label: '访问凭据',
         icon: KeyOutlined,
-        scope: '',
-        group: '设置',
-    },
-    {
-        path: '/system',
-        label: '系统能力',
-        icon: DashboardOutlined,
         scope: '',
         group: '设置',
     },
@@ -513,12 +505,12 @@ function Layout() {
                     </div>
 
                     <Space size={10}>
-                        <Link to="/system" className="environment">
+                        <div className="environment">
                             <span className="status-dot" />
                             <span>边缘推理就绪</span>
                             <span style={{ color: '#cbd5e1' }}>|</span>
                             <span>v0.1.0-alpha</span>
-                        </Link>
+                        </div>
 
                         <Dropdown menu={{ items: userMenuItems }} placement="bottomRight">
                             <Avatar
@@ -648,7 +640,6 @@ export default function App() {
                                         <Route path="audit" element={<Audit />} />
                                     </Route>
                                     <Route path="access" element={<Access />} />
-                                    <Route path="system" element={<System />} />
                                     <Route
                                         path="*"
                                         element={

@@ -21,7 +21,7 @@ make task-worker-daemon                     # resident host worker
 | `/plugins` | Plugins | Plugin configuration versions and their validation |
 | `/nodes` | Nodes | Node topology, install location, preflight results |
 | `/pipelines` | Plans | Draft and publish pipeline revisions |
-| `/users`, `/audit`, `/access`, `/system` | Management | Accounts and roles, audit trail, scoped credentials, system state |
+| `/users`, `/audit`, `/access` | Management | Accounts and roles, audit trail, scoped credentials |
 
 ## 1. Import media — `/assets`
 

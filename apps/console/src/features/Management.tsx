@@ -31,9 +31,7 @@ import {
     CopyOutlined,
     CheckOutlined,
     StopOutlined,
-    DashboardOutlined,
     CheckCircleOutlined,
-    ExclamationCircleOutlined,
     UserOutlined,
     EyeOutlined,
     BranchesOutlined,
@@ -44,7 +42,6 @@ import { api, post } from '../api/client';
 import type {
     AccessToken,
     AuditList,
-    ConsoleStatus,
     PipelineList,
     PluginConfigList,
     TokenList,
@@ -62,7 +59,6 @@ import {
     Loading,
     Modal,
     Notice,
-    StatSummary,
 } from '../components';
 import { usePermission, useSession } from '../session';
 
@@ -1788,131 +1784,3 @@ export function Audit() {
     );
 }
 
-/**
- * 系统能力 (System Capabilities)
- */
-export function System() {
-    const query = useQuery({
-        queryKey: ['capabilities'],
-        queryFn: ({ signal }) => api<ConsoleStatus>('/v1/capabilities', { signal }),
-        staleTime: 30000,
-    });
-
-    const names: Record<string, string> = {
-        console_metadata: '工作台与配置存储',
-        keyword_search: '素材关键词查询',
-        file_storage: '原视频母带存储',
-        media_admission: '媒体格式转码准入',
-        task_execution: '分布式处理任务执行',
-        plugin_installation: '插件热部署执行器',
-        pipeline_publish: '处理方案版本发布',
-        semantic_search: '多模态向量语义检索',
-    };
-
-    const caps = query.data?.capabilities || [];
-    const availableCount = caps.filter((c) => c.available).length;
-
-    return (
-        <div>
-            <Heading
-                eyebrow="System Capabilities"
-                title="系统能力与服务接线"
-                description="各模块能力状态透明度报告，基础进程在线不代表业务闭环已达生产 Golden Path。"
-            />
-
-            <Row gutter={[8, 8]} style={{ marginBottom: 10 }}>
-                <Col xs={24} sm={8}>
-                    <StatSummary
-                        title="契约 Schema 版本"
-                        value={query.data?.schema_version || 'v0.1.0'}
-                        prefix={<DashboardOutlined style={{ color: '#1668dc' }} />}
-                    />
-                </Col>
-                <Col xs={24} sm={8}>
-                    <StatSummary
-                        title="已就绪核心接口"
-                        value={availableCount}
-                        prefix={<CheckCircleOutlined style={{ color: '#10b981' }} />}
-                        color="#10b981"
-                    />
-                </Col>
-                <Col xs={24} sm={8}>
-                    <StatSummary
-                        title="待接入链路能力"
-                        value={caps.length - availableCount}
-                        prefix={<ExclamationCircleOutlined style={{ color: '#f59e0b' }} />}
-                        color="#f59e0b"
-                    />
-                </Col>
-            </Row>
-
-            <ErrorNotice error={query.error} />
-
-            <Card
-                title={
-                    <Space size={8}>
-                        <CheckCircleOutlined style={{ color: '#1668dc' }} />
-                        <span style={{ fontWeight: 650, fontSize: 15 }}>端侧多模态能力矩阵</span>
-                    </Space>
-                }
-                bodyStyle={{ padding: 10 }}
-            >
-                {query.isPending ? (
-                    <Loading tip="正在检测系统能力接口…" />
-                ) : caps.length ? (
-                    <Row gutter={[8, 8]}>
-                        {caps.map((c) => (
-                            <Col xs={24} sm={12} md={8} key={c.name}>
-                                <Card
-                                    size="small"
-                                    style={{
-                                        borderRadius: 8,
-                                        border: `1px solid ${c.available ? '#bbf7d0' : '#e2e8f0'}`,
-                                        background: c.available ? '#f0fdf4' : '#f8fafc',
-                                    }}
-                                >
-                                    <div
-                                        style={{
-                                            display: 'flex',
-                                            justifyContent: 'space-between',
-                                            alignItems: 'center',
-                                            marginBottom: 6,
-                                        }}
-                                    >
-                                        <Text strong style={{ fontSize: 13 }}>
-                                            {names[c.name] || c.name}
-                                        </Text>
-                                        <Tag
-                                            color={c.available ? 'success' : 'default'}
-                                            style={{ margin: 0 }}
-                                        >
-                                            {c.available ? '接口可用' : '待接入'}
-                                        </Tag>
-                                    </div>
-                                    <div
-                                        style={{
-                                            fontSize: 12,
-                                            color: c.available ? '#15803d' : '#64748b',
-                                        }}
-                                    >
-                                        {c.available
-                                            ? '已实现并接通服务 API'
-                                            : c.reason || '待实现链路'}
-                                    </div>
-                                    <div style={{ marginTop: 8 }}>
-                                        <span
-                                            className="mono"
-                                            style={{ fontSize: 10, color: '#94a3b8' }}
-                                        >
-                                            {c.name}
-                                        </span>
-                                    </div>
-                                </Card>
-                            </Col>
-                        ))}
-                    </Row>
-                ) : null}
-            </Card>
-        </div>
-    );
-}
