@@ -171,11 +171,13 @@ async def search_materials(
                     )
                 elif isinstance(payload, str):
                     text_content = payload
-                facts.append({
-                    "modality": modality,
-                    "confidence": round(conf, 3) if conf else None,
-                    "text": text_content,
-                })
+                facts.append(
+                    {
+                        "modality": modality,
+                        "confidence": round(conf, 3) if conf else None,
+                        "text": text_content,
+                    }
+                )
 
             item_info = {
                 "material_unit_id": unit_id,
@@ -273,15 +275,17 @@ async def list_media_assets(limit: int = 50, offset: int = 0) -> str:
         formatted = []
         for u in items:
             dur = u.get("duration_ms", 0)
-            formatted.append({
-                "asset_id": u.get("id"),
-                "filename": u.get("filename"),
-                "sha256": u.get("sha256"),
-                "state": u.get("state"),
-                "size_bytes": u.get("size_bytes"),
-                "duration": f"{format_ms(dur)} ({dur}ms)" if dur else "pending_admission",
-                "content_type": u.get("content_type"),
-            })
+            formatted.append(
+                {
+                    "asset_id": u.get("id"),
+                    "filename": u.get("filename"),
+                    "sha256": u.get("sha256"),
+                    "state": u.get("state"),
+                    "size_bytes": u.get("size_bytes"),
+                    "duration": f"{format_ms(dur)} ({dur}ms)" if dur else "pending_admission",
+                    "content_type": u.get("content_type"),
+                }
+            )
         payload = {"total": uploads.get("total", len(formatted)), "assets": formatted}
         return json.dumps(payload, ensure_ascii=False, indent=2)
     except Exception as exc:

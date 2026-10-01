@@ -3,8 +3,9 @@
 
 Automatically detects and configures:
 1. Claude Desktop (claude_desktop_config.json)
-2. Codex CLI & Desktop (~/.codex/skills/sensoryplex and codex mcp add)
-3. Cursor / Windsurf MCP configuration
+2. Claude Code CLI (~/.claude.json)
+3. Codex CLI & Desktop (~/.codex/config.toml and ~/.codex/skills/sensoryplex)
+4. Cursor / Windsurf (.cursor/mcp.json)
 
 Usage:
     python tools/setup_mcp.py [--auto] [--dry-run] [--base-url URL] [--token TOKEN]
@@ -16,6 +17,7 @@ import argparse
 import json
 import os
 import platform
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -57,6 +59,11 @@ def get_claude_desktop_config_path() -> Path:
         return Path.home() / ".config/Claude/claude_desktop_config.json"
 
 
+def get_claude_code_config_path() -> Path:
+    """Locate Claude Code CLI configuration file."""
+    return Path.home() / ".claude.json"
+
+
 def get_codex_home() -> Path:
     """Locate Codex configuration and skills home directory."""
     custom = os.getenv("CODEX_HOME")
@@ -87,8 +94,7 @@ def build_mcp_config(base_url: str, token: str) -> dict:
 
 def configure_claude_desktop(config_path: Path, mcp_entry: dict, dry_run: bool = False) -> bool:
     """Safely merge sensoryplex MCP configuration into Claude Desktop config."""
-    print("\n[1/3] Configuring Claude Desktop...")
-    print(f"      Target file: {config_path}")
+    print(f"\n[1/5] Configuring Claude Desktop ({config_path})...")
 
     existing_data: dict = {}
     if config_path.is_file():
@@ -121,12 +127,102 @@ def configure_claude_desktop(config_path: Path, mcp_entry: dict, dry_run: bool =
         return False
 
 
+def configure_claude_code(config_path: Path, mcp_entry: dict, dry_run: bool = False) -> bool:
+    """Safely merge sensoryplex MCP configuration into Claude Code CLI (~/.claude.json)."""
+    print(f"\n[2/5] Configuring Claude Code CLI ({config_path})...")
+
+    if not config_path.is_file():
+        print("      Claude Code CLI configuration file not found, skipping.")
+        return True
+
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            print("      Invalid ~/.claude.json format, skipping.")
+            return False
+
+        servers = data.setdefault("mcpServers", {})
+        servers["sensoryplex"] = mcp_entry
+
+        if dry_run:
+            print("      [DRY RUN] Would add sensoryplex to ~/.claude.json mcpServers")
+            return True
+
+        # Backup first
+        shutil.copy2(config_path, config_path.with_suffix(".json.bak"))
+        config_path.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+        print("      ✓ Successfully updated Claude Code CLI configuration (~/.claude.json)!")
+        return True
+    except Exception as exc:
+        print(f"      ✗ Error writing Claude Code config: {exc}")
+        return False
+
+
+def configure_codex_mcp(
+    codex_config_path: Path, base_url: str, token: str, dry_run: bool = False
+) -> bool:
+    """Safely merge sensoryplex MCP server into Codex configuration (~/.codex/config.toml)."""
+    print(f"\n[3/5] Configuring Codex MCP Server ({codex_config_path})...")
+
+    args_list = ["run", "--directory", str(MCP_SERVER_DIR), "sensoryplex-mcp"]
+    args_toml = json.dumps(args_list)
+
+    snippet_lines = [
+        "[mcp_servers.sensoryplex]",
+        'command = "uv"',
+        f"args = {args_toml}",
+        "",
+        "[mcp_servers.sensoryplex.env]",
+        f'SENSORYPLEX_BASE_URL = "{base_url}"',
+    ]
+    if token:
+        snippet_lines.append(f'SENSORYPLEX_API_TOKEN = "{token}"')
+    snippet = "\n".join(snippet_lines) + "\n"
+
+    if not codex_config_path.is_file():
+        if dry_run:
+            print("      [DRY RUN] Would create ~/.codex/config.toml with sensoryplex MCP")
+            return True
+        try:
+            codex_config_path.parent.mkdir(parents=True, exist_ok=True)
+            codex_config_path.write_text(snippet, encoding="utf-8")
+            print("      ✓ Successfully created Codex config with sensoryplex MCP!")
+            return True
+        except Exception as exc:
+            print(f"      ✗ Error creating Codex config: {exc}")
+            return False
+
+    text = codex_config_path.read_text(encoding="utf-8")
+    section_header = "[mcp_servers.sensoryplex]"
+
+    if section_header in text:
+        pattern = r"\[mcp_servers\.sensoryplex\]\n.*?(?=\n\[(?!mcp_servers\.sensoryplex\.env)|\Z)"
+        new_text = re.sub(pattern, snippet.strip(), text, flags=re.DOTALL)
+    else:
+        new_text = text.rstrip() + "\n\n" + snippet
+
+    if dry_run:
+        print("      [DRY RUN] Would update ~/.codex/config.toml with:")
+        print("      " + snippet.replace("\n", "\n      "))
+        return True
+
+    try:
+        shutil.copy2(codex_config_path, codex_config_path.with_suffix(".toml.bak"))
+        codex_config_path.write_text(new_text, encoding="utf-8")
+        print("      ✓ Successfully updated Codex configuration (~/.codex/config.toml)!")
+        return True
+    except Exception as exc:
+        print(f"      ✗ Error updating Codex config: {exc}")
+        return False
+
+
 def install_codex_skill(codex_home: Path, dry_run: bool = False) -> bool:
     """Install the SensoryPlex skill to ~/.codex/skills/sensoryplex."""
-    print("\n[2/3] Installing SensoryPlex Codex Skill...")
+    print(f"\n[4/5] Installing SensoryPlex Codex Skill ({codex_home / 'skills/sensoryplex'})...")
     skills_dir = codex_home / "skills"
     target_skill_dir = skills_dir / "sensoryplex"
-    print(f"      Target skill directory: {target_skill_dir}")
 
     if not SKILLS_SRC_DIR.is_dir():
         print(f"      ✗ Error: Source skill directory {SKILLS_SRC_DIR} not found.")
@@ -144,7 +240,6 @@ def install_codex_skill(codex_home: Path, dry_run: bool = False) -> bool:
             elif target_skill_dir.is_dir():
                 shutil.rmtree(target_skill_dir)
 
-        # Copy skill tree into target location
         shutil.copytree(SKILLS_SRC_DIR, target_skill_dir)
         print("      ✓ Successfully installed Codex skill 'sensoryplex'!")
         return True
@@ -153,29 +248,59 @@ def install_codex_skill(codex_home: Path, dry_run: bool = False) -> bool:
         return False
 
 
-def print_cli_instructions(base_url: str, token: str) -> None:
-    """Print instructions for Codex CLI and Cursor integration."""
-    print("\n[3/3] CLI & Alternative Assistants Setup:")
-    print("      " + "─" * 60)
-    print("      ▶ For Codex CLI (add as MCP server):")
-    cmd = f"codex mcp add sensoryplex -- uv run --directory {MCP_SERVER_DIR} sensoryplex-mcp"
-    print(f"        $ {cmd}")
+def configure_cursor_mcp(workspace_root: Path, mcp_entry: dict, dry_run: bool = False) -> bool:
+    """Write or update workspace .cursor/mcp.json."""
+    cursor_dir = workspace_root / ".cursor"
+    cursor_config_file = cursor_dir / "mcp.json"
+    print(f"\n[5/5] Configuring Cursor Workspace MCP ({cursor_config_file})...")
+
+    existing_data: dict = {}
+    if cursor_config_file.is_file():
+        try:
+            existing_data = json.loads(cursor_config_file.read_text(encoding="utf-8"))
+        except Exception:
+            existing_data = {}
+
+    if not isinstance(existing_data, dict):
+        existing_data = {}
+
+    servers = existing_data.setdefault("mcpServers", {})
+    servers["sensoryplex"] = mcp_entry
+
+    if dry_run:
+        print("      [DRY RUN] Would write .cursor/mcp.json")
+        return True
+
+    try:
+        cursor_dir.mkdir(parents=True, exist_ok=True)
+        cursor_config_file.write_text(
+            json.dumps(existing_data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+        print("      ✓ Successfully wrote .cursor/mcp.json!")
+        return True
+    except Exception as exc:
+        print(f"      ✗ Error writing .cursor/mcp.json: {exc}")
+        return False
+
+
+def print_cli_summary(base_url: str, token: str) -> None:
+    """Print quick reference commands for CLI and alternative tools."""
+    print("\n" + "═" * 60)
+    print("   AI Assistants Quick Reference / 快速使用指南")
+    print("═" * 60)
+    print("▶ 1. Codex CLI / Desktop:")
+    print("   - MCP 协议配置已直接写入: ~/.codex/config.toml [mcp_servers.sensoryplex]")
+    print("   - AI 技能已安装至:       ~/.codex/skills/sensoryplex")
+    print("   - 可用命令行测试 MCP:     codex mcp list")
     print()
-    print("      ▶ For Cursor (.cursor/mcp.json):")
-    cursor_config = {
-        "mcpServers": {
-            "sensoryplex": {
-                "command": "uv",
-                "args": ["run", "--directory", str(MCP_SERVER_DIR), "sensoryplex-mcp"],
-                "env": {
-                    "SENSORYPLEX_BASE_URL": base_url,
-                    "SENSORYPLEX_API_TOKEN": token or "YOUR_TOKEN",
-                },
-            }
-        }
-    }
-    print("        " + json.dumps(cursor_config, indent=2).replace("\n", "\n        "))
-    print("      " + "─" * 60)
+    print("▶ 2. Claude Desktop & Claude Code CLI:")
+    print("   - Claude Desktop:      已写入 ~/Library/.../claude_desktop_config.json")
+    print("   - Claude Code CLI:      已写入 ~/.claude.json (mcpServers.sensoryplex)")
+    print("   - 可用命令行测试 MCP:     claude mcp list")
+    print()
+    print("▶ 3. Cursor / Windsurf:")
+    print("   - 工作区配置已写入:       .cursor/mcp.json")
+    print("═" * 60)
 
 
 def main() -> int:
@@ -188,14 +313,17 @@ def main() -> int:
     )
     parser.add_argument("--base-url", default="", help="SensoryPlex API base URL")
     parser.add_argument("--token", default="", help="SensoryPlex API Bearer token")
-    parser.add_argument("--claude-only", action="store_true", help="Only configure Claude Desktop")
-    parser.add_argument("--codex-only", action="store_true", help="Only configure Codex skill")
+    parser.add_argument(
+        "--claude-only", action="store_true", help="Only configure Claude (Desktop and CLI)"
+    )
+    parser.add_argument(
+        "--codex-only", action="store_true", help="Only configure Codex (MCP and Skill)"
+    )
+    parser.add_argument("--cursor-only", action="store_true", help="Only configure Cursor")
     args = parser.parse_args()
 
     api_port = read_env_value("API_PORT") or "8091"
-    base_url = (
-        args.base_url or os.getenv("SENSORYPLEX_BASE_URL") or f"http://127.0.0.1:{api_port}"
-    )
+    base_url = args.base_url or os.getenv("SENSORYPLEX_BASE_URL") or f"http://127.0.0.1:{api_port}"
     token = args.token or read_env_value("SENSORYPLEX_API_TOKEN")
 
     print("════════════════════════════════════════════════════════════")
@@ -208,19 +336,29 @@ def main() -> int:
     print(f"• API Token:       {token_label}")
 
     mcp_entry = build_mcp_config(base_url, token)
-    claude_config_path = get_claude_desktop_config_path()
+    claude_desktop_config = get_claude_desktop_config_path()
+    claude_code_config = get_claude_code_config_path()
     codex_home = get_codex_home()
+    codex_config = codex_home / "config.toml"
 
     success = True
-    if not args.codex_only:
-        ok = configure_claude_desktop(claude_config_path, mcp_entry, dry_run=args.dry_run)
-        success = success and ok
+    only_specified = args.claude_only or args.codex_only or args.cursor_only
 
-    if not args.claude_only:
-        ok = install_codex_skill(codex_home, dry_run=args.dry_run)
-        success = success and ok
+    if not only_specified or args.claude_only:
+        ok1 = configure_claude_desktop(claude_desktop_config, mcp_entry, dry_run=args.dry_run)
+        ok2 = configure_claude_code(claude_code_config, mcp_entry, dry_run=args.dry_run)
+        success = success and ok1 and ok2
 
-    print_cli_instructions(base_url, token)
+    if not only_specified or args.codex_only:
+        ok3 = configure_codex_mcp(codex_config, base_url, token, dry_run=args.dry_run)
+        ok4 = install_codex_skill(codex_home, dry_run=args.dry_run)
+        success = success and ok3 and ok4
+
+    if not only_specified or args.cursor_only:
+        ok5 = configure_cursor_mcp(REPO_ROOT, mcp_entry, dry_run=args.dry_run)
+        success = success and ok5
+
+    print_cli_summary(base_url, token)
 
     if success:
         print("\n🎉 Setup complete! Restart Claude Desktop or Codex to use SensoryPlex tools.")
