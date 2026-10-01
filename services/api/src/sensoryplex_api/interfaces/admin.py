@@ -85,6 +85,86 @@ def register(app, pool, auth, settings):
             total = conn.execute("SELECT count(*) FROM console_pipeline").fetchone()[0]
         return out({"items": items, "total": total}, pb.PipelineList)
 
+    @app.get("/v1/pipelines/{key}")
+    def pipeline_detail(
+        key: str,
+        p: Annotated[object, Depends(auth.require(None))] = None,
+    ):
+        if not p.scopes.intersection({"jobs:read", "pipelines:manage"}):
+            fail(403, "permission_denied")
+        with pool.connection() as conn:
+            pipeline = one(
+                conn,
+                "SELECT * FROM console_pipeline WHERE id=%s",
+                (key,),
+            )
+            if not pipeline:
+                fail(404, "pipeline_not_found")
+
+            revision_data = {}
+            config_ids = set()
+
+            if pipeline.get("execution_mode") == "orchestrated_v2" and pipeline.get(
+                "orchestration_pipeline_id"
+            ):
+                rev = one(
+                    conn,
+                    "SELECT pipeline_id, revision, graph_digest, definition_json, "
+                    "created_by, created_at "
+                    "FROM pipeline_revision WHERE pipeline_id=%s AND revision=%s",
+                    (pipeline["orchestration_pipeline_id"], pipeline["orchestration_revision"]),
+                )
+                if rev:
+                    def_json = rev.get("definition_json") or {}
+                    nodes = def_json.get("nodes") or []
+                    edges = def_json.get("edges") or []
+                    for node in nodes:
+                        if node.get("config_id"):
+                            config_ids.add(node["config_id"])
+                        for delayed in node.get("delayed_enrichments") or []:
+                            if delayed.get("config_id"):
+                                config_ids.add(delayed["config_id"])
+                    revision_data = {
+                        "pipeline_id": rev["pipeline_id"],
+                        "revision": rev["revision"],
+                        "graph_digest": rev["graph_digest"],
+                        "nodes": nodes,
+                        "edges": edges,
+                        "created_by": rev["created_by"],
+                        "created_at": rev["created_at"].isoformat()
+                        if rev.get("created_at")
+                        else "",
+                    }
+            elif pipeline.get("config_id"):
+                config_ids.add(pipeline["config_id"])
+
+            configs_dict = {}
+            if config_ids:
+                cfg_rows = rows(
+                    conn,
+                    "SELECT id, plugin_id, name, revision, config, config_hash "
+                    "FROM console_plugin_config WHERE id = ANY(%s)",
+                    (list(config_ids),),
+                )
+                for cfg in cfg_rows:
+                    configs_dict[cfg["id"]] = {
+                        "id": cfg["id"],
+                        "plugin_id": cfg["plugin_id"],
+                        "name": cfg["name"],
+                        "revision": cfg["revision"],
+                        "config": cfg["config"],
+                        "config_hash": cfg["config_hash"],
+                    }
+
+            return out(
+                {
+                    "pipeline": pipeline,
+                    "revision": revision_data,
+                    "configs": configs_dict,
+                },
+                pb.PipelineDetail,
+            )
+
     @app.post("/admin/v1/pipelines", status_code=201)
     def save_pipeline(
         body: Annotated[dict, Body()] = ...,

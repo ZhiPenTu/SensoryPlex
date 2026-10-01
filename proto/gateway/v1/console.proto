@@ -48,6 +48,11 @@ message Pipeline {
   string graph_digest = 13;
 }
 message PipelineList { repeated Pipeline items = 1; uint32 total = 2; }
+message PipelineDetail {
+  Pipeline pipeline = 1;
+  google.protobuf.Struct revision = 2;
+  google.protobuf.Struct configs = 3;
+}
 message SaveJobDraft { string asset_id = 1; string pipeline_id = 2; string name = 3; }
 message JobDraft {
   string id = 1; string asset_id = 2; string pipeline_id = 3; string name = 4;

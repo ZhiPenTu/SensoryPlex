@@ -1122,3 +1122,37 @@ def test_demo_account_is_explicit_and_respects_account_state(console_app, consol
                 (password_hash("changed-password-2026"),),
             )
         assert client.get("/auth/v1/demo-account").json()["enabled"] is False
+
+
+def test_pipeline_detail_endpoint(console_app):
+    with TestClient(console_app) as client:
+        assert client.get("/v1/pipelines/pipeline_non_existent").status_code == 401
+
+        login(client)
+
+        assert client.get("/v1/pipelines/pipeline_non_existent").status_code == 404
+
+        v2_plan = multimodal_pipeline(client)
+        resp = client.get(f"/v1/pipelines/{v2_plan['id']}")
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert "pipeline" in data
+        assert "revision" in data
+        assert "configs" in data
+        assert data["pipeline"]["id"] == v2_plan["id"]
+        assert data["pipeline"]["execution_mode"] == "orchestrated_v2"
+        node_ids = [n["id"] for n in data["revision"]["nodes"]]
+        assert "ocr_fast" in node_ids
+        assert "asr_fast" in node_ids
+        assert "timeline_fusion" in node_ids
+        assert len(data["revision"]["edges"]) == 2
+        assert len(data["configs"]) >= 3
+
+        cfg = config(client)
+        legacy_plan = pipeline(client, cfg)
+        resp_legacy = client.get(f"/v1/pipelines/{legacy_plan['id']}")
+        assert resp_legacy.status_code == 200, resp_legacy.text
+        data_legacy = resp_legacy.json()
+        assert data_legacy["pipeline"]["id"] == legacy_plan["id"]
+        assert data_legacy["pipeline"]["execution_mode"] == "legacy_ocr_v1"
+        assert cfg["id"] in data_legacy["configs"]

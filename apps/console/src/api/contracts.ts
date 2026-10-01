@@ -110,6 +110,11 @@ export interface PipelineList {
   items: Pipeline[];
   total: number;
 }
+export interface PipelineDetail {
+  pipeline?: Pipeline;
+  revision?: JsonObject;
+  configs?: JsonObject;
+}
 export interface SaveJobDraft {
   asset_id: string;
   pipeline_id: string;

@@ -224,6 +224,16 @@ class PipelineList(_message.Message):
     total: int
     def __init__(self, items: _Optional[_Iterable[_Union[Pipeline, _Mapping]]] = ..., total: _Optional[int] = ...) -> None: ...
 
+class PipelineDetail(_message.Message):
+    __slots__ = ("pipeline", "revision", "configs")
+    PIPELINE_FIELD_NUMBER: _ClassVar[int]
+    REVISION_FIELD_NUMBER: _ClassVar[int]
+    CONFIGS_FIELD_NUMBER: _ClassVar[int]
+    pipeline: Pipeline
+    revision: _struct_pb2.Struct
+    configs: _struct_pb2.Struct
+    def __init__(self, pipeline: _Optional[_Union[Pipeline, _Mapping]] = ..., revision: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ..., configs: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ...) -> None: ...
+
 class SaveJobDraft(_message.Message):
     __slots__ = ("asset_id", "pipeline_id", "name")
     ASSET_ID_FIELD_NUMBER: _ClassVar[int]

@@ -18,6 +18,9 @@ import {
     Tag,
     Typography,
     message,
+    Descriptions,
+    Tabs,
+    Tooltip,
 } from 'antd';
 import {
     ApartmentOutlined,
@@ -32,6 +35,10 @@ import {
     CheckCircleOutlined,
     ExclamationCircleOutlined,
     UserOutlined,
+    EyeOutlined,
+    BranchesOutlined,
+    ClockCircleOutlined,
+    FileTextOutlined,
 } from '@ant-design/icons';
 import { api, post } from '../api/client';
 import type {
@@ -43,6 +50,8 @@ import type {
     TokenList,
     UserList,
     User,
+    Pipeline,
+    PipelineDetail,
 } from '../api/contracts';
 import {
     Badge,
@@ -118,12 +127,467 @@ function multimodalPayload(values: MultimodalFormValues) {
 /**
  * 处理方案管理 (Pipelines)
  */
+function PipelineDetailModal({
+    pipeline,
+    onClose,
+}: {
+    pipeline: Pipeline;
+    onClose: () => void;
+}) {
+    const detail = useQuery({
+        queryKey: ['pipeline-detail', pipeline.id],
+        queryFn: ({ signal }) =>
+            api<PipelineDetail>(`/v1/pipelines/${encodeURIComponent(pipeline.id)}`, { signal }),
+    });
+
+    const data = detail.data;
+    const rev = data?.revision as Record<string, any> | undefined;
+    const nodes = (rev?.nodes as Array<Record<string, any>>) || [];
+    const edges = (rev?.edges as Array<Record<string, any>>) || [];
+    const configs = (data?.configs as Record<string, any>) || {};
+
+    const ocrNode = nodes.find((n) => n.id === 'ocr_fast');
+    const asrNode = nodes.find((n) => n.id === 'asr_fast');
+    const timelineNode = nodes.find((n) => n.id === 'timeline_fusion');
+    const delayedEnrichments = (timelineNode?.delayed_enrichments as Array<Record<string, any>>) || [];
+    const vlmNode = delayedEnrichments.find((n) => n.id === 'vlm_enrich');
+    const policy = (timelineNode?.execution_policy as Record<string, any>) || {};
+
+    const ocrConfig = ocrNode?.config_id ? configs[ocrNode.config_id] : null;
+    const asrConfig = asrNode?.config_id ? configs[asrNode.config_id] : null;
+    const vlmConfig = vlmNode?.config_id ? configs[vlmNode.config_id] : null;
+    const legacyConfig = data?.pipeline?.config_id ? configs[data.pipeline.config_id] : null;
+
+    const isOrchestrated = data?.pipeline?.execution_mode === 'orchestrated_v2';
+
+    return (
+        <Modal title="处理方案配置详情" onClose={onClose} width={920}>
+            <ErrorNotice error={detail.error} />
+            {detail.isPending ? (
+                <Loading tip="正在读取方案与不可变编排图配置…" />
+            ) : data ? (
+                <Space direction="vertical" size={14} style={{ width: '100%' }}>
+                    <Card size="small">
+                        <Row gutter={[16, 10]}>
+                            <Col xs={24} md={12}>
+                                <Text type="secondary" style={{ fontSize: 12 }}>方案名称 / 描述</Text>
+                                <div>
+                                    <Text strong style={{ fontSize: 14 }}>{data.pipeline?.name}</Text>
+                                    <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
+                                        {data.pipeline?.description || '无补充描述'}
+                                    </div>
+                                </div>
+                            </Col>
+                            <Col xs={12} md={6}>
+                                <Text type="secondary" style={{ fontSize: 12 }}>版本 / 状态</Text>
+                                <div style={{ marginTop: 2, display: 'flex', gap: 6, alignItems: 'center' }}>
+                                    <Tag color="purple">v{data.pipeline?.revision}</Tag>
+                                    <Badge state={data.pipeline?.state || 'draft'} />
+                                </div>
+                            </Col>
+                            <Col xs={12} md={6}>
+                                <Text type="secondary" style={{ fontSize: 12 }}>执行语义</Text>
+                                <div style={{ marginTop: 2 }}>
+                                    {isOrchestrated ? (
+                                        <Tag color="blue">多模态编排 v2 (图 v{data.pipeline?.orchestration_revision})</Tag>
+                                    ) : (
+                                        <Tag>单模态兼容</Tag>
+                                    )}
+                                </div>
+                            </Col>
+                            <Col xs={24} md={12}>
+                                <Text type="secondary" style={{ fontSize: 12 }}>不可变图摘要 (Graph Digest)</Text>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
+                                    <span className="mono" style={{ fontSize: 11, color: '#334155', wordBreak: 'break-all' }}>
+                                        {data.pipeline?.graph_digest || data.pipeline?.plugin_digest || '—'}
+                                    </span>
+                                    {(data.pipeline?.graph_digest || data.pipeline?.plugin_digest) ? (
+                                        <Tooltip title="复制摘要">
+                                            <Button
+                                                size="small"
+                                                type="text"
+                                                icon={<CopyOutlined />}
+                                                onClick={() => {
+                                                    void navigator.clipboard.writeText(
+                                                        data.pipeline?.graph_digest || data.pipeline?.plugin_digest || ''
+                                                    );
+                                                    message.success('图摘要已复制');
+                                                }}
+                                            />
+                                        </Tooltip>
+                                    ) : null}
+                                </div>
+                            </Col>
+                            <Col xs={24} md={12}>
+                                <Text type="secondary" style={{ fontSize: 12 }}>保存时间</Text>
+                                <div style={{ fontSize: 12, marginTop: 2, color: '#475569' }}>
+                                    {data.pipeline?.created_at ? date(data.pipeline.created_at) : '—'}
+                                </div>
+                            </Col>
+                        </Row>
+                    </Card>
+
+                    <Tabs
+                        defaultActiveKey="modalities"
+                        items={[
+                            {
+                                key: 'modalities',
+                                label: (
+                                    <span>
+                                        <BranchesOutlined /> 模态插件与配置
+                                    </span>
+                                ),
+                                children: isOrchestrated ? (
+                                    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                                        <Card
+                                            size="small"
+                                            title={
+                                                <Space>
+                                                    <span style={{ fontWeight: 600 }}>OCR 快速文本识别</span>
+                                                    <Tag color="blue">必需快路径</Tag>
+                                                    <Tag>节点: {ocrNode?.id || 'ocr_fast'}</Tag>
+                                                </Space>
+                                            }
+                                        >
+                                            <Descriptions bordered size="small" column={{ xs: 1, sm: 2, md: 3 }}>
+                                                <Descriptions.Item label="算法插件">
+                                                    <span className="mono" style={{ fontSize: 12 }}>
+                                                        {ocrNode?.plugin_id || MULTIMODAL_PLUGIN_IDS.ocr} (v{ocrNode?.plugin_version || '0.1.1'})
+                                                    </span>
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="绑定配置">
+                                                    <Text strong>{ocrConfig?.name || '默认配置'}</Text>
+                                                    <span className="mono" style={{ fontSize: 11, color: '#64748b', display: 'block' }}>
+                                                        {ocrNode?.config_id || '—'}
+                                                    </span>
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="数据面模式">
+                                                    <Tag color="cyan">{ocrNode?.placement || 'data_plane_local'}</Tag>
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="识别模型 (model_id)">
+                                                    <Tag>{String(ocrConfig?.config?.model_id || 'PP-OCRv6_mobile')}</Tag>
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="置信度阈值 (text_score)">
+                                                    <Tag color="green">{String(ocrConfig?.config?.text_score ?? '0.5')}</Tag>
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="推理后端 (provider)">
+                                                    <Tag>{String(ocrConfig?.config?.provider || 'cpu')}</Tag>
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="调度超时上限">
+                                                    {ocrNode?.deadline_ms ? `${ocrNode.deadline_ms / 1000}s` : '120s'}
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="最大重试次数">
+                                                    {ocrNode?.max_attempts ?? 2} 次
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="输出事实">
+                                                    <span className="mono" style={{ fontSize: 11 }}>observation.ocr_blocks</span>
+                                                </Descriptions.Item>
+                                            </Descriptions>
+                                            {ocrConfig?.config ? (
+                                                <details style={{ marginTop: 8 }}>
+                                                    <summary style={{ cursor: 'pointer', color: '#1668dc', fontSize: 12 }}>
+                                                        查看完整配置参数 JSON
+                                                    </summary>
+                                                    <pre className="mono" style={{ background: '#f8fafc', padding: 8, borderRadius: 4, fontSize: 11, marginTop: 4, maxHeight: 150, overflow: 'auto' }}>
+                                                        {JSON.stringify(ocrConfig.config, null, 2)}
+                                                    </pre>
+                                                </details>
+                                            ) : null}
+                                        </Card>
+
+                                        <Card
+                                            size="small"
+                                            title={
+                                                <Space>
+                                                    <span style={{ fontWeight: 600 }}>ASR 语音转写对齐</span>
+                                                    <Tag color="blue">必需快路径</Tag>
+                                                    <Tag>节点: {asrNode?.id || 'asr_fast'}</Tag>
+                                                </Space>
+                                            }
+                                        >
+                                            <Descriptions bordered size="small" column={{ xs: 1, sm: 2, md: 3 }}>
+                                                <Descriptions.Item label="算法插件">
+                                                    <span className="mono" style={{ fontSize: 12 }}>
+                                                        {asrNode?.plugin_id || MULTIMODAL_PLUGIN_IDS.asr} (v{asrNode?.plugin_version || '0.1.1'})
+                                                    </span>
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="绑定配置">
+                                                    <Text strong>{asrConfig?.name || '默认配置'}</Text>
+                                                    <span className="mono" style={{ fontSize: 11, color: '#64748b', display: 'block' }}>
+                                                        {asrNode?.config_id || '—'}
+                                                    </span>
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="数据面模式">
+                                                    <Tag color="cyan">{asrNode?.placement || 'data_plane_local'}</Tag>
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="转写模型 (model)">
+                                                    <Tag>{String(asrConfig?.config?.model || 'whisper-large-v3-turbo')}</Tag>
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="任务类型 (task)">
+                                                    <Tag>{String(asrConfig?.config?.task || 'transcribe')}</Tag>
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="语言模式 (language)">
+                                                    <Tag>{String(asrConfig?.config?.language ?? '自动检测 (null)')}</Tag>
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="调度超时上限">
+                                                    {asrNode?.deadline_ms ? `${asrNode.deadline_ms / 1000}s` : '180s'}
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="最大重试次数">
+                                                    {asrNode?.max_attempts ?? 2} 次
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="输出事实">
+                                                    <span className="mono" style={{ fontSize: 11 }}>observation.asr_segment</span>
+                                                </Descriptions.Item>
+                                            </Descriptions>
+                                            {asrConfig?.config ? (
+                                                <details style={{ marginTop: 8 }}>
+                                                    <summary style={{ cursor: 'pointer', color: '#1668dc', fontSize: 12 }}>
+                                                        查看完整配置参数 JSON
+                                                    </summary>
+                                                    <pre className="mono" style={{ background: '#f8fafc', padding: 8, borderRadius: 4, fontSize: 11, marginTop: 4, maxHeight: 150, overflow: 'auto' }}>
+                                                        {JSON.stringify(asrConfig.config, null, 2)}
+                                                    </pre>
+                                                </details>
+                                            ) : null}
+                                        </Card>
+
+                                        <Card
+                                            size="small"
+                                            title={
+                                                <Space>
+                                                    <span style={{ fontWeight: 600 }}>VLM 画面场景理解</span>
+                                                    {vlmNode ? (
+                                                        <>
+                                                            <Tag color="purple">可选慢路径 · 异步解耦</Tag>
+                                                            <Tag>节点: vlm_enrich</Tag>
+                                                        </>
+                                                    ) : (
+                                                        <Tag>未启用慢路径</Tag>
+                                                    )}
+                                                </Space>
+                                            }
+                                        >
+                                            {vlmNode ? (
+                                                <>
+                                                    <Notice>
+                                                        慢路径采用独立 JetStream WorkQueue 异步延迟满足：快路径完成后立即标记 ready_for_review，
+                                                        不阻塞用户检索文字与原片回看；宿主机工作器根据时间锚点按需解码单帧图像。
+                                                    </Notice>
+                                                    <Descriptions bordered size="small" column={{ xs: 1, sm: 2, md: 3 }} style={{ marginTop: 8 }}>
+                                                        <Descriptions.Item label="算法插件">
+                                                            <span className="mono" style={{ fontSize: 12 }}>
+                                                                {vlmNode.plugin_id || MULTIMODAL_PLUGIN_IDS.vlm} (v{vlmNode.plugin_version || '0.1.3'})
+                                                            </span>
+                                                        </Descriptions.Item>
+                                                        <Descriptions.Item label="绑定配置">
+                                                            <Text strong>{vlmConfig?.name || '默认配置'}</Text>
+                                                            <span className="mono" style={{ fontSize: 11, color: '#64748b', display: 'block' }}>
+                                                                {vlmNode.config_id || '—'}
+                                                            </span>
+                                                        </Descriptions.Item>
+                                                        <Descriptions.Item label="消费通道">
+                                                            <Tag color="volcano">sensoryplex.tasks.vlm.v1</Tag>
+                                                        </Descriptions.Item>
+                                                        <Descriptions.Item label="场景模型 (model)">
+                                                            <Tag>{String(vlmConfig?.config?.model || 'moondream:v2')}</Tag>
+                                                        </Descriptions.Item>
+                                                        <Descriptions.Item label="防 OOM 内存门限">
+                                                            <Tag color="orange">
+                                                                {vlmConfig?.config?.min_free_memory_bytes
+                                                                    ? `${Math.round(Number(vlmConfig.config.min_free_memory_bytes) / 1024 / 1024)} MiB`
+                                                                    : '256 MiB'}
+                                                            </Tag>
+                                                        </Descriptions.Item>
+                                                        <Descriptions.Item label="端点 (endpoint)">
+                                                            <span className="mono" style={{ fontSize: 11 }}>
+                                                                {String(vlmConfig?.config?.endpoint || 'http://127.0.0.1:11434')}
+                                                            </span>
+                                                        </Descriptions.Item>
+                                                        <Descriptions.Item label="场景提示词 (prompt)" span={3}>
+                                                            <Text code style={{ fontSize: 12 }}>
+                                                                {String(vlmConfig?.config?.prompt || 'Describe what is visible in this image in one sentence.')}
+                                                            </Text>
+                                                        </Descriptions.Item>
+                                                    </Descriptions>
+                                                    {vlmConfig?.config ? (
+                                                        <details style={{ marginTop: 8 }}>
+                                                            <summary style={{ cursor: 'pointer', color: '#1668dc', fontSize: 12 }}>
+                                                                查看完整配置参数 JSON
+                                                            </summary>
+                                                            <pre className="mono" style={{ background: '#f8fafc', padding: 8, borderRadius: 4, fontSize: 11, marginTop: 4, maxHeight: 150, overflow: 'auto' }}>
+                                                                {JSON.stringify(vlmConfig.config, null, 2)}
+                                                            </pre>
+                                                        </details>
+                                                    ) : null}
+                                                </>
+                                            ) : (
+                                                <div style={{ padding: '12px 0', color: '#64748b', fontSize: 13 }}>
+                                                    当前方案未启用 VLM 场景描述插件。任务执行时仅运行 OCR 与 ASR 同步快路径，不会向异步慢路径队列分派任务。
+                                                </div>
+                                            )}
+                                        </Card>
+                                    </Space>
+                                ) : (
+                                    <Card size="small" title="单模态兼容插件配置">
+                                        <Descriptions bordered size="small" column={2}>
+                                            <Descriptions.Item label="算法插件">
+                                                <span className="mono">{data.pipeline?.plugin_id}</span>
+                                            </Descriptions.Item>
+                                            <Descriptions.Item label="插件摘要">
+                                                <span className="mono" style={{ fontSize: 11 }}>{data.pipeline?.plugin_digest}</span>
+                                            </Descriptions.Item>
+                                            <Descriptions.Item label="绑定配置 ID">
+                                                <span className="mono">{data.pipeline?.config_id}</span>
+                                            </Descriptions.Item>
+                                            <Descriptions.Item label="配置名称">
+                                                {legacyConfig?.name || '—'}
+                                            </Descriptions.Item>
+                                        </Descriptions>
+                                        {legacyConfig?.config ? (
+                                            <pre className="mono" style={{ background: '#f8fafc', padding: 8, borderRadius: 4, fontSize: 11, marginTop: 10 }}>
+                                                {JSON.stringify(legacyConfig.config, null, 2)}
+                                            </pre>
+                                        ) : null}
+                                    </Card>
+                                ),
+                            },
+                            {
+                                key: 'timeline',
+                                label: (
+                                    <span>
+                                        <ClockCircleOutlined /> 时序策略与拓扑
+                                    </span>
+                                ),
+                                children: (
+                                    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                                        <Card size="small" title="时序切片与事实网格策略 (Timeline Fusion Policy)">
+                                            <Descriptions bordered size="small" column={{ xs: 1, sm: 2, md: 3 }}>
+                                                <Descriptions.Item label="事实基准窗口 (window_ms)">
+                                                    <Tag color="blue">{policy.window_ms ?? 1000} ms (固定 1 秒网格)</Tag>
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="视频抽帧间隔 (sample_interval_ms)">
+                                                    <Tag>{policy.sample_interval_ms ?? 1000} ms</Tag>
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="音频分段长度 (audio_segment_ms)">
+                                                    <Tag>{policy.audio_segment_ms ?? 6000} ms (6 秒)</Tag>
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="音频滑动重叠 (audio_overlap_ms)">
+                                                    <Tag>{policy.audio_overlap_ms ?? 500} ms</Tag>
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="VLM 采样间隔 (vlm_sample_interval_ms)">
+                                                    <Tag color="purple">{policy.vlm_sample_interval_ms ? `${policy.vlm_sample_interval_ms} ms` : '—'}</Tag>
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="时序融合算子">
+                                                    <span className="mono" style={{ fontSize: 11 }}>org.sensoryplex.runtime.timeline-fusion</span>
+                                                </Descriptions.Item>
+                                            </Descriptions>
+                                        </Card>
+
+                                        <Card size="small" title={`DAG 模态数据流拓扑边（${edges.length} 条）`} bodyStyle={{ padding: 0 }}>
+                                            <Table
+                                                size="small"
+                                                rowKey={(edge) => `${edge.from_node_id}->${edge.to_node_id}:${edge.modality}`}
+                                                pagination={false}
+                                                dataSource={edges}
+                                                columns={[
+                                                    {
+                                                        title: '来源节点',
+                                                        dataIndex: 'from_node_id',
+                                                        key: 'from_node_id',
+                                                        render: (node: string) => <Tag color="blue">{node}</Tag>,
+                                                    },
+                                                    {
+                                                        title: '流动模态 (Modality)',
+                                                        dataIndex: 'modality',
+                                                        key: 'modality',
+                                                        render: (m: string) => <span className="mono" style={{ fontSize: 12 }}>{m}</span>,
+                                                    },
+                                                    {
+                                                        title: '汇聚节点',
+                                                        dataIndex: 'to_node_id',
+                                                        key: 'to_node_id',
+                                                        render: (node: string) => <Tag color="green">{node}</Tag>,
+                                                    },
+                                                    {
+                                                        title: '对齐策略 (Join Policy)',
+                                                        dataIndex: 'join_policy',
+                                                        key: 'join_policy',
+                                                        render: (p: string) => <Tag>{p}</Tag>,
+                                                    },
+                                                    {
+                                                        title: '约束要求',
+                                                        dataIndex: 'required',
+                                                        key: 'required',
+                                                        width: 90,
+                                                        render: (req: boolean) => (
+                                                            <Tag color={req ? 'blue' : 'default'}>{req ? '必需' : '可选'}</Tag>
+                                                        ),
+                                                    },
+                                                ]}
+                                            />
+                                        </Card>
+                                    </Space>
+                                ),
+                            },
+                            {
+                                key: 'raw',
+                                label: (
+                                    <span>
+                                        <FileTextOutlined /> 原始编排定义 (JSON)
+                                    </span>
+                                ),
+                                children: (
+                                    <Card
+                                        size="small"
+                                        title="不可变 Revision 图定义 (definition_json)"
+                                        extra={
+                                            <Button
+                                                size="small"
+                                                type="text"
+                                                icon={<CopyOutlined />}
+                                                onClick={() => {
+                                                    void navigator.clipboard.writeText(JSON.stringify(rev || {}, null, 2));
+                                                    message.success('编排定义 JSON 已复制');
+                                                }}
+                                            >
+                                                复制 JSON
+                                            </Button>
+                                        }
+                                    >
+                                        <pre
+                                            className="mono"
+                                            style={{
+                                                background: '#0f172a',
+                                                color: '#e2e8f0',
+                                                padding: 12,
+                                                borderRadius: 6,
+                                                fontSize: 12,
+                                                lineHeight: 1.5,
+                                                maxHeight: 400,
+                                                overflow: 'auto',
+                                                margin: 0,
+                                            }}
+                                        >
+                                            {JSON.stringify(rev || {}, null, 2)}
+                                        </pre>
+                                    </Card>
+                                ),
+                            },
+                        ]}
+                    />
+                </Space>
+            ) : null}
+        </Modal>
+    );
+}
+
 export function Pipelines() {
     const cache = useQueryClient();
     const [offset, setOffset] = useState(0);
     const [open, setOpen] = useState(false);
     const [form] = Form.useForm();
     const [validation, setValidation] = useState<MultimodalValidation | null>(null);
+    const [selectedPipeline, setSelectedPipeline] = useState<Pipeline | null>(null);
 
     const listing = useQuery({
         queryKey: ['pipelines', offset],
@@ -223,9 +687,20 @@ export function Pipelines() {
                         <ApartmentOutlined />
                     </div>
                     <div>
-                        <Text strong style={{ fontSize: 13 }}>
+                        <Button
+                            type="link"
+                            style={{
+                                padding: 0,
+                                height: 'auto',
+                                fontSize: 13,
+                                fontWeight: 600,
+                                color: '#0f172a',
+                                textAlign: 'left',
+                            }}
+                            onClick={() => setSelectedPipeline(row)}
+                        >
                             {name}
-                        </Text>
+                        </Button>
                         <div style={{ fontSize: 12, color: '#64748b' }}>
                             {row.description || `插件: ${row.plugin_id}`}
                         </div>
@@ -281,6 +756,15 @@ export function Pipelines() {
             align: 'right' as const,
             render: (_: unknown, row: (typeof items)[0]) => (
                 <Space size={8}>
+                    <Button
+                        size="small"
+                        type="link"
+                        icon={<EyeOutlined />}
+                        onClick={() => setSelectedPipeline(row)}
+                        style={{ padding: 0 }}
+                    >
+                        详情
+                    </Button>
                     {row.state === 'draft' ? (
                         <>
                             <Popconfirm
@@ -383,6 +867,13 @@ export function Pipelines() {
                     </Empty>
                 ) : null}
             </Card>
+
+            {selectedPipeline ? (
+                <PipelineDetailModal
+                    pipeline={selectedPipeline}
+                    onClose={() => setSelectedPipeline(null)}
+                />
+            ) : null}
 
             {open ? (
                 <Modal title="新建多模态处理方案" onClose={() => setOpen(false)} width={680}>
