@@ -72,3 +72,15 @@ Rust 运行时、Python AI SDK 与四个端侧模型插件、只追加的 Postgr
 | 确认到底真实验证了什么 | [能力实现状态](/zh/reference/status) |
 | 判断能不能部署 | [部署](/zh/operations/deployment) |
 | 参与社区共建与贡献维护 | [贡献指南与社区治理](/zh/project/contributing) |
+
+
+---
+
+## 社区交流与支持
+
+欢迎加入 SensoryPlex 开发者社区！如有问题咨询、端侧算力芯片适配或开源共建意向，欢迎扫描下方二维码添加作者个人微信：
+
+<div style="text-align: center; margin: 24px 0;">
+  <img src="/wechat-qrcode.jpg" alt="作者微信二维码" style="width: 200px; display: inline-block; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.08);" />
+  <p style="margin-top: 8px; font-size: 13px; color: var(--vp-c-text-2);">扫码添加作者微信（备注：SensoryPlex）</p>
+</div>

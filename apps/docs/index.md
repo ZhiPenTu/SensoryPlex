@@ -75,3 +75,15 @@ one.
 | Know what is actually verified | [Capability status](/reference/status) |
 | Decide whether to deploy it | [Deployment](/operations/deployment) |
 | Join community & contribute | [Contributing & Governance](/project/contributing) |
+
+
+---
+
+## Community & Connect
+
+Join the SensoryPlex developer community! For questions, edge hardware adaptation inquiries, or open source collaboration, feel free to connect via WeChat:
+
+<div style="text-align: center; margin: 24px 0;">
+  <img src="/wechat-qrcode.jpg" alt="Author WeChat QR Code" style="width: 200px; display: inline-block; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.08);" />
+  <p style="margin-top: 8px; font-size: 13px; color: var(--vp-c-text-2);">Scan on WeChat (Note: SensoryPlex)</p>
+</div>

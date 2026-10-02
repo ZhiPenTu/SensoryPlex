@@ -133,6 +133,20 @@ GitHub Actions 按设计**仅手动触发**：工作流不会在每次 push 或 
 
 ---
 
+## 社区交流与支持 (Community & Support)
+
+- **GitHub Discussions**：讨论新特性、端侧芯片适配与技术头脑风暴；
+- **GitHub Issues**：报告 Bug、跟踪功能请求与 RFC 提案；
+- **核心维护者联系邮箱**：`50646043@qq.com`（商务合作、安全报告与核心社区治理）；
+- **微信开发者交流群**：欢迎扫描下方作者个人微信二维码，添加请备注「SensoryPlex」，邀您进入技术交流群共同交流与维护项目：
+
+<div style="text-align: center; margin: 24px 0;">
+  <img src="/wechat-qrcode.jpg" alt="项目作者个人微信二维码" style="width: 200px; display: inline-block; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.08);" />
+  <p style="margin-top: 8px; font-size: 13px; color: var(--vp-c-text-2);">扫码添加微信（备注：SensoryPlex）</p>
+</div>
+
+---
+
 ## 参与本文档站 (apps/docs)
 
 文档站使用 VitePress 构建，支持中英双语言，源码位于 `apps/docs`：

@@ -170,6 +170,12 @@ SensoryPlex 诚邀社区伙伴在以下方向共同发力（您可以直接认�
 
 - **GitHub Discussions**：讨论新想法、技术答疑与社区头脑风暴；
 - **GitHub Issues**：报告 Bug、跟踪功能请求与 RFC 提案；
-- **核心维护者联系邮箱**：`50646043@qq.com`（商务合作、安全报告与核心社区治理）。
+- **核心维护者联系邮箱**：`50646043@qq.com`（商务合作、安全报告与核心社区治理）；
+- **微信开发者交流群**：欢迎扫描下方作者个人微信二维码（添加请备注「SensoryPlex」），加入开发者群交流：
+
+<div align="center">
+  <img src="docs/images/wechat-qrcode.jpg" width="200" alt="项目作者微信二维码" />
+  <p><sub>扫码添加微信（备注：SensoryPlex）</sub></p>
+</div>
 
 再次感谢您对 SensoryPlex 的关注与支持！让我们携手打造最极致、最可靠的端侧多模态基础设施！

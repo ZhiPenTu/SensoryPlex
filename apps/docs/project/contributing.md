@@ -134,6 +134,20 @@ The documentation site follows the same rule: `docs-pages.yml` publishes `apps/d
 
 ---
 
+## Community & Support
+
+- **GitHub Discussions**: Discuss new ideas, edge hardware adaptations, and Q&A.
+- **GitHub Issues**: Report bugs, track feature requests, and submit RFCs.
+- **Maintainer Email**: `50646043@qq.com`.
+- **WeChat Developer Community**: Scan the QR code below to connect with the author (please note "SensoryPlex") to join the group:
+
+<div style="text-align: center; margin: 24px 0;">
+  <img src="/wechat-qrcode.jpg" alt="Author WeChat QR Code" style="width: 200px; display: inline-block; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.08);" />
+  <p style="margin-top: 8px; font-size: 13px; color: var(--vp-c-text-2);">Scan on WeChat (Note: SensoryPlex)</p>
+</div>
+
+---
+
 ## Contributing to Documentation (apps/docs)
 
 The documentation site is built with VitePress and supports English and Simplified Chinese, located in `apps/docs`:

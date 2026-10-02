@@ -310,9 +310,15 @@ tools/                  配置、代码生成、迁移、测试与真实媒体�
 
 ## 社区交流与支持 (Community & Support)
 
-- **Issues & RFCs**: 提交 Bug 报告、新特性建议与架构 RFC 提案至 [GitHub Issues](https://github.com/ZhiPenTu/SensoryPlex/issues)；
-- **Discussions**: 参与技术讨论与新硬件适配交流至 [GitHub Discussions](https://github.com/ZhiPenTu/SensoryPlex/discussions)；
-- **核心维护与安全**: 发送邮件至 `50646043@qq.com`（安全漏洞通报、商业合作与核心治理）。
+- **Issues & RFCs**: 提交 Bug 报告、新特性建议与架构 RFC 提案至 [GitHub Issues](https://github.com/jaytu211/SensoryPlex/issues)；
+- **Discussions**: 参与技术讨论与新硬件适配交流至 [GitHub Discussions](https://github.com/jaytu211/SensoryPlex/discussions)；
+- **核心维护与安全**: 发送邮件至 `50646043@qq.com`（安全漏洞通报、商业合作与核心治理）；
+- **微信交流 (WeChat)**：欢迎扫码添加项目作者个人微信，备注「SensoryPlex」，加入开发者交流群：
+
+<div align="center">
+  <img src="docs/images/wechat-qrcode.jpg" width="220" alt="项目作者个人微信二维码" />
+  <p><sub>扫码添加微信（备注：SensoryPlex）</sub></p>
+</div>
 
 ## 许可证 (License)
 
