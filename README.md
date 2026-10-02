@@ -1,5 +1,13 @@
 # SensoryPlex
 
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License"></a>
+  <a href="https://jaytu211.github.io/SensoryPlex/"><img src="https://img.shields.io/badge/Docs-VitePress-green.svg" alt="Documentation"></a>
+  <a href="CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome"></a>
+  <a href="CODE_OF_CONDUCT.md"><img src="https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg" alt="Code of Conduct"></a>
+  <a href="https://github.com/ZhiPenTu/SensoryPlex/issues"><img src="https://img.shields.io/badge/Community-Open%20Governance-orange.svg" alt="Community"></a>
+</p>
+
 端侧 AI 多模态素材预处理框架。按现有 ADR 建立 **Rust Core + Python AI SDK +
 Protobuf/gRPC + FastAPI** 工程，为 SRT/文件接入、感知、时间轴融合和可溯源检索提供基础。
 
@@ -34,6 +42,34 @@ SRT 实时接入（M4）同样可用：`ingest` 在有限窗口内拉流、解�
 （`mode=semantic` 不再是 501：常驻 `sensoryplex-index serve` 持有向量库，API 只转发查询并按
 `(material_unit_id, revision)` 水合事实），服务端 Milvus 拓扑在本机 Docker Hub 不可达的情况下
 未经验收。相关 API 明确报告能力不可用。
+
+## 🌟 开源社区共建与核心工程红线 (Community & Guidelines)
+
+> **致社区开发者**：SensoryPlex 是一个面向边缘异构硬件的高性能底层基础设施。我们宣布全面开源，并热忱欢迎音视频流处理（GStreamer/FFmpeg）、端侧 AI 加速（Metal/MLX/CUDA/NPU）、分布式事件流（NATS/PostgreSQL）及全栈前端领域的优秀工程师加入维护团队，共同推动项目的长期演进！
+
+### 1. 核心工程红线（所有贡献者必须严格遵守）
+为保证底层框架的严谨性与生产确定性，任何 PR 均须遵循以下**不可妥协的工程红线**（详见 [CONTRIBUTING.md](CONTRIBUTING.md)）：
+- **底座强制容器，子节点插件走原生**：核心控制面（api / gateway / console / postgres / nats / relay / index）的构建、迁移与验证**一律强制在 Docker 容器内执行**，消除开发环境漂移；端侧模型插件强依赖物理硬件加速（Metal/CoreML/CUDA/NPU），**允许宿主原生运行**。
+- **`proto/` 是唯一跨语言契约源**：所有跨进程/跨语言接口修改必须先改 Proto，并执行 `make proto` 提交生成代码；严禁手工篡改生成文件。
+- **不可变事实与单调递增追加**：已入库素材事实严禁原地更新；数据库迁移只允许单调递增追加并通过 `tools/migrate.py` 执行，禁止修改历史 revision。
+- **时间轴绝对基准（1秒连续切片）**：严格以同一流的 `[start_ms, end_ms)` 毫秒建立完整切片网格；模型未返回或无内容时只记录来源引用与待补充/无文字状态，**严禁虚构 Observation 或合成空秒素材**。
+- **诚实性与零静默降级**：未知状态（缺失置信度/未知 PTS/未探测加速器）必须显式标记并记录原因码；**严禁合成业务假数据，严禁用健康检查通过伪造端到端测试证据**。
+- **零明文数据面与零凭据泄露**：控制消息、日志、状态行及事件中**严禁传输原始帧、PCM 音频、Tensor 矩阵、密钥或宿主绝对私有路径**。
+- **严格有界性与可观测性**：所有队列、并发及窗口必须设置硬上限，超时与失败具备结构化错误码，严禁无界缓冲。
+
+### 2. 社区共建与成长梯队
+我们推行开放透明的维护者阶梯，优秀贡献者将共同主导项目治理：
+- **Contributor** ➡️ **Reviewer / Triager** ➡️ **Committer** ➡️ **Maintainer / PMC**
+- 详细晋升机制、职责与治理准则请参阅 [贡献指南 (CONTRIBUTING.md)](CONTRIBUTING.md)。
+
+### 3. 开源规范入口
+- 📘 **贡献指引与提交流程**：[CONTRIBUTING.md](CONTRIBUTING.md)
+- 🤝 **社区行为准则**：[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
+- 🛡️ **安全策略与漏洞披露**：[SECURITY.md](SECURITY.md)
+- 📜 **开源许可证**：[Apache License 2.0](LICENSE)
+- 🌐 **在线开源文档站**：[https://jaytu211.github.io/SensoryPlex/](https://jaytu211.github.io/SensoryPlex/)
+
+---
 
 ## 快速开始
 
@@ -270,3 +306,14 @@ tools/                  配置、代码生成、迁移、测试与真实媒体�
 跨服务消息必须先修改 Proto；模型结果必须携带时间锚点、来源、版本和置信度语义。
 控制总线不传媒体 bytes。未知、失败、冲突与降级保持可见，测试 fixture 不能替代
 真实视频/流与模型的端到端验收。
+
+
+## 社区交流与支持 (Community & Support)
+
+- **Issues & RFCs**: 提交 Bug 报告、新特性建议与架构 RFC 提案至 [GitHub Issues](https://github.com/ZhiPenTu/SensoryPlex/issues)；
+- **Discussions**: 参与技术讨论与新硬件适配交流至 [GitHub Discussions](https://github.com/ZhiPenTu/SensoryPlex/discussions)；
+- **核心维护与安全**: 发送邮件至 `50646043@qq.com`（安全漏洞通报、商业合作与核心治理）。
+
+## 许可证 (License)
+
+SensoryPlex 遵循 [Apache License 2.0](LICENSE) 开源协议。

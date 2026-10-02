@@ -71,3 +71,4 @@ Rust 运行时、Python AI SDK 与四个端侧模型插件、只追加的 Postgr
 | 写一个新的 OCR/ASR/VLM 插件 | [插件体系](/zh/plugins/overview) |
 | 确认到底真实验证了什么 | [能力实现状态](/zh/reference/status) |
 | 判断能不能部署 | [部署](/zh/operations/deployment) |
+| 参与社区共建与贡献维护 | [贡献指南与社区治理](/zh/project/contributing) |

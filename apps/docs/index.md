@@ -74,3 +74,4 @@ one.
 | Write a new OCR/ASR/VLM plugin | [Plugin system](/plugins/overview) |
 | Know what is actually verified | [Capability status](/reference/status) |
 | Decide whether to deploy it | [Deployment](/operations/deployment) |
+| Join community & contribute | [Contributing & Governance](/project/contributing) |

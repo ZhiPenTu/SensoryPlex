@@ -1,111 +1,157 @@
-# Contributing & translations
+# Contributing & Governance
 
-## Before you write code
+Welcome to the SensoryPlex open source community!
 
-Read, in this order: the two requirement documents in the repository root, `docs/implementation-status.md`,
-and the ADR that covers the area you are about to touch. A change that contradicts an ADR should either come
-with an ADR amendment or be reconsidered — the ADRs are load-bearing, not historical notes.
+SensoryPlex is a high-performance edge multimodal material preprocessing framework. It integrates low-level media decoding (Rust / GStreamer), edge hardware acceleration (Apple Silicon Metal/MLX, CoreML, CUDA, NPU), streaming event buses and vector retrieval (PostgreSQL, NATS JetStream, Milvus Lite), and a modern Web console.
 
-## Where code runs
+We believe that building an enterprise-grade, highly reliable, and heterogeneous edge infrastructure requires the collaboration of outstanding open source developers worldwide. We warmly invite contributors specializing in media streaming, edge AI optimization, distributed systems, and full-stack development to join us in maintaining and evolving SensoryPlex!
 
-| Layer | Rule |
-| --- | --- |
-| Control plane (`api`, `gateway`, `console`, `postgres`, `nats`, `relay`, `index`) | Build, lint, migrate and validate **inside containers** via `docker compose exec -T <service> ...` |
-| Host exceptions | `cargo`/Rust builds, `make configure`, `launchd`, model plugins, GStreamer and HF weights, MediaMTX, authorised media |
+---
 
-The point of the container rule is to remove "works on my machine but not in production" drift. Do not add a
-host dependency to a control-plane path, and do not add a container step to a path that needs a host
-accelerator.
+## Community Governance & Growth Ladder
 
-## Non-negotiable rules
+SensoryPlex embraces an **open, transparent, meritocratic, and evidence-driven** culture. We have established a clear contributor growth pathway:
 
-1. **`proto/` is the only cross-language contract source.** Change a contract, run `make proto`, commit the
-   regenerated artefacts. Never hand-edit generated code.
-2. **Field numbers are permanent.** Removal requires `reserved`; a semantic break needs a new protocol major.
-3. **Migrations are append-only**, applied explicitly through `tools/migrate.py`. Never edit a historical
-   revision to "roll back" — add a new migration.
-4. **No synthetic business data.** No fabricated model output, chart series or minute values. Empty results
-   are returned as empty.
-5. **Unknown stays unknown.** Missing confidence, unknown PTS, unprobeable accelerators and unknown capacities
-   are reported as unknown with a reason, never defaulted.
-6. **No raw media or secrets outside the data plane.** Not in control messages, not in events, not in logs.
-7. **Every queue and concurrency limit is bounded** and every failure has observable semantics.
-8. **Comment language:** hand-written Rust (`///`, `//!`, `//`) and Python (docstrings, `#`) comments are
-   written in Chinese by default; `proto/` files and generated code stay English. Inside Chinese prose, keep
-   API, protocol, container, library and ADR identifiers in their original English form.
-
-## Validation expectations
-
-Run the checks that cover what you touched, and be precise about what they prove:
-
-```sh
-make check                # lint + python tests + rust fmt/clippy/test
-make test-integration     # real PostgreSQL (and NATS where relevant)
-make orchestration-p1-check
-make event-pipeline-check
+```mermaid
+flowchart LR
+    A[Contributor] -->|Active contributions / High-quality PRs| B[Reviewer / Triager]
+    B -->|Module ownership / Consistent contributions| C[Committer]
+    C -->|Architecture governance / Releases| D[Maintainer / PMC]
 ```
 
-Media end-to-end work must use a real authorised sample. A skipped test, an unexecuted CI job or a healthy
-container never becomes evidence. If you cannot run a check, say so in the change description rather than
-leaving it implied.
+1. **Contributor**:
+   - Anyone who submits a valid Issue, documentation fix, bug fix, test case, or feature PR that gets merged.
+   - Acknowledged in the project Contributors hall of fame.
+2. **Reviewer / Triager**:
+   - Experienced with project architecture and engineering red lines; actively reviews community PRs, reproduces/triages GitHub Issues, and helps onboard new contributors.
+3. **Committer**:
+   - Demonstrates sustained and deep contributions in at least one core area (Rust crates, Python model processors, event pipeline, or console frontend).
+   - Granted Write/Triage repository permissions and leads code reviews and merges for owned modules.
+4. **Maintainer / PMC**:
+   - Possesses overall architectural vision and leads roadmap planning, RFC decisions, release management, security response, and community stewardship.
 
-## Continuous integration
+---
 
-GitHub Actions is **manual-only** by design: the workflows do not consume hosted runner minutes on every push
-or pull request. Daily gates run locally. When you do dispatch a run, the expensive macOS job only starts if
-`run_apple_silicon` is checked — and an unexecuted remote macOS job must never be described as passing.
+## Call for Contributions & Roadmap Highlights
 
-The published documentation site is produced by the same rule: `docs-pages.yml` publishes `apps/docs` to
-GitHub Pages only when dispatched, so the live site is as current as its last run rather than as current as
-`master`. Its build inputs and local reproduction command are on [Deployment](/operations/deployment).
+We invite community members to propose or lead implementations in these priority directions:
+- **Heterogeneous Hardware & Edge NPU Adapters**: Support for NVIDIA Jetson (TensorRT), Huawei Ascend (CANN), Rockchip (RK3588/RKNN), and Intel OpenVINO.
+- **Multimodal Perception Expansion**: Lightweight SOTA Vision-Language Models (InternVL, Qwen2-VL) and dedicated sensory plugins (Sound Event Detection, redaction).
+- **Streaming Protocols & Codecs**: WebRTC and RTSP low-latency ingestion, AV1/H.265 hardware decoding, and dynamic frame extraction.
+- **Production Topology & Hardening**: Automated mTLS certificate issuance/rotation across nodes and control-plane high availability (HA).
+- **Web Console & User Experience**: High-performance rendering of extensive video timelines (virtualization, canvas tracks) and human-in-the-loop correction flows.
 
-## Contributing to this documentation
+---
 
-The site lives in `apps/docs` and is built with VitePress. Structure:
+## Before You Write Code: Architecture & Execution Rules
+
+Before writing code, please read in order:
+1. The requirement documents in the repository root;
+2. `docs/implementation-status.md` (to understand what is verified vs. unverified);
+3. The ADRs covering the specific areas you intend to modify.
+
+Any change contradicting an ADR must be accompanied by an ADR amendment or RFC proposal. ADRs are load-bearing architectural decisions, not historical notes.
+
+### Where Code Runs (Container Base vs. Host Native)
+
+| Layer | Rule & Location | Core Rationale |
+| --- | --- | --- |
+| **Control Plane Base** (`api`, `gateway`, `console`, `postgres`, `nats`, `relay`, `index`) | Build, lint, migrate, and validate **inside containers** via `docker compose exec -T <service> ...` | Eliminates "works on my machine but breaks in production" drift. Host environments should not install or call control-plane Python/Node tools. |
+| **Sub-node Plugins & Workers** (`ocr-rapidocr`, `vlm-moondream`, `asr-whisper-mlx`, `task_worker.py`) | **Permitted to run host-native** | Deeply dependent on host physical hardware accelerators (Apple Silicon Metal/MLX, CoreML, CUDA, NPU). Lightweight Linux containers cannot mount or compile native drivers. |
+| **Host System Exceptions** | `cargo` / Rust builds, `make configure` (credential generation), macOS LaunchAgent daemon management | Container images currently omit Rust toolchains; macOS `launchd` resident commands exist only on the host system. |
+
+---
+
+## Non-negotiable Engineering Red Lines
+
+The following 13 core engineering principles guarantee system reliability, immutability, and determinism. All PRs are strictly audited against them:
+
+1. **`proto/` is the single cross-language contract source.** Never hand-edit generated code. Modify Proto files first, run `make proto`, and commit regenerated outputs.
+2. **Field numbers are permanent.** Removed fields must be marked `reserved`; breaking changes require a new protocol major version.
+3. **Migrations are strictly append-only.** Database schema changes must be monotonically incremental migrations executed via `tools/migrate.py`. Never modify historical revisions.
+4. **No synthetic business data.** Never fabricate model outputs, chart series, or synthetic test passes. Missing results must return empty with explicit reasons.
+5. **Unknown stays unknown.** Missing confidence, unknown PTS, or unprobeable accelerators must be reported as unknown with reason codes, never defaulted.
+6. **No raw media or secrets outside the data plane.** Raw frames, PCM audio, tensors, credentials, and host private absolute paths must never enter control messages, events, or logs.
+7. **Every queue and concurrency limit is bounded.** Concurrency and buffer queues must be constrained by tier caps. Timeouts and errors must carry observable structured semantics.
+8. **Real evidence principle.** Media end-to-end paths must be validated with real authorized samples (`tests/fixtures/media/OPEN-SAMPLES.md`). Skipped tests, unexecuted CI jobs, or healthy containers do not constitute proof.
+9. **Deterministic orchestration & cancellation first (ADR-029).** Upstream success cascades unlock downstream tasks; upstream failure blocks downstream tasks. Cancelled jobs discard late arrivals safely.
+10. **Hot-deploy blue-green isolation (ADR-030).** Native plugin deployment uses dual-slot isolated processes. New versions require 3 consecutive healthy probes before atomic cutover. Installation is 100% offline.
+11. **Slow path asynchronous decoupling (ADR-031).** Compute-heavy models (VLM) run via NATS WorkQueue. Fast paths (OCR/ASR) advance to `ready_for_review` immediately without blocking user inspection.
+12. **Absolute timeline grid (1-second slices).** The timeline establishes an immutable 1-second slice grid across `[start_ms, end_ms)`. Never synthesize fake observations or empty-second entries.
+13. **Bilingual comment convention.** Hand-written Rust and Python comments default to Chinese; Proto contracts and generated code remain English; technical terms (GStreamer, gRPC, NATS, ADR) retain their English names.
+
+---
+
+## Local Verification Expectations
+
+Run the checks covering your scope locally before submitting a PR, and paste the command outputs in the PR description:
+
+```sh
+# Static checks and contract tests (in container)
+make lint-ruff
+make proto
+make test-contracts
+
+# Integration and pipeline checks (in container)
+make test-integration
+make orchestration-p1-check
+make event-pipeline-check
+
+# Full repository gate (including Rust formatting and tests)
+make check
+```
+
+---
+
+## Contribution Workflow
+
+1. **Fork the repository** and create a feature branch off latest `master` (e.g., `feat/whisper-large-v3`);
+2. **Format commit messages**: Follow Conventional Commits (`feat:`, `fix:`, `docs:`, `refactor:`, `test:`);
+3. **Submit a Pull Request**:
+   - Complete `.github/pull_request_template.md`;
+   - Check off each item in the Engineering Red Lines Checklist;
+   - Attach actual terminal verification evidence (`make check` output);
+4. **Code Review**: At least one approval from a Committer or Maintainer is required for merge.
+
+---
+
+## RFC Process (Architectural Decisions)
+
+For major architectural proposals (breaking Proto upgrades, heavy external dependencies, or new deployment topologies):
+1. Copy `.github/ISSUE_TEMPLATE/rfc_template.md`;
+2. Open an issue on GitHub with title `[RFC] <Proposal Title>`;
+3. Drive community review and build consensus;
+4. Archive approved design decisions into ADR documentation before implementation.
+
+---
+
+## Continuous Integration Policy
+
+GitHub Actions workflows are **manual-only** by design to conserve hosted runner resources. Daily quality gates run locally.
+Expensive macOS runner jobs execute only when `run_apple_silicon` is explicitly checked on manual dispatch. Unexecuted remote macOS jobs must never be claimed as passed.
+
+The documentation site follows the same rule: `docs-pages.yml` publishes `apps/docs` to GitHub Pages only upon manual trigger.
+
+---
+
+## Contributing to Documentation (apps/docs)
+
+The documentation site is built with VitePress and supports English and Simplified Chinese, located in `apps/docs`:
 
 ```text
 apps/docs/
 ├── .vitepress/config.mts     # locales, nav, sidebars, edit links
-├── public/                   # favicon.svg / logo.svg, copied verbatim into the artifact
-├── scripts/check-docs.mjs    # locale parity + built-link validation (no dependencies)
+├── public/                   # favicon.svg / logo.svg, copied verbatim into artifacts
+├── scripts/check-docs.mjs    # locale parity + built-link validation (zero dependencies)
 ├── <page>.md                 # English pages (served at /)
 └── zh/<page>.md              # Chinese pages (served at /zh/)
 ```
 
-Site assets live in `public/`, **not** `.vitepress/public/`: VitePress resolves its public directory as
-`srcDir/public`. A file placed in the wrong one is silently absent from the artifact, which is why
-`make docs-check` validates every built link and asset.
+Assets reside in `public/`, **not** `.vitepress/public/`.
 
-### Adding or editing a page
+### Adding or Editing Pages
 
-1. Create the page in the English tree (`apps/docs/<section>/<slug>.md`).
-2. Create the matching Chinese page at the same path under `zh/` — **both locales must have the page**, and
-   VitePress does not fall back across languages, so a missing file is a 404 rather than untranslated text.
-3. Add the entry to **both** sidebars in `.vitepress/config.mts` (`EN_SIDEBAR` and `ZH_SIDEBAR`) with the same
-   path shape (`/section/slug` and `/zh/section/slug`).
-4. Run `make docs-check` — it builds the site and validates internal links and assets. Run
-   `make docs-install` once first if the container has no `node_modules` yet; it is the only docs target
-   that needs the npm registry, and every other target fails with an explicit message if it was skipped.
-
-To read the site while you write, run `make docs-dev` (VitePress dev server with hot reload on
-`http://127.0.0.1:5175`); the served site at `http://127.0.0.1:5174` is the built artifact.
-
-### Adding a new language
-
-1. Create the locale directory (for example `ja/`) and mirror the page tree.
-2. Add a `locales.<code>` entry in `.vitepress/config.mts` with `label`, `lang`, `title`, `description`, its
-   own `nav`, its own `sidebar`, and an `editLink.pattern` prefixed with the locale directory
-   (`apps/docs/ja/:path`).
-3. Keep the navigation structure identical across locales so that a reader can switch language on any page
-   and stay on the same topic.
-4. **Status claims must be re-stated, not re-translated.** The three labels (verified / unverified / not
-   implemented) and the evidence commands must survive translation exactly. Do not soften "unverified" into
-   something more optimistic, and do not add a capability claim that the English page does not make.
-5. Keep commands, file paths, identifiers and error codes verbatim; translate only the prose around them.
-
-### Documentation style
-
-- Lead with what a reader can do, then state the boundary.
-- Every capability statement should be accompanied by its evidence command or an explicit "not verified".
-- Prefer a runnable command over a description of a command.
-- Link to the ADR or the source file rather than paraphrasing a contract in a way that can drift.
+1. Create or edit pages in the English tree (`apps/docs/<section>/<slug>.md`).
+2. Mirror edits in the Chinese tree (`apps/docs/zh/<section>/<slug>.md`) — **both locales must contain the page**.
+3. Update both sidebar configs in `.vitepress/config.mts` (`EN_SIDEBAR` and `ZH_SIDEBAR`).
+4. Run `make docs-check` to validate internal links, assets, and language symmetry.

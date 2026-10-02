@@ -75,8 +75,8 @@ const EN_SIDEBAR = [
     ]
   },
   {
-    text: 'Project',
-    items: [{ text: 'Contributing & translations', link: '/project/contributing' }]
+    text: 'Project & Community',
+    items: [{ text: 'Contributing & Governance', link: '/project/contributing' }]
   }
 ]
 
@@ -134,8 +134,8 @@ const ZH_SIDEBAR = [
     ]
   },
   {
-    text: '项目',
-    items: [{ text: '贡献与翻译', link: '/zh/project/contributing' }]
+    text: '项目与社区',
+    items: [{ text: '贡献指南与社区治理', link: '/zh/project/contributing' }]
   }
 ]
 
