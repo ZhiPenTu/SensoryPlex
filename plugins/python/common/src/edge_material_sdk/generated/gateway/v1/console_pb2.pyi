@@ -1,4 +1,5 @@
 from google.protobuf import struct_pb2 as _struct_pb2
+from edge_material_sdk.generated.runtime.v1 import runtime_pb2 as _runtime_pb2
 from google.protobuf.internal import containers as _containers
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import message as _message
@@ -107,7 +108,7 @@ class UploadList(_message.Message):
     def __init__(self, items: _Optional[_Iterable[_Union[Upload, _Mapping]]] = ..., total: _Optional[int] = ...) -> None: ...
 
 class PluginEntry(_message.Message):
-    __slots__ = ("id", "name", "version", "description", "digest", "trust", "state", "consumes", "produces", "config_schema", "reason")
+    __slots__ = ("id", "name", "version", "description", "digest", "trust", "state", "consumes", "produces", "config_schema", "reason", "release_id", "manifest_version", "form", "accepts_memory_kinds", "resources", "input_contracts", "output_contracts", "execution_modes", "output_text_fields")
     ID_FIELD_NUMBER: _ClassVar[int]
     NAME_FIELD_NUMBER: _ClassVar[int]
     VERSION_FIELD_NUMBER: _ClassVar[int]
@@ -119,6 +120,15 @@ class PluginEntry(_message.Message):
     PRODUCES_FIELD_NUMBER: _ClassVar[int]
     CONFIG_SCHEMA_FIELD_NUMBER: _ClassVar[int]
     REASON_FIELD_NUMBER: _ClassVar[int]
+    RELEASE_ID_FIELD_NUMBER: _ClassVar[int]
+    MANIFEST_VERSION_FIELD_NUMBER: _ClassVar[int]
+    FORM_FIELD_NUMBER: _ClassVar[int]
+    ACCEPTS_MEMORY_KINDS_FIELD_NUMBER: _ClassVar[int]
+    RESOURCES_FIELD_NUMBER: _ClassVar[int]
+    INPUT_CONTRACTS_FIELD_NUMBER: _ClassVar[int]
+    OUTPUT_CONTRACTS_FIELD_NUMBER: _ClassVar[int]
+    EXECUTION_MODES_FIELD_NUMBER: _ClassVar[int]
+    OUTPUT_TEXT_FIELDS_FIELD_NUMBER: _ClassVar[int]
     id: str
     name: str
     version: str
@@ -130,7 +140,34 @@ class PluginEntry(_message.Message):
     produces: _containers.RepeatedScalarFieldContainer[str]
     config_schema: _struct_pb2.Struct
     reason: str
-    def __init__(self, id: _Optional[str] = ..., name: _Optional[str] = ..., version: _Optional[str] = ..., description: _Optional[str] = ..., digest: _Optional[str] = ..., trust: _Optional[str] = ..., state: _Optional[str] = ..., consumes: _Optional[_Iterable[str]] = ..., produces: _Optional[_Iterable[str]] = ..., config_schema: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ..., reason: _Optional[str] = ...) -> None: ...
+    release_id: str
+    manifest_version: str
+    form: str
+    accepts_memory_kinds: _containers.RepeatedScalarFieldContainer[str]
+    resources: _struct_pb2.Struct
+    input_contracts: _containers.RepeatedCompositeFieldContainer[_runtime_pb2.PayloadContract]
+    output_contracts: _containers.RepeatedCompositeFieldContainer[_runtime_pb2.PayloadContract]
+    execution_modes: _containers.RepeatedScalarFieldContainer[str]
+    output_text_fields: _struct_pb2.Struct
+    def __init__(self, id: _Optional[str] = ..., name: _Optional[str] = ..., version: _Optional[str] = ..., description: _Optional[str] = ..., digest: _Optional[str] = ..., trust: _Optional[str] = ..., state: _Optional[str] = ..., consumes: _Optional[_Iterable[str]] = ..., produces: _Optional[_Iterable[str]] = ..., config_schema: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ..., reason: _Optional[str] = ..., release_id: _Optional[str] = ..., manifest_version: _Optional[str] = ..., form: _Optional[str] = ..., accepts_memory_kinds: _Optional[_Iterable[str]] = ..., resources: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ..., input_contracts: _Optional[_Iterable[_Union[_runtime_pb2.PayloadContract, _Mapping]]] = ..., output_contracts: _Optional[_Iterable[_Union[_runtime_pb2.PayloadContract, _Mapping]]] = ..., execution_modes: _Optional[_Iterable[str]] = ..., output_text_fields: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ...) -> None: ...
+
+class ObservationIndexStatus(_message.Message):
+    __slots__ = ("observation_id", "state", "reason_code", "text_fields")
+    OBSERVATION_ID_FIELD_NUMBER: _ClassVar[int]
+    STATE_FIELD_NUMBER: _ClassVar[int]
+    REASON_CODE_FIELD_NUMBER: _ClassVar[int]
+    TEXT_FIELDS_FIELD_NUMBER: _ClassVar[int]
+    observation_id: str
+    state: str
+    reason_code: str
+    text_fields: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, observation_id: _Optional[str] = ..., state: _Optional[str] = ..., reason_code: _Optional[str] = ..., text_fields: _Optional[_Iterable[str]] = ...) -> None: ...
+
+class MaterialIndexStatus(_message.Message):
+    __slots__ = ("items",)
+    ITEMS_FIELD_NUMBER: _ClassVar[int]
+    items: _containers.RepeatedCompositeFieldContainer[ObservationIndexStatus]
+    def __init__(self, items: _Optional[_Iterable[_Union[ObservationIndexStatus, _Mapping]]] = ...) -> None: ...
 
 class PluginList(_message.Message):
     __slots__ = ("items",)
@@ -139,14 +176,16 @@ class PluginList(_message.Message):
     def __init__(self, items: _Optional[_Iterable[_Union[PluginEntry, _Mapping]]] = ...) -> None: ...
 
 class SavePluginConfig(_message.Message):
-    __slots__ = ("plugin_id", "name", "config")
+    __slots__ = ("plugin_id", "name", "config", "release_id")
     PLUGIN_ID_FIELD_NUMBER: _ClassVar[int]
     NAME_FIELD_NUMBER: _ClassVar[int]
     CONFIG_FIELD_NUMBER: _ClassVar[int]
+    RELEASE_ID_FIELD_NUMBER: _ClassVar[int]
     plugin_id: str
     name: str
     config: _struct_pb2.Struct
-    def __init__(self, plugin_id: _Optional[str] = ..., name: _Optional[str] = ..., config: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ...) -> None: ...
+    release_id: str
+    def __init__(self, plugin_id: _Optional[str] = ..., name: _Optional[str] = ..., config: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ..., release_id: _Optional[str] = ...) -> None: ...
 
 class PluginConfig(_message.Message):
     __slots__ = ("id", "plugin_id", "name", "revision", "config", "config_hash", "created_at")

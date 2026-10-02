@@ -17,7 +17,9 @@ def ranges(duration_ms: int):
     return [(start, min(start + 1000, duration_ms)) for start in range(0, duration_ms, 1000)]
 
 
-def ensure_materials(conn, *, execution_id: str, asset_id: str, pending: list[str]):
+def ensure_materials(
+    conn, *, execution_id: str, asset_id: str, pending: list[str], empty_status="failed"
+):
     """保留已经落库的观测，只补缺失的秒；同一执行重试不会覆盖历史版本。"""
     conn.execute(
         "SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", ("seconds:" + execution_id,)
@@ -53,7 +55,7 @@ def ensure_materials(conn, *, execution_id: str, asset_id: str, pending: list[st
             material_unit_id="mat_second_" + key,
             stream_id=stream_id,
             time_range={"start_ms": start, "end_ms": end},
-            status="partial" if pending else "failed",
+            status="partial" if pending else empty_status,
             revision=1,
             source_refs=[
                 {

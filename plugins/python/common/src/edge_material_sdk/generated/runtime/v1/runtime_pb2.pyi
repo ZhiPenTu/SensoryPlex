@@ -9,6 +9,12 @@ from typing import ClassVar as _ClassVar, Iterable as _Iterable, Mapping as _Map
 
 DESCRIPTOR: _descriptor.FileDescriptor
 
+class ProcessOutcome(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    PROCESS_OUTCOME_UNSPECIFIED: _ClassVar[ProcessOutcome]
+    PROCESS_OUTCOME_OBSERVED: _ClassVar[ProcessOutcome]
+    PROCESS_OUTCOME_NO_OBSERVATIONS: _ClassVar[ProcessOutcome]
+
 class CapabilityState(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     CAPABILITY_STATE_UNSPECIFIED: _ClassVar[CapabilityState]
@@ -21,6 +27,9 @@ class AcceleratorState(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     ACCELERATOR_STATE_AVAILABLE: _ClassVar[AcceleratorState]
     ACCELERATOR_STATE_UNAVAILABLE: _ClassVar[AcceleratorState]
     ACCELERATOR_STATE_UNKNOWN: _ClassVar[AcceleratorState]
+PROCESS_OUTCOME_UNSPECIFIED: ProcessOutcome
+PROCESS_OUTCOME_OBSERVED: ProcessOutcome
+PROCESS_OUTCOME_NO_OBSERVATIONS: ProcessOutcome
 CAPABILITY_STATE_UNSPECIFIED: CapabilityState
 CAPABILITY_STATE_AVAILABLE: CapabilityState
 CAPABILITY_STATE_UNAVAILABLE: CapabilityState
@@ -33,8 +42,20 @@ class DescribeRequest(_message.Message):
     __slots__ = ()
     def __init__(self) -> None: ...
 
+class PayloadContract(_message.Message):
+    __slots__ = ("modality", "schema_id", "schema_version", "schema_digest")
+    MODALITY_FIELD_NUMBER: _ClassVar[int]
+    SCHEMA_ID_FIELD_NUMBER: _ClassVar[int]
+    SCHEMA_VERSION_FIELD_NUMBER: _ClassVar[int]
+    SCHEMA_DIGEST_FIELD_NUMBER: _ClassVar[int]
+    modality: str
+    schema_id: str
+    schema_version: str
+    schema_digest: str
+    def __init__(self, modality: _Optional[str] = ..., schema_id: _Optional[str] = ..., schema_version: _Optional[str] = ..., schema_digest: _Optional[str] = ...) -> None: ...
+
 class PluginDescription(_message.Message):
-    __slots__ = ("name", "version", "protocol", "consumes", "produces", "memory_kinds", "artifact_digest")
+    __slots__ = ("name", "version", "protocol", "consumes", "produces", "memory_kinds", "artifact_digest", "input_contracts", "output_contracts", "execution_modes", "max_concurrency", "max_batch_size", "ordering")
     NAME_FIELD_NUMBER: _ClassVar[int]
     VERSION_FIELD_NUMBER: _ClassVar[int]
     PROTOCOL_FIELD_NUMBER: _ClassVar[int]
@@ -42,6 +63,12 @@ class PluginDescription(_message.Message):
     PRODUCES_FIELD_NUMBER: _ClassVar[int]
     MEMORY_KINDS_FIELD_NUMBER: _ClassVar[int]
     ARTIFACT_DIGEST_FIELD_NUMBER: _ClassVar[int]
+    INPUT_CONTRACTS_FIELD_NUMBER: _ClassVar[int]
+    OUTPUT_CONTRACTS_FIELD_NUMBER: _ClassVar[int]
+    EXECUTION_MODES_FIELD_NUMBER: _ClassVar[int]
+    MAX_CONCURRENCY_FIELD_NUMBER: _ClassVar[int]
+    MAX_BATCH_SIZE_FIELD_NUMBER: _ClassVar[int]
+    ORDERING_FIELD_NUMBER: _ClassVar[int]
     name: str
     version: str
     protocol: str
@@ -49,7 +76,13 @@ class PluginDescription(_message.Message):
     produces: _containers.RepeatedScalarFieldContainer[str]
     memory_kinds: _containers.RepeatedScalarFieldContainer[str]
     artifact_digest: str
-    def __init__(self, name: _Optional[str] = ..., version: _Optional[str] = ..., protocol: _Optional[str] = ..., consumes: _Optional[_Iterable[str]] = ..., produces: _Optional[_Iterable[str]] = ..., memory_kinds: _Optional[_Iterable[str]] = ..., artifact_digest: _Optional[str] = ...) -> None: ...
+    input_contracts: _containers.RepeatedCompositeFieldContainer[PayloadContract]
+    output_contracts: _containers.RepeatedCompositeFieldContainer[PayloadContract]
+    execution_modes: _containers.RepeatedScalarFieldContainer[str]
+    max_concurrency: int
+    max_batch_size: int
+    ordering: str
+    def __init__(self, name: _Optional[str] = ..., version: _Optional[str] = ..., protocol: _Optional[str] = ..., consumes: _Optional[_Iterable[str]] = ..., produces: _Optional[_Iterable[str]] = ..., memory_kinds: _Optional[_Iterable[str]] = ..., artifact_digest: _Optional[str] = ..., input_contracts: _Optional[_Iterable[_Union[PayloadContract, _Mapping]]] = ..., output_contracts: _Optional[_Iterable[_Union[PayloadContract, _Mapping]]] = ..., execution_modes: _Optional[_Iterable[str]] = ..., max_concurrency: _Optional[int] = ..., max_batch_size: _Optional[int] = ..., ordering: _Optional[str] = ...) -> None: ...
 
 class ValidateConfigRequest(_message.Message):
     __slots__ = ("config",)
@@ -98,14 +131,18 @@ class ProcessRequest(_message.Message):
     def __init__(self, context: _Optional[_Union[_common_pb2.RequestContext, _Mapping]] = ..., inputs: _Optional[_Iterable[_Union[PluginInput, _Mapping]]] = ..., processor_release_id: _Optional[str] = ...) -> None: ...
 
 class ProcessResponse(_message.Message):
-    __slots__ = ("observations", "warnings", "error")
+    __slots__ = ("observations", "warnings", "error", "outcome", "outcome_reason")
     OBSERVATIONS_FIELD_NUMBER: _ClassVar[int]
     WARNINGS_FIELD_NUMBER: _ClassVar[int]
     ERROR_FIELD_NUMBER: _ClassVar[int]
+    OUTCOME_FIELD_NUMBER: _ClassVar[int]
+    OUTCOME_REASON_FIELD_NUMBER: _ClassVar[int]
     observations: _containers.RepeatedCompositeFieldContainer[_material_pb2.Observation]
     warnings: _containers.RepeatedScalarFieldContainer[str]
     error: _common_pb2.ProcessingError
-    def __init__(self, observations: _Optional[_Iterable[_Union[_material_pb2.Observation, _Mapping]]] = ..., warnings: _Optional[_Iterable[str]] = ..., error: _Optional[_Union[_common_pb2.ProcessingError, _Mapping]] = ...) -> None: ...
+    outcome: ProcessOutcome
+    outcome_reason: str
+    def __init__(self, observations: _Optional[_Iterable[_Union[_material_pb2.Observation, _Mapping]]] = ..., warnings: _Optional[_Iterable[str]] = ..., error: _Optional[_Union[_common_pb2.ProcessingError, _Mapping]] = ..., outcome: _Optional[_Union[ProcessOutcome, str]] = ..., outcome_reason: _Optional[str] = ...) -> None: ...
 
 class CancelRequest(_message.Message):
     __slots__ = ("request_id",)

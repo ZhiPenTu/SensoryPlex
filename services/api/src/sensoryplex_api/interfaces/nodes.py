@@ -14,6 +14,8 @@ from typing import Annotated
 from edge_material_sdk.generated.material.v1 import material_pb2
 from edge_material_sdk.generated.media.v1 import media_pb2
 from edge_material_sdk.generated.node.v1 import node_pb2 as pb
+from edge_material_sdk.generated.orchestration.v1 import orchestration_pb2 as orchestration_pb
+from edge_material_sdk.generated.runtime.v1 import runtime_pb2 as runtime_pb
 from fastapi import Body, Depends, Header, Query
 from fastapi.responses import FileResponse
 from google.protobuf.json_format import MessageToDict
@@ -29,6 +31,7 @@ from ..contracts import (
     parse,
     rows,
     text_field,
+    validate_processor_reason,
 )
 from ..infrastructure import materials, timeline_ingest, vlm_delayed
 from ..infrastructure import orchestration as orchestrator
@@ -76,6 +79,10 @@ def register(app, pool, auth, settings):
         if node["status"] in {"revoked", "offline", "draining"}:
             fail(409, "agent_node_not_schedulable")
         return node
+
+    from . import enrichments as enrichment_routes
+
+    enrichment_routes.register(app, pool, settings, authenticated_node)
 
     def v2_intent_context(conn, intent_id: str, authorization: str | None, *, lock: bool = False):
         """读取一条 v2 任务意图的最小可信上下文。
@@ -436,8 +443,8 @@ def register(app, pool, auth, settings):
         p: Annotated[object, Depends(auth.require("plugins:manage"))] = None,
     ):
         req = parse(body, pb.PreflightRequest)
-        p_entry = plugin(settings, req.plugin_id)
         with pool.connection() as conn:
+            p_entry = plugin(settings, req.plugin_id, conn)
             nr = one(conn, "SELECT * FROM console_node WHERE node_id=%s", (node_id,))
             cfg = MessageToDict(req.config) if req.config else None
             if req.config_id and not cfg:
@@ -465,11 +472,11 @@ def register(app, pool, auth, settings):
         body: Annotated[dict, Body()] = ...,
         p: Annotated[object, Depends(auth.require("plugins:manage"))] = None,
     ):
-        p_entry = plugin(settings, plugin_id)
         config_id = body.get("config_id")
         config = body.get("config", {})
 
         with pool.connection() as conn:
+            p_entry = plugin(settings, plugin_id, conn)
             nr = one(conn, "SELECT * FROM console_node WHERE node_id=%s FOR UPDATE", (node_id,))
             if not nr:
                 fail(404, "node_not_found")
@@ -888,9 +895,14 @@ def register(app, pool, auth, settings):
 
             runtime_instance_id = ""
             if node["plugin_id"] != "org.sensoryplex.runtime.timeline-fusion":
-                runtime = one(
-                    conn,
-                    """
+                from ..infrastructure.runtime_bindings import pinned_runtime
+
+                runtime = (
+                    pinned_runtime(conn, intent["node_id"], node)
+                    if node.get("release_id")
+                    else one(
+                        conn,
+                        """
                     SELECT runtime.runtime_instance_id
                     FROM console_plugin_instance slot
                     JOIN plugin_runtime_instance runtime
@@ -902,19 +914,27 @@ def register(app, pool, auth, settings):
                       AND runtime.role='active' AND runtime.state='active'
                       AND runtime.endpoint <> ''
                     """,
-                    (
-                        intent["node_id"],
-                        node["plugin_id"],
-                        node["artifact_digest"],
-                        node["config_hash"],
-                        intent["node_id"],
-                        node["plugin_id"],
-                        node["artifact_digest"],
-                    ),
+                        (
+                            intent["node_id"],
+                            node["plugin_id"],
+                            node["artifact_digest"],
+                            node["config_hash"],
+                            intent["node_id"],
+                            node["plugin_id"],
+                            node["artifact_digest"],
+                        ),
+                    )
                 )
                 if not runtime:
                     fail(409, "plugin_instance_unavailable")
                 runtime_instance_id = runtime["runtime_instance_id"]
+                if node.get("release_id") and not one(
+                    conn,
+                    "SELECT 1 FROM plugin_runtime_instance WHERE runtime_instance_id=%s AND "
+                    "release_id=%s",
+                    (runtime_instance_id, node["release_id"]),
+                ):
+                    fail(409, "plugin_pinned_release_unavailable")
 
             run = one(
                 conn,
@@ -964,6 +984,10 @@ def register(app, pool, auth, settings):
                     "produces": node["produces"],
                     "deadline_ms": node["deadline_ms"],
                     "max_attempts": node["max_attempts"],
+                    "release_id": node.get("release_id", ""),
+                    "input_selector": node.get("input_selector", "media"),
+                    "input_contracts": node.get("input_contracts", []),
+                    "output_contracts": node.get("output_contracts", []),
                 },
                 "policy": timeline.get("execution_policy") or {},
                 "asset": {
@@ -974,6 +998,148 @@ def register(app, pool, auth, settings):
                     "content_hash": upload["sha256"],
                 },
             }
+
+    @app.post("/v1/agent/tasks/{task_id}:output")
+    def stage_plugin_output(
+        task_id: str,
+        body: Annotated[dict, Body()],
+        authorization: Annotated[str | None, Header()] = None,
+    ):
+        from edge_material_sdk.validation import validate_observation
+
+        intent_id = body.get("intent_id", "")
+        try:
+            output = orchestration_pb.PluginTaskOutput.FromString(
+                base64.b64decode(body["output_b64"], validate=True)
+            )
+        except (ValueError, KeyError, TypeError):
+            fail(422, "plugin_task_output_invalid")
+        if len(output.observations) > 8192 or len(output.processing_receipts) > 8192:
+            fail(413, "plugin_task_output_limit_exceeded")
+        with pool.connection() as conn:
+            _intent, _config, _execution, task, assignment, _revision, node, _upload = (
+                v2_intent_context(conn, intent_id, authorization, lock=True)
+            )
+            if (
+                output.task_id != task_id
+                or task_id != task["task_id"]
+                or output.assignment_id != assignment["assignment_id"]
+                or output.attempt != task["attempt"]
+            ):
+                fail(403, "plugin_task_output_assignment_mismatch")
+            if task["state"] not in {"assigned", "running"} or _intent["state"] != "dispatched":
+                fail(409, "plugin_task_output_not_active")
+            if not node.get("release_id"):
+                fail(422, "plugin_task_output_v2_required")
+            if not output.processing_receipts:
+                if (
+                    output.observations
+                    or output.skipped_reason != "upstream_has_no_matching_observations"
+                    or not node.get("input_selector", "").startswith("node:")
+                ):
+                    fail(422, "plugin_task_output_empty_without_reason")
+                upstream = one(
+                    conn,
+                    "SELECT o.contract_bytes FROM pipeline_task t JOIN plugin_task_output o "
+                    "USING(task_id) "
+                    "WHERE t.run_id=%s AND t.node_id=%s AND t.state='succeeded'",
+                    (task["run_id"], node["input_selector"][5:]),
+                )
+                if not upstream or any(
+                    o.modality in node["consumes"]
+                    for o in orchestration_pb.PluginTaskOutput.FromString(
+                        upstream["contract_bytes"]
+                    ).observations
+                ):
+                    fail(422, "plugin_task_output_skip_not_authorized")
+            elif output.skipped_reason:
+                fail(422, "plugin_task_output_ambiguous_skip")
+            try:
+                ids = set()
+                for observation in output.observations:
+                    validate_observation(observation)
+                    materials._registered_observation(conn, observation)
+                    if (
+                        observation.provenance.processor_release_id != node["release_id"]
+                        or observation.provenance.config_hash != node["config_hash"]
+                        or observation.observation_id in ids
+                    ):
+                        raise ValueError("plugin_task_output_identity_mismatch")
+                    ids.add(observation.observation_id)
+                for receipt in output.processing_receipts:
+                    validate_processor_reason(
+                        receipt.reason_code,
+                        required=receipt.outcome == runtime_pb.PROCESS_OUTCOME_NO_OBSERVATIONS,
+                    )
+                    if (
+                        not receipt.input_id
+                        or receipt.time_range.end_ms <= receipt.time_range.start_ms
+                        or receipt.outcome
+                        not in {
+                            runtime_pb.PROCESS_OUTCOME_OBSERVED,
+                            runtime_pb.PROCESS_OUTCOME_NO_OBSERVATIONS,
+                        }
+                    ):
+                        raise ValueError("plugin_task_output_receipt_invalid")
+                    if receipt.outcome == runtime_pb.PROCESS_OUTCOME_NO_OBSERVATIONS and (
+                        receipt.observation_count or not receipt.reason_code
+                    ):
+                        raise ValueError("plugin_task_output_receipt_invalid")
+                if sum(receipt.observation_count for receipt in output.processing_receipts) != len(
+                    output.observations
+                ):
+                    raise ValueError("plugin_task_output_count_mismatch")
+            except ValueError as error:
+                fail(422, str(error))
+            data = output.SerializeToString(deterministic=True)
+            digest = "sha256:" + hashlib.sha256(data).hexdigest()
+            saved = one(conn, "SELECT * FROM plugin_task_output WHERE task_id=%s", (task_id,))
+            if saved:
+                # 重派可沿用第一次输出；时钟字段与 assignment 变化不改变算法语义。
+                previous = orchestration_pb.PluginTaskOutput.FromString(saved["contract_bytes"])
+                current = orchestration_pb.PluginTaskOutput.FromString(data)
+                for value in (previous, current):
+                    value.ClearField("assignment_id")
+                    value.ClearField("attempt")
+                    for observation in value.observations:
+                        observation.ClearField("created_at_unix_ms")
+                if previous != current:
+                    fail(409, "plugin_task_output_conflict")
+                return {
+                    "content_digest": saved["content_digest"],
+                    "replayed": True,
+                    "output_b64": base64.b64encode(saved["contract_bytes"]).decode(),
+                }
+            conn.execute(
+                "INSERT INTO "
+                "plugin_task_output(task_id,assignment_id,contract_bytes,content_digest) VALUES "
+                "(%s,%s,%s,%s)",
+                (task_id, assignment["assignment_id"], data, digest),
+            )
+            return {
+                "content_digest": digest,
+                "replayed": False,
+                "output_b64": base64.b64encode(data).decode(),
+            }
+
+    @app.get("/v1/agent/task-intents/{intent_id}/upstream")
+    def read_plugin_upstream(intent_id: str, authorization: Annotated[str | None, Header()] = None):
+        with pool.connection() as conn:
+            intent, _config, _execution, task, _assignment, revision, node, _upload = (
+                v2_intent_context(conn, intent_id, authorization)
+            )
+            if intent["state"] != "dispatched" or task["state"] not in {"assigned", "running"}:
+                fail(409, "plugin_task_input_not_active")
+            upstream_id = node.get("input_selector", "").removeprefix("node:")
+            upstream = one(
+                conn,
+                "SELECT t.task_id,o.contract_bytes FROM pipeline_task t JOIN plugin_task_output o"
+                " USING(task_id) WHERE t.run_id=%s AND t.node_id=%s AND t.state='succeeded'",
+                (task["run_id"], upstream_id),
+            )
+            if not upstream:
+                fail(409, "plugin_task_upstream_unavailable")
+            return {"output_b64": base64.b64encode(upstream["contract_bytes"]).decode()}
 
     @app.get("/v1/agent/task-intents/{intent_id}/asset")
     def task_asset(
@@ -1281,13 +1447,31 @@ def register(app, pool, auth, settings):
                 # OCR/ASR 与完整覆盖层已经作为快路径事实落库；在同一事务内仅创建 VLM
                 # 时间锚点任务和 outbox，不连 NATS、更不解压任何帧。提交之后用户即可审阅，
                 # 发布器/Consumer 的可用性不再阻塞 L1。
-                from ..infrastructure import second_windows
+                from ..infrastructure import enrichments, second_windows
+
+                delayed = node.get("delayed_enrichments") or []
+                generic_delayed = [entry for entry in delayed if entry.get("release_id")]
+                pending = sorted(
+                    {modality for entry in generic_delayed for modality in entry["produces"]}
+                )
+                if any(not entry.get("release_id") for entry in delayed):
+                    pending.append(vlm_delayed.VLM_MODALITY)
 
                 units = second_windows.ensure_materials(
                     conn,
                     execution_id=execution["execution_id"],
                     asset_id=f"asset-{description.source.content_hash[7:19]}",
-                    pending=[vlm_delayed.VLM_MODALITY] if node.get("delayed_enrichments") else [],
+                    pending=pending,
+                    empty_status="no_observations"
+                    if node.get("execution_policy", {}).get("generic_plugin_graph")
+                    else "failed",
+                )
+                generic_task_ids = enrichments.enqueue(
+                    conn,
+                    execution=execution,
+                    revision=revision,
+                    description=description,
+                    units=units,
                 )
                 vlm_task_ids = vlm_delayed.enqueue_vlm_tasks(
                     conn,
@@ -1308,6 +1492,10 @@ def register(app, pool, auth, settings):
                         Jsonb(
                             {
                                 "fast_path": "ready_for_review",
+                                "enrichments": {
+                                    "queued": len(generic_task_ids),
+                                    "mode": "jetstream_workqueue",
+                                },
                                 "vlm_enrichment": {
                                     "queued": len(vlm_task_ids),
                                     "mode": "jetstream_workqueue",
@@ -1346,6 +1534,7 @@ def register(app, pool, auth, settings):
             "replayed": replayed,
             "coverage_windows": len(coverage),
             "vlm_tasks_enqueued": len(vlm_task_ids),
+            "enrichment_tasks_enqueued": len(generic_task_ids),
         }
 
     @app.post("/v1/agent/heartbeat")
@@ -1423,6 +1612,16 @@ def register(app, pool, auth, settings):
                     ),
                     (pr["instance_id"],),
                 )
+                # 蓝绿/回滚的具体实例可能与当前逻辑槽位版本和配置不同。
+                # 下发候选或旧实例的身份，避免把槽位最新摘要写入另一进程的注册表。
+                if pr["runtime_instance_id"]:
+                    inst = one(
+                        conn,
+                        "SELECT i.plugin_id,r.plugin_version,i.config_hash "
+                        "FROM plugin_runtime_instance i JOIN plugin_release r USING(release_id) "
+                        "WHERE i.runtime_instance_id=%s AND i.instance_id=%s",
+                        (pr["runtime_instance_id"], pr["instance_id"]),
+                    )
                 # 热部署意图（有 operation_id）必须携带 operation/generation/release/bundle
                 # 身份与截止时间；ADR-026 的历史意图走同一条通道但字段为空。
                 pending_intents.append(

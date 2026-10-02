@@ -24,7 +24,9 @@ from typing import Any
 import grpc
 from edge_material_sdk.buffer_reader import LeaseBufferReader, is_loopback_endpoint
 from edge_material_sdk.generated.common.v1 import common_pb2 as common
+from edge_material_sdk.generated.material.v1 import material_pb2
 from edge_material_sdk.generated.media.v1 import handoff_pb2, handoff_pb2_grpc, media_pb2
+from edge_material_sdk.generated.orchestration.v1 import orchestration_pb2
 from edge_material_sdk.generated.runtime.v1 import runtime_pb2, runtime_pb2_grpc
 from google.protobuf import json_format
 from google.protobuf.message import DecodeError
@@ -115,7 +117,12 @@ def _free_loopback_port() -> int:
 
 def _runtime_binary() -> Path:
     configured = os.environ.get("SENSORYPLEX_RUNTIME_BIN", "")
-    binary = Path(configured) if configured else ROOT / "target/release/sensoryplex-runtime"
+    if configured:
+        binary = Path(configured)
+    elif Path("/Users/tuzhipeng/Documents/SensoryPlex/target/release/sensoryplex-runtime").is_file():
+        binary = Path("/Users/tuzhipeng/Documents/SensoryPlex/target/release/sensoryplex-runtime")
+    else:
+        binary = ROOT / "target/release/sensoryplex-runtime"
     if not binary.is_file() or not os.access(binary, os.X_OK):
         raise TaskExecutionError("runtime_binary_unavailable")
     return binary
@@ -703,9 +710,6 @@ class TaskExecutor:
             )
             return True
         except Exception:  # noqa: BLE001 - 外部 Runtime/gRPC 错误不能泄露详情到控制面
-            import traceback
-
-            traceback.print_exc()
             completed_ms = _now_ms()
             self._report_result(
                 manifest,
@@ -754,8 +758,13 @@ class TaskExecutor:
         if not execution_id or len(execution_id) > 128 or "/" in execution_id:
             raise TaskExecutionError("task_execution_id_invalid")
         directory = self.base_dir / "task-executions" / execution_id
-        directory.mkdir(parents=True, exist_ok=True)
-        return directory
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            return directory
+        except OSError:
+            fallback = Path("/tmp/sensoryplex-task-executions") / execution_id
+            fallback.mkdir(parents=True, exist_ok=True)
+            return fallback
 
     def _download_asset(self, manifest: dict, workspace: Path) -> Path:
         asset = manifest["asset"]
@@ -814,6 +823,8 @@ class TaskExecutor:
     ) -> tuple[int, int, str]:
         policy = _bounded_policy(manifest["policy"])
         endpoint = self._endpoint(manifest)
+        if manifest["plugin"].get("input_selector", "media").startswith("node:"):
+            return self._run_observation_plugin(manifest, workspace, endpoint)
         plugin_id = manifest["plugin"]["plugin_id"]
         kind = (
             "audio_segment"
@@ -844,6 +855,74 @@ class TaskExecutor:
             )
         finally:
             self._stop_replay(producer)
+
+    def _run_observation_plugin(self, manifest, workspace, endpoint):
+        """上游输入从授权 API 读取；不重新解码，也不向插件暴露数据库。"""
+        upstream = orchestration_pb2.PluginTaskOutput.FromString(
+            base64.b64decode(
+                self.client.plugin_upstream(manifest["intent_id"])["output_b64"], validate=True
+            )
+        )
+        if len(upstream.observations) > 8192:
+            raise TaskExecutionError("task_execution_input_budget_exceeded")
+        observations, frames = [], []
+        task = manifest["task"]
+        with grpc.insecure_channel(endpoint.endpoint) as channel:
+            stub = runtime_pb2_grpc.ProcessorPluginServiceStub(channel)
+            for source in upstream.observations:
+                if source.modality not in manifest["plugin"]["consumes"]:
+                    continue
+                request = runtime_pb2.ProcessRequest(
+                    context=common.RequestContext(
+                        request_id=task["task_id"] + ":" + source.observation_id,
+                        trace_id="execution:" + manifest["execution_id"],
+                        pipeline_run_id=manifest["run"]["run_id"],
+                        stream_id=source.stream_id,
+                        source_id=source.source_id,
+                        deadline_unix_ms=min(
+                            int(task["deadline_unix_ms"]),
+                            _now_ms() + int(manifest["plugin"]["deadline_ms"]),
+                        ),
+                        attempt=int(task["attempt"]),
+                        idempotency_key=_sha256_json(
+                            {"task": task["task_id"], "source": source.observation_id}
+                        ),
+                        privacy_policy=common.PrivacyPolicy(data_egress="local_only"),
+                    ),
+                    inputs=[runtime_pb2.PluginInput(observation=source)],
+                    processor_release_id=manifest["plugin"]["release_id"],
+                )
+                response = stub.Process(request, timeout=manifest["plugin"]["deadline_ms"] / 1000)
+                if response.HasField("error"):
+                    raise TaskExecutionError(
+                        response.error.reason_code, retryable=response.error.retryable
+                    )
+                if (
+                    not response.observations
+                    and response.outcome != runtime_pb2.PROCESS_OUTCOME_NO_OBSERVATIONS
+                ):
+                    raise TaskExecutionError("empty_plugin_result")
+                observations.extend(
+                    json_format.MessageToDict(value) for value in response.observations
+                )
+                frames.append(
+                    {
+                        "buffer_id": source.observation_id,
+                        "source_digest": source.content_hash,
+                        "source_time_range_ms": [
+                            source.time_range.start_ms,
+                            source.time_range.end_ms,
+                        ],
+                        "outcome": int(response.outcome)
+                        if response.outcome
+                        else runtime_pb2.PROCESS_OUTCOME_OBSERVED,
+                        "outcome_reason": response.outcome_reason,
+                        "observation_count": len(response.observations),
+                    }
+                )
+        return self._write_worker_report(
+            workspace, manifest, Path(), observations, frames, input_count=len(frames), reason=""
+        )
 
     def _consume_audio(
         self,
@@ -1053,10 +1132,30 @@ class TaskExecutor:
             if not settled:
                 # 显式失败、或 Runtime 已经收尾时同样尽力把保留表还干净：数据面已经关掉
                 # 就没有什么可还的，失败原因由 `failure` 或退出码决定。
-                self._drain_plane_quietly(reader, consumed)
+                self._drain_plane_quietly(reader, set())
             reader.close()
             plugin_channel.close()
         report = self._replay_report_ready(report_path)
+        if failure:
+            # 插件可以在 Acquire 之前拒绝请求；不能把“已调用”当成“已归还”。
+            # 提前失败立即停止生产者，并保留原始错误，避免收尾超时覆盖真正原因。
+            self._stop_replay(producer)
+            _, _, result_ref = self._write_worker_report(
+                workspace,
+                manifest,
+                report_path,
+                observations,
+                frames,
+                input_count=inputs,
+                reason=failure,
+            )
+            raise TaskExecutionError(
+                failure,
+                retryable=failure.startswith(("plugin_retryable:", "plugin_rpc_failed:")),
+                inputs=inputs,
+                outputs=len(observations),
+                result_ref=result_ref,
+            )
         exit_code = self._await_replay(producer)
         if report is None:
             raise TaskExecutionError("runtime_replay_report_unavailable")
@@ -1147,6 +1246,9 @@ class TaskExecutor:
         node_id = manifest["task"]["node_id"]
         report = workspace / f"{node_id}.replay.pb"
         ledger = workspace / f"{node_id}.replay.evidence.jsonl"
+        # 恢复重试不能把前次终态报告当成本次生产者已结束。
+        report.unlink(missing_ok=True)
+        ledger.unlink(missing_ok=True)
         pipeline = workspace / "runtime-pipeline.yaml"
         pipeline.write_text(_runtime_pipeline(policy, has_vlm=has_vlm), encoding="utf-8")
         listen = f"127.0.0.1:{_free_loopback_port()}"
@@ -1211,8 +1313,10 @@ class TaskExecutor:
         # Runtime 的输出只有计数与原因码，落进本次任务的日志文件里便于复核失败原因；
         # 它不进控制消息，也不含原始帧、音频或密钥。
         log_path = workspace / f"{node_id}.replay.log"
+        replay_env = dict(os.environ, SENSORYPLEX_NO_GL="1")
         process = subprocess.Popen(
             command,
+            env=replay_env,
             stdout=log_path.open("wb"),
             stderr=subprocess.STDOUT,
         )
@@ -1373,7 +1477,7 @@ class TaskExecutor:
         try:
             if process.poll() is None:
                 try:
-                    process.wait(timeout=RUNTIME_WAIT_S)
+                    process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     process.terminate()
                     try:
@@ -1483,7 +1587,8 @@ class TaskExecutor:
                     privacy_policy=common.PrivacyPolicy(data_egress="local_only"),
                 ),
                 inputs=[runtime_pb2.PluginInput(buffer=self._descriptor(entry, handoff_endpoint))],
-                processor_release_id=manifest["plugin"]["plugin_version"],
+                processor_release_id=manifest["plugin"].get("release_id")
+                or manifest["plugin"]["plugin_version"],
             )
 
         for position, entry in enumerate(entries):
@@ -1508,19 +1613,40 @@ class TaskExecutor:
                 break
             produced = list(response.observations)
             if not produced:
+                if (
+                    response.outcome == runtime_pb2.PROCESS_OUTCOME_NO_OBSERVATIONS
+                    and response.outcome_reason
+                ):
+                    frames.append(
+                        {
+                            **describe(entry),
+                            "outcome": int(response.outcome),
+                            "outcome_reason": response.outcome_reason,
+                            "observation_count": 0,
+                        }
+                    )
+                    continue
                 failure = "empty_plugin_result"
                 frames.extend(record(item, failure, False) for item in pending)
                 break
-            if len(produced) != 1:
+            if len(produced) != 1 and not manifest["plugin"].get("release_id"):
                 # 单帧请求只能得到单条观测；多出来的是契约漂移，不能按顺序硬套。
                 failure = "plugin_observation_count_mismatch"
                 frames.extend(record(item, failure, False) for item in pending)
                 break
-            observation = produced[0]
-            observations.append(
-                json_format.MessageToDict(observation, preserving_proto_field_name=False)
+            if len(produced) > 128:
+                failure = "plugin_observation_count_exceeded"
+                frames.extend(record(item, failure, False) for item in pending)
+                break
+            observations.extend(json_format.MessageToDict(observation) for observation in produced)
+            frames.append(
+                {
+                    **describe(entry),
+                    "observation_id": produced[0].observation_id,
+                    "outcome": runtime_pb2.PROCESS_OUTCOME_OBSERVED,
+                    "observation_count": len(produced),
+                }
             )
-            frames.append({**describe(entry), "observation_id": observation.observation_id})
         return observations, frames, used, failure
 
     def _process_groups(
@@ -1594,6 +1720,46 @@ class TaskExecutor:
         }
         if evidence is not None:
             document["evidence"] = evidence
+        if manifest.get("plugin", {}).get("release_id"):
+            for frame in frames:
+                frame["produces"] = manifest["plugin"]["produces"]
+        if manifest.get("plugin", {}).get("release_id") and not reason:
+            task = manifest["task"]
+            output = orchestration_pb2.PluginTaskOutput(
+                task_id=task["task_id"],
+                assignment_id=task["assignment_id"],
+                attempt=int(task["attempt"]),
+                skipped_reason="upstream_has_no_matching_observations" if not frames else "",
+                observations=[
+                    json_format.ParseDict(value, material_pb2.Observation())
+                    for value in observations
+                ],
+                processing_receipts=[
+                    {
+                        "input_id": frame["buffer_id"],
+                        "time_range": {
+                            "start_ms": int(frame["source_time_range_ms"][0]),
+                            "end_ms": int(frame["source_time_range_ms"][1]),
+                        },
+                        "outcome": frame.get("outcome", runtime_pb2.PROCESS_OUTCOME_OBSERVED),
+                        "reason_code": frame.get("outcome_reason", ""),
+                        "observation_count": frame.get("observation_count", 1),
+                    }
+                    for frame in frames
+                    if not frame.get("error")
+                ],
+            )
+            encoded_output = base64.b64encode(output.SerializeToString(deterministic=True)).decode()
+            if len(encoded_output) > 4_000_000:
+                raise TaskExecutionError("plugin_task_output_limit_exceeded")
+            result = self.client.stage_plugin_output(
+                task["task_id"], {"intent_id": manifest["intent_id"], "output_b64": encoded_output}
+            )
+            saved = orchestration_pb2.PluginTaskOutput.FromString(
+                base64.b64decode(result["output_b64"], validate=True)
+            )
+            observations = [json_format.MessageToDict(value) for value in saved.observations]
+            document["observations"] = observations
         encoded = json.dumps(document, sort_keys=True, separators=(",", ":")).encode("utf-8")
         path.write_bytes(encoded)
         return input_count, len(observations), "agent-result:" + hashlib.sha256(encoded).hexdigest()
@@ -1602,11 +1768,22 @@ class TaskExecutor:
         self, manifest: dict, workspace: Path, media_path: Path
     ) -> tuple[int, int, str]:
         policy = _bounded_policy(manifest["policy"])
-        reports = sorted(workspace.glob("*_fast.worker.json")) + sorted(
-            workspace.glob("vlm_enrich.worker.json")
+        generic = bool(manifest["policy"].get("generic_plugin_graph"))
+        reports = (
+            [
+                path
+                for path in sorted(workspace.glob("*.worker.json"))
+                if path.name != "timeline.worker.json"
+            ]
+            if generic
+            else sorted(workspace.glob("*_fast.worker.json"))
+            + sorted(workspace.glob("vlm_enrich.worker.json"))
         )
-        replay_reports = sorted(workspace.glob("*_fast.replay.pb")) + sorted(
-            workspace.glob("vlm_enrich.replay.pb")
+        replay_reports = (
+            sorted(workspace.glob("*.replay.pb"))
+            if generic
+            else sorted(workspace.glob("*_fast.replay.pb"))
+            + sorted(workspace.glob("vlm_enrich.replay.pb"))
         )
         if not replay_reports:
             raise TaskExecutionError("timeline_upstream_runtime_report_missing")
@@ -1647,27 +1824,65 @@ class TaskExecutor:
                 and frame.get("source_time_range_ms")
             }
         )
-        coverage = self._coverage(source, observations, summaries, policy, selected, rejected)
+        coverage = (
+            self._generic_coverage(source, observations, frames, manifest["policy"])
+            if generic
+            else self._coverage(source, observations, summaries, policy, selected, rejected)
+        )
         if not observations:
             self._ingest_timeline(manifest, source, [], [], coverage)
             return 0, 0, "timeline-empty:" + _sha256_json({"coverage": coverage})
         merged = workspace / "timeline.worker.json"
+        media_frames = [
+            frame for frame in frames if frame.get("kind") in {VIDEO_FRAME_KIND, AUDIO_SEGMENT_KIND}
+        ]
+        if generic:
+            # 派生观测沿用真实上游数据面的来源；把本次已校验的输出身份加入原描述符账本。
+            # 不把 Observation 读取回执伪装成新的媒体解码或共享内存分配。
+            originals = {
+                frame["buffer_id"] + "@" + frame["source_digest"][7:23]: frame
+                for frame in media_frames
+                if frame.get("buffer_id") and frame.get("source_digest")
+            }
+            recorded = {frame.get("observation_id") for frame in media_frames}
+            for observation in observations:
+                if observation["observationId"] in recorded:
+                    continue
+                source_frame = originals.get(observation["sourceItemId"])
+                if not source_frame:
+                    raise TaskExecutionError("timeline_observation_source_unmapped")
+                media_frames.append(
+                    {**source_frame, "observation_id": observation["observationId"]}
+                )
         merged.write_text(
             json.dumps(
                 {
                     "input_mode": "buffer",
                     "failures": [],
                     "observations": observations,
-                    "frames": frames,
+                    "frames": media_frames,
                 },
                 sort_keys=True,
             ),
             encoding="utf-8",
         )
         pipeline = workspace / "runtime-pipeline.yaml"
-        pipeline.write_text(
-            _runtime_pipeline(policy, has_vlm="vlm_enrich" in summaries), encoding="utf-8"
-        )
+        pipeline_content = _runtime_pipeline(policy, has_vlm="vlm_enrich" in summaries)
+        if generic:
+            import yaml
+
+            definition = yaml.safe_load(pipeline_content)
+            definition["spec"]["timeline_fusion"]["fast_modalities"] = manifest["policy"][
+                "fast_modalities"
+            ]
+            # 同一事实类型可有快路径与补全生产者；补全台账单独记录各节点待办。
+            # Rust 融合策略要求两组模态互斥，已经由快路径满足的类型保留在必需集合。
+            definition["spec"]["timeline_fusion"]["enrichment_modalities"] = sorted(
+                set(manifest["policy"]["enrichment_modalities"])
+                - set(manifest["policy"]["fast_modalities"])
+            )
+            pipeline_content = yaml.safe_dump(definition)
+        pipeline.write_text(pipeline_content, encoding="utf-8")
         material_dir = workspace / "materials"
         timeline_report = workspace / "timeline.json"
         completed = subprocess.run(
@@ -1694,6 +1909,8 @@ class TaskExecutor:
             raise TaskExecutionError("timeline_fusion_failed")
         try:
             document = json.loads(timeline_report.read_text(encoding="utf-8"))
+            if generic and document.get("rejected"):
+                raise TaskExecutionError("timeline_observation_rejected")
             items = document["items"]
             unit_bytes = [path.read_bytes() for path in sorted(material_dir.glob("*.material.pb"))]
         except (OSError, KeyError, json.JSONDecodeError):
@@ -1704,6 +1921,58 @@ class TaskExecutor:
             len(unit_bytes),
             "timeline:" + hashlib.sha256(timeline_report.read_bytes()).hexdigest(),
         )
+
+    @staticmethod
+    def _generic_coverage(source, observations, frames, policy):
+        """自定义类型按锁定图和真实调用回执展示处理覆盖。"""
+        windows = []
+        for start in range(0, int(source.source.duration_ms), 1000):
+            end = min(start + 1000, int(source.source.duration_ms))
+            states, reasons = {}, {}
+            receipts = [
+                frame
+                for frame in frames
+                if frame.get("source_time_range_ms")
+                and int(frame["source_time_range_ms"][0]) < end
+                and int(frame["source_time_range_ms"][1]) > start
+            ]
+            for modality in policy["fast_modalities"]:
+                modality_receipts = [
+                    frame for frame in receipts if modality in frame.get("produces", [])
+                ]
+                matching = [
+                    value
+                    for value in observations
+                    if value.get("modality") == modality
+                    and int(value["timeRange"].get("startMs", 0)) < end
+                    and int(value["timeRange"]["endMs"]) > start
+                ]
+                if matching:
+                    states[modality] = "observed"
+                elif modality_receipts:
+                    states[modality] = "not_observed"
+                    reasons[modality] = next(
+                        (
+                            frame["outcome_reason"]
+                            for frame in modality_receipts
+                            if frame.get("outcome_reason")
+                        ),
+                        "processed_without_observation",
+                    )
+                else:
+                    states[modality] = "not_sampled_by_policy"
+            for modality in policy["enrichment_modalities"]:
+                states[modality] = "queued"
+            windows.append(
+                {
+                    "start_ms": start,
+                    "end_ms": end,
+                    "sampling_state": "sampled" if receipts else "not_sampled_by_policy",
+                    "modality_states": states,
+                    "reason_codes": reasons,
+                }
+            )
+        return windows
 
     @staticmethod
     def _timeline_source(replay_reports: list[Path]) -> tuple[Path, object]:

@@ -183,6 +183,14 @@ class NodeAgentClient:
         """获取 v2 Task 的受控身份/策略清单；不含媒体路径或插件 endpoint。"""
         return self._get_json(f"/v1/agent/task-intents/{intent_id}/manifest")
 
+    def plugin_upstream(self, intent_id: str) -> dict[str, Any]:
+        """仅读取主节点授权的同一 Run 上游结果。"""
+        return self._get_json(f"/v1/agent/task-intents/{intent_id}/upstream")
+
+    def stage_plugin_output(self, task_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """持久化已校验输出，Worker 重启后不依赖丢失的内存。"""
+        return self._post(f"/v1/agent/tasks/{task_id}:output", payload, token=self.session_token)
+
     def download_task_asset(self, intent_id: str, target: Path, expected_digest: str) -> Path:
         """下载已绑定 assignment 的媒体到 Agent 私有工作区，并复算内容摘要。"""
         request = urllib.request.Request(
@@ -673,7 +681,7 @@ def main():
     dereg_parser.add_argument("--state-file", default="")
 
     run_parser = subparsers.add_parser("run", help="Run heartbeat loop")
-    run_parser.add_argument("--main-url", default="http://127.0.0.1:8091")
+    run_parser.add_argument("--main-url", default="")
     run_parser.add_argument("--node-id", required=True)
     run_parser.add_argument("--session-token", default="")
     run_parser.add_argument("--state-file", default="")
@@ -773,7 +781,7 @@ def main():
             LOGGER.error("Error: session_token required")
             sys.exit(1)
 
-        client = NodeAgentClient(main_url, args.node_id, token)
+        client = NodeAgentClient(main_url or "http://127.0.0.1:8091", args.node_id, token)
         executor = get_hot_deploy_executor(client, args.state_file)
 
         # `--once` 保持同步语义（单次心跳 + 立即执行完成后再退出）；常驻模式把心跳与

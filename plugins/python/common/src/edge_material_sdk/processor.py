@@ -17,7 +17,11 @@ from abc import ABC, abstractmethod
 
 from .buffer_reader import CPU_SHARED_MEMORY
 from .generated.common.v1 import common_pb2 as common
-from .generated.runtime.v1.runtime_pb2 import ProcessRequest, ProcessResponse
+from .generated.runtime.v1.runtime_pb2 import (
+    PROCESS_OUTCOME_NO_OBSERVATIONS,
+    ProcessRequest,
+    ProcessResponse,
+)
 from .validation import validate_digest, validate_observation, validate_range
 
 
@@ -123,7 +127,18 @@ class ProcessorPlugin(ABC):
                 async with asyncio.timeout(remaining):
                     response = await self.process(request, token)
                     token.raise_if_cancelled()
-                    if not response.observations and not response.HasField("error"):
+                    explicit_empty = response.outcome == PROCESS_OUTCOME_NO_OBSERVATIONS
+                    if explicit_empty and (
+                        response.observations
+                        or response.HasField("error")
+                        or not response.outcome_reason
+                    ):
+                        raise PluginError(common.INTERNAL_PLUGIN_ERROR, "ambiguous_plugin_result")
+                    if (
+                        not response.observations
+                        and not response.HasField("error")
+                        and not explicit_empty
+                    ):
                         raise PluginError(common.INTERNAL_PLUGIN_ERROR, "empty_plugin_result")
                     if response.observations and response.HasField("error"):
                         raise PluginError(common.INTERNAL_PLUGIN_ERROR, "ambiguous_plugin_result")

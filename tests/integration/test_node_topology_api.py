@@ -426,15 +426,17 @@ def test_plugin_clean_uninstall_and_directory_removal(client, tmp_path):
     intent = intents[0]
     assert intent["action"] == "DEPLOYMENT_ACTION_INSTALL"
 
-    # 物理执行安装
+    # 旧 install 意图不含受控制品；必须拒绝，不能伪造安装成功。
     ok = execute_intent(intent, agent_client, state_file=str(state_file))
-    assert ok is True
+    assert ok is False
 
     # 验证插件版本化独立目录存在
     digest_clean = intent["artifact_digest"].replace("sha256:", "")
     instance_dir = tmp_path / "plugins" / plugin_id / digest_clean
-    assert instance_dir.is_dir()
-    assert (instance_dir / "instance.json").is_file()
+    assert not instance_dir.exists()
+    # 卸载场景使用已停止的目录夹具，仅验证清理语义，不冒充真实制品部署。
+    instance_dir.mkdir(parents=True)
+    (instance_dir / "instance.json").write_text("{}")
 
     # 3. 触发卸载
     uninst_res = client.post(f"/admin/v1/nodes/{node_id}/plugins/{plugin_id}:uninstall")

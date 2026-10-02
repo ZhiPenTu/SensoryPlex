@@ -3,6 +3,7 @@ package edge.material.orchestration.v1;
 
 import "common/v1/common.proto";
 import "material/v1/material.proto";
+import "runtime/v1/runtime.proto";
 import "google/protobuf/struct.proto";
 
 // The authoritative, immutable identity of a plugin used by a published pipeline revision.
@@ -49,6 +50,11 @@ message PipelineNode {
   uint32 priority = 8;
   // false 表示慢路径 enrichment；失败必须可见，但不阻断已完成的必需快路径。
   bool required = 9;
+  string execution_mode = 10;
+  string input_selector = 11;
+  string release_id = 12;
+  repeated edge.material.runtime.v1.PayloadContract input_contracts = 13;
+  repeated edge.material.runtime.v1.PayloadContract output_contracts = 14;
 }
 
 message PipelineEdge {
@@ -65,6 +71,24 @@ message PipelineRevision {
   string graph_digest = 3;
   repeated PipelineNode nodes = 4;
   repeated PipelineEdge edges = 5;
+}
+
+// Per-input processing coverage, including explicit no-observation outcomes.
+message ProcessorCallReceipt {
+  string input_id = 1;
+  edge.material.common.v1.TimeRange time_range = 2;
+  edge.material.runtime.v1.ProcessOutcome outcome = 3;
+  string reason_code = 4;
+  uint32 observation_count = 5;
+}
+message PluginTaskOutput {
+  string task_id = 1;
+  string assignment_id = 2;
+  uint32 attempt = 3;
+  repeated edge.material.material.v1.Observation observations = 4;
+  repeated ProcessorCallReceipt processing_receipts = 5;
+  // No Process call occurred because an authorized upstream produced no matching facts.
+  string skipped_reason = 6;
 }
 
 message PipelineRun {
@@ -150,6 +174,52 @@ message VlmTaskResult {
   edge.material.material.v1.Observation observation = 5;
   string result_digest = 6;
   int64 completed_at_unix_ms = 7;
+}
+
+// Generic enrichment messages contain controlled references and pinned identities.
+message EnrichmentTask {
+  string task_id = 1;
+  string execution_id = 2;
+  string run_id = 3;
+  string node_id = 4;
+  string data_plane_node_id = 5;
+  string route_id = 6;
+  PluginReference plugin = 7;
+  string release_id = 8;
+  string config_id = 9;
+  repeated string observation_refs = 10;
+  string asset_id = 11;
+  string stream_id = 12;
+  string source_id = 13;
+  string material_unit_id = 14;
+  edge.material.common.v1.TimeRange time_range = 15;
+  string content_hash = 16;
+  uint32 max_attempts = 17;
+  int64 deadline_unix_ms = 18;
+  string input_modality = 19;
+  // Per-attempt processing deadline pinned by the published graph; zero is legacy.
+  uint32 process_timeout_ms = 20;
+}
+// This message is staged over an authenticated API before notification is published.
+message EnrichmentResult {
+  EnrichmentTask task = 1;
+  repeated edge.material.material.v1.Observation observations = 2;
+  edge.material.runtime.v1.ProcessOutcome outcome = 3;
+  string outcome_reason = 4;
+  edge.material.common.v1.ProcessingError error = 5;
+  string result_digest = 6;
+  repeated EnrichmentInputReceipt input_receipts = 7;
+}
+
+message EnrichmentInputReceipt {
+  string source_item_id = 1;
+  string content_hash = 2;
+  string kind = 3;
+  edge.material.common.v1.TimeRange time_range = 4;
+}
+message EnrichmentResultReference {
+  string task_id = 1;
+  string result_digest = 2;
 }
 
 // 回执使“插件进程还活着”和“这个 assignment 已执行”成为两个不可混淆的事实。

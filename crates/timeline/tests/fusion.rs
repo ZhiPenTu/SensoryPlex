@@ -69,11 +69,13 @@ fn input(id: &str, modality: &str, state: &str, start: i64, end: i64) -> FusionI
                 config_hash: digest('b'),
                 execution_backend: "contract_test".into(),
                 model_artifact_digest: digest('c'),
+                ..Default::default()
             }),
             content_hash: digest('d'),
             created_at_unix_ms: 100,
             timing_source: "pts".into(),
             timing_confidence: None,
+            ..Default::default()
         },
         source_ref: SourceReference {
             asset_id: "asset-1".into(),

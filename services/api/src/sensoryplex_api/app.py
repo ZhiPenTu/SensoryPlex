@@ -16,15 +16,29 @@ from psycopg_pool import AsyncConnectionPool, ConnectionPool, PoolTimeout, TooMa
 
 from .auth import Authorization
 from .contracts import RETRYABLE_HEADER, fail, out
-from .interfaces import admin, assets, business, identity, nodes, orchestration, plugin_deploy
+from .interfaces import (
+    admin,
+    assets,
+    business,
+    identity,
+    nodes,
+    orchestration,
+    plugin_deploy,
+    plugin_registry,
+)
 from .settings import Settings
 
 # 本镜像认识的迁移集合：/v1/health 要求库里应用的版本**恰好**等于这个集合，
 # 多一条（镜像旧了）少一条（没跑迁移）都直接 503。因此每加一条迁移都必须同步这里——
 # 本切片新增 `0003_embedding_index` 时漏掉这一跳，就是被真实集成测试抓出来的。
 # `SCHEMA` 仍是最新版本，供 `schema_version` 字段上报。
-SCHEMA = "0015_vlm_failure_result_receipt"
+SCHEMA = "0021_plugin_revision_retirement"
 SCHEMA_VERSIONS = {
+    "0020_enrichment_input_identity",
+    "0021_plugin_revision_retirement",
+    "0019_enrichment_leases",
+    "0017_plugin_task_output",
+    "0018_plugin_runtime_pins",
     "0001_initial",
     "0002_console",
     "0003_embedding_index",
@@ -41,6 +55,8 @@ SCHEMA_VERSIONS = {
     "0012_timeline_coverage",
     "0013_timeline_coverage_states",
     "0014_vlm_delayed_enrichment",
+    "0015_vlm_failure_result_receipt",
+    "0016_generic_plugin_platform",
     SCHEMA,
 }
 # 语义检索不可用时的原因码：检索面未配置就是这个码，不是 501、也不是"没有命中"。
@@ -142,11 +158,20 @@ def create_app(settings: Settings | None = None):
             and request.url.path.startswith("/v1/uploads/")
             and request.url.path.endswith("/content")
         )
-        if request.method in {"POST", "PUT", "PATCH"} and not is_upload:
+        is_release_import = (
+            request.method == "POST" and request.url.path == "/admin/v1/plugin-releases:import"
+        )
+        if request.method in {"POST", "PUT", "PATCH"} and not is_upload and not is_release_import:
             max_bytes = (
                 4_194_304
-                if request.url.path.startswith("/v1/agent/tasks/")
-                and request.url.path.endswith(":timeline")
+                if (
+                    request.url.path.startswith("/v1/agent/tasks/")
+                    and request.url.path.endswith((":timeline", ":output"))
+                )
+                or (
+                    request.url.path.startswith("/v1/agent/enrichments/")
+                    and request.url.path.endswith(":result")
+                )
                 else 65536
             )
             body = bytearray()
@@ -292,6 +317,7 @@ def create_app(settings: Settings | None = None):
     admin.register(app, pool, auth, settings)
     nodes.register(app, pool, auth, settings)
     plugin_deploy.register(app, pool, auth, settings)
+    plugin_registry.register(app, pool, auth, settings)
     orchestration.register(app, pool, auth, settings)
     dist = settings.console_dist.resolve()
     if (dist / "static").is_dir():

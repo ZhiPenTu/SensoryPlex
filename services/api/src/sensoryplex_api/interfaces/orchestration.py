@@ -158,6 +158,32 @@ def register(app, pool, auth, settings):
             ],
         }
 
+    @app.post("/v1/orchestration/pipelines/{pipeline_id}/revisions/{revision}:retire")
+    def retire_revision(
+        pipeline_id: str,
+        revision: int,
+        p: Annotated[object, Depends(auth.require("pipelines:manage"))] = None,
+    ):
+        with pool.connection() as conn:
+            row = one(
+                conn,
+                "SELECT 1 FROM pipeline_revision WHERE pipeline_id=%s AND revision=%s FOR UPDATE",
+                (pipeline_id, revision),
+            )
+            if not row:
+                fail(404, "pipeline_revision_not_found")
+            conn.execute(
+                "INSERT INTO pipeline_revision_retirement(pipeline_id,revision,retired_by) "
+                "VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
+                (pipeline_id, revision, p.name),
+            )
+            conn.execute(
+                "UPDATE console_pipeline SET state='archived' WHERE "
+                "orchestration_pipeline_id=%s AND orchestration_revision=%s",
+                (pipeline_id, revision),
+            )
+        return {"retired": True, "pipeline_id": pipeline_id, "revision": revision}
+
     @app.post("/v1/orchestration/runs", status_code=201)
     def submit_run(
         body: Annotated[dict, Body()] = ...,

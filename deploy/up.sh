@@ -15,7 +15,11 @@ if [[ ! -f "${ENV_FILE}" ]]; then
 fi
 
 cd "${ROOT}"
-docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" up -d --build --wait "$@"
+BUILD_ARGS=(--build)
+if [[ "${SENSORYPLEX_SKIP_BUILD:-0}" == "1" ]]; then
+    BUILD_ARGS=(--no-build)
+fi
+docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" up -d "${BUILD_ARGS[@]}" --wait "$@"
 
 echo "[up] 容器状态："
 docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" ps
@@ -50,7 +54,9 @@ echo "[up] 检查本机同机计算节点登记状态 (ADR-026)..."
 # 常驻 Agent 由用户显式通过 tools/install_agent.sh 或 node_agent.py run 启动。
 AGENT_STATE_FILE="${ROOT}/.data/agent/local-host.json"
 HOSTNAME_LABEL="$(hostname -s 2>/dev/null || uname -n || echo local)"
-if ! docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" \
+if [[ "${SENSORYPLEX_SKIP_ENROLL:-0}" == "1" ]]; then
+    echo "[up] 保留独立验证环境的节点登记策略。"
+elif ! docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" \
         ps --services --status running 2>/dev/null | grep -qx "api"; then
     echo "[up] api 容器未运行，跳过本机同机节点自纳管" >&2
 elif [[ -f "${AGENT_STATE_FILE}" ]]; then

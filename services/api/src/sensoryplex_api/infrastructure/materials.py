@@ -7,6 +7,7 @@ import hashlib
 
 from edge_material_sdk.generated.common.v1.common_pb2 import EventEnvelope
 from edge_material_sdk.generated.material.v1.material_pb2 import MaterialUnit, Observation
+from edge_material_sdk.manifest import declared_text, validate_payload
 from edge_material_sdk.validation import validate_material
 from google.protobuf.json_format import MessageToDict
 from psycopg.types.json import Jsonb
@@ -14,6 +15,18 @@ from psycopg.types.json import Jsonb
 
 class RevisionConflict(ValueError):
     pass
+
+
+def append_derived_material(conn, material, *, trace_id, execution_id):
+    """从本执行事实派生新版本；全局串行取号，不能复制另一次执行的事实。"""
+    conn.execute(
+        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (material.material_unit_id,)
+    )
+    material.revision = conn.execute(
+        "SELECT coalesce(max(revision),0)+1 FROM material_unit WHERE material_unit_id=%s",
+        (material.material_unit_id,),
+    ).fetchone()[0]
+    return append_material(conn, material, trace_id=trace_id, execution_id=execution_id)
 
 
 def append_material(conn, material: MaterialUnit, *, trace_id: str, execution_id: str = "") -> bool:
@@ -80,11 +93,17 @@ def append_material(conn, material: MaterialUnit, *, trace_id: str, execution_id
             if obs.source_id != source[0]:
                 raise ValueError("source_stream_mismatch")
             p = obs.provenance
+            if p.processor_release_id:
+                registration = _registered_observation(conn, obs)
+            else:
+                registration = None
             release = conn.execute(
                 "SELECT name,artifact_hash FROM model_release WHERE model_release_id=%s",
                 (p.model_release_id,),
             ).fetchone()
-            if not release or (release[0], release[1]) != (p.model_id, p.model_artifact_digest):
+            if p.model_applicability != 2 and (
+                not release or (release[0], release[1]) != (p.model_id, p.model_artifact_digest)
+            ):
                 raise ValueError("model_release_mismatch")
             item = conn.execute(
                 "SELECT stream_id,start_ms,end_ms FROM timeline_item WHERE item_id=%s",
@@ -114,6 +133,17 @@ def append_material(conn, material: MaterialUnit, *, trace_id: str, execution_id
                     and saved_obs.content_hash == obs.content_hash
                     and saved_obs.source_item_id == obs.source_item_id
                     and saved_obs.modality == obs.modality
+                    and (
+                        not obs.schema_digest
+                        or (
+                            saved_dict == curr_dict
+                            and saved_obs.schema_digest == obs.schema_digest
+                            and saved_obs.schema_id == obs.schema_id
+                            and saved_obs.schema_version == obs.schema_version
+                            and saved_obs.provenance == obs.provenance
+                            and saved_obs.time_range == obs.time_range
+                        )
+                    )
                 ):
                     obs.CopyFrom(saved_obs)
                     obs_data = saved[0]
@@ -129,15 +159,25 @@ def append_material(conn, material: MaterialUnit, *, trace_id: str, execution_id
                         obs.modality,
                         Jsonb(MessageToDict(obs.payload)),
                         obs.confidence if obs.HasField("confidence") else None,
-                        p.model_release_id,
+                        p.model_release_id or None,
                         obs_data,
                     ),
                 )
-        text = "\n".join(
-            part
-            for obs in material.observations
-            for part in _payload_text(MessageToDict(obs.payload))
-        )
+        text_parts = []
+        for obs in material.observations:
+            if obs.schema_digest:
+                registration = _registered_observation(conn, obs)
+                declaration = next(
+                    value
+                    for value in registration["manifest"]["spec"]["outputs"]
+                    if value["modality"] == obs.modality
+                )
+                text_parts.append(
+                    declared_text(MessageToDict(obs.payload), declaration.get("textFields", []))
+                )
+            else:
+                text_parts.extend(_payload_text(MessageToDict(obs.payload)))
+        text = "\n".join(part for part in text_parts if part)
         conn.execute(
             "INSERT INTO material_unit(material_unit_id,revision,stream_id,start_ms,end_ms,"
             "status,tags,search_text,contract_bytes,content_hash) "
@@ -197,7 +237,32 @@ def append_material(conn, material: MaterialUnit, *, trace_id: str, execution_id
             ),
             (event_id, event.event_type, event.SerializeToString(deterministic=True)),
         )
-    return True
+        return True
+
+
+def _registered_observation(conn, observation):
+    """schema 与处理器身份只能由不可变 release 注册记录解析。"""
+    from ..contracts import one
+
+    p = observation.provenance
+    row = one(
+        conn,
+        "SELECT r.plugin_id,r.plugin_version,r.artifact_digest,g.manifest,g.schemas "
+        "FROM plugin_release r JOIN plugin_registration g USING(release_id) "
+        "WHERE r.release_id=%s",
+        (p.processor_release_id,),
+    )
+    if not row or (p.plugin, p.plugin_version, p.artifact_digest) != (
+        row["plugin_id"],
+        row["plugin_version"],
+        row["artifact_digest"],
+    ):
+        raise ValueError("processor_release_mismatch")
+    expected = 2 if row["manifest"]["spec"]["modelApplicability"] == "not_applicable" else 1
+    if p.model_applicability != expected:
+        raise ValueError("processor_model_applicability_mismatch")
+    validate_payload(observation, row["manifest"]["spec"]["outputs"], row["schemas"])
+    return row
 
 
 def _payload_text(value):
@@ -216,11 +281,18 @@ BASE = """FROM material_unit m
     JOIN media_source source ON source.source_id=s.source_id"""
 LATEST = """NOT EXISTS (SELECT 1 FROM material_unit newer
     WHERE newer.material_unit_id=m.material_unit_id AND newer.revision>m.revision)"""
+LATEST_EXECUTION = """NOT EXISTS (SELECT 1 FROM material_unit newer
+    JOIN material_execution e ON (e.material_unit_id,e.material_revision)=
+    (newer.material_unit_id,newer.revision) WHERE e.execution_id=%s
+    AND newer.material_unit_id=m.material_unit_id AND newer.revision>m.revision)"""
 
 
 def get_material(conn, principal, material_id, revision=None, execution_id: str = ""):
     clause = "m.revision=%s" if revision is not None else LATEST
     params = [principal, material_id] + ([revision] if revision is not None else [])
+    if revision is None and execution_id:
+        clause = LATEST_EXECUTION
+        params.append(execution_id)
     execution_clause = ""
     if execution_id:
         execution_clause = (
@@ -244,6 +316,9 @@ def get_material(conn, principal, material_id, revision=None, execution_id: str 
 def search_materials(conn, principal, request):
     clauses = ["source.owner=%s", LATEST, "m.status <> 'failed'"]
     params = [principal]
+    if request.execution_id:
+        clauses[1] = LATEST_EXECUTION
+        params.append(request.execution_id)
     if request.query:
         # 字面子串查询：'%' 与 '_' 不得变成通配符查询。
         clauses.append("strpos(lower(m.search_text), lower(%s)) > 0")

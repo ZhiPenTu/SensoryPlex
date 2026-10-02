@@ -127,22 +127,56 @@ pub fn validate_observation(value: &material::Observation) -> Result<(), Contrac
         .provenance
         .as_ref()
         .ok_or(ContractError("missing_provenance"))?;
-    if [
-        &p.plugin,
-        &p.plugin_version,
-        &p.model_release_id,
-        &p.model_id,
-        &p.model_version,
-        &p.execution_backend,
-    ]
-    .iter()
-    .any(|s| s.is_empty())
+    if [&p.plugin, &p.plugin_version, &p.execution_backend]
+        .iter()
+        .any(|s| s.is_empty())
     {
         return Err(ContractError("incomplete_provenance"));
     }
     validate_digest(&p.artifact_digest)?;
-    validate_digest(&p.model_artifact_digest)?;
+    if p.model_applicability == material::ModelApplicability::NotApplicable as i32 {
+        if p.processor_release_id.is_empty()
+            || [
+                &p.model_release_id,
+                &p.model_id,
+                &p.model_version,
+                &p.model_artifact_digest,
+            ]
+            .iter()
+            .any(|field| !field.is_empty())
+        {
+            return Err(ContractError("non_model_provenance_invalid"));
+        }
+    } else {
+        if [&p.model_release_id, &p.model_id, &p.model_version]
+            .iter()
+            .any(|field| field.is_empty())
+        {
+            return Err(ContractError("incomplete_provenance"));
+        }
+        validate_digest(&p.model_artifact_digest)?;
+    }
     validate_digest(&p.config_hash)?;
+    if [
+        &value.schema_id,
+        &value.schema_version,
+        &value.schema_digest,
+    ]
+    .iter()
+    .any(|field| !field.is_empty())
+    {
+        if [
+            &value.schema_id,
+            &value.schema_version,
+            &value.schema_digest,
+        ]
+        .iter()
+        .any(|field| field.is_empty())
+        {
+            return Err(ContractError("incomplete_payload_schema"));
+        }
+        validate_digest(&value.schema_digest)?;
+    }
     Ok(())
 }
 

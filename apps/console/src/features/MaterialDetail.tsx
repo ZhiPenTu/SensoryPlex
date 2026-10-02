@@ -26,7 +26,13 @@ import {
 } from '@ant-design/icons';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
-import type { MaterialUnit, Observation, SourceReference } from '../api/contracts';
+import type {
+    MaterialIndexStatus,
+    MaterialUnit,
+    Observation,
+    ObservationIndexStatus,
+    SourceReference,
+} from '../api/contracts';
 import { ErrorNotice, Heading, Loading } from '../components';
 import {
     formatTime,
@@ -37,6 +43,7 @@ import {
     validRevision,
 } from './material-utils';
 import MaterialPlayer from './MaterialPlayer';
+import PluginResult, { ResultIndex } from './PluginResult';
 import './materials.css';
 
 const { Text } = Typography;
@@ -66,6 +73,18 @@ export default function MaterialDetail() {
 
     const result = revision === null ? latest : historical;
     const item = valid ? result.data : undefined;
+    const indexing = useQuery({
+        queryKey: ['material-index', id, item?.revision],
+        queryFn: ({ signal }) =>
+            api<MaterialIndexStatus>(
+                `/v1/materials/${encodeURIComponent(id)}/index-status?revision=${item?.revision}`,
+                { signal },
+            ),
+        enabled: !!item,
+        retry: false,
+        refetchInterval: (query) =>
+            query.state.data?.items.some((status) => status.state === 'pending') ? 10000 : false,
+    });
 
     function selectRevision(value: string) {
         const next = new URLSearchParams(params);
@@ -146,6 +165,7 @@ export default function MaterialDetail() {
             />
 
             <ErrorNotice error={result.error} />
+            <ErrorNotice error={indexing.error} />
 
             {item ? (
                 <>
@@ -442,7 +462,14 @@ export default function MaterialDetail() {
                             </Card>
 
                             {selectedObservation ? (
-                                <ObservationDetail observation={selectedObservation} />
+                                <ObservationDetail
+                                    observation={selectedObservation}
+                                    indexStatus={indexing.data?.items.find(
+                                        (status) =>
+                                            status.observation_id ===
+                                            selectedObservation.observation_id,
+                                    )}
+                                />
                             ) : null}
                         </Col>
                     </Row>
@@ -454,8 +481,15 @@ export default function MaterialDetail() {
     );
 }
 
-function ObservationDetail({ observation: obs }: { observation: Observation }) {
+function ObservationDetail({
+    observation: obs,
+    indexStatus,
+}: {
+    observation: Observation;
+    indexStatus?: ObservationIndexStatus;
+}) {
     const p = obs.provenance;
+    const nonModel = p?.model_applicability === 'MODEL_APPLICABILITY_NOT_APPLICABLE';
 
     return (
         <Card
@@ -495,9 +529,21 @@ function ObservationDetail({ observation: obs }: { observation: Observation }) {
                 </Descriptions.Item>
                 <Descriptions.Item label="模型置信度">
                     <Text strong style={{ color: '#1668dc' }}>
-                        {obs.confidence == null ? '未知' : String(obs.confidence)}
+                        {nonModel
+                            ? '模型不适用'
+                            : obs.confidence == null
+                              ? '未知'
+                              : String(obs.confidence)}
                     </Text>
                 </Descriptions.Item>
+                <Descriptions.Item label="检索状态">
+                    <ResultIndex status={indexStatus} />
+                </Descriptions.Item>
+                {obs.schema_id ? (
+                    <Descriptions.Item label="结果 Schema">
+                        {obs.schema_id} · {obs.schema_version}
+                    </Descriptions.Item>
+                ) : null}
                 <Descriptions.Item label="观测时序">
                     <span className="mono" style={{ color: '#059669' }}>
                         {formatTime(obs.time_range?.start_ms)} ~{' '}
@@ -520,7 +566,7 @@ function ObservationDetail({ observation: obs }: { observation: Observation }) {
                 items={[
                     {
                         key: 'lineage',
-                        label: <span style={{ fontWeight: 600 }}>模型与来源血缘链路</span>,
+                        label: <span style={{ fontWeight: 600 }}>处理器与来源血缘链路</span>,
                         children: (
                             <Descriptions
                                 bordered
@@ -532,9 +578,21 @@ function ObservationDetail({ observation: obs }: { observation: Observation }) {
                                     <span className="mono">{obs.observation_id}</span>
                                 </Descriptions.Item>
                                 <Descriptions.Item label="模型信息">
-                                    {p?.model_id || '未知'} · {p?.model_version || '未知'} (后端:{' '}
-                                    {p?.execution_backend || '默认'})
+                                    {nonModel
+                                        ? '模型不适用（确定性处理器）'
+                                        : `${p?.model_id || '未知'} · ${p?.model_version || '未知'}`}{' '}
+                                    · 后端 {p?.execution_backend || '未知'}
                                 </Descriptions.Item>
+                                {p?.processor_release_id ? (
+                                    <Descriptions.Item label="处理器 Release">
+                                        <span className="mono">{p.processor_release_id}</span>
+                                    </Descriptions.Item>
+                                ) : null}
+                                {obs.schema_digest ? (
+                                    <Descriptions.Item label="Schema 摘要">
+                                        <span className="mono">{obs.schema_digest}</span>
+                                    </Descriptions.Item>
+                                ) : null}
                                 <Descriptions.Item label="插件来源">
                                     {p?.plugin || '未知'} · {p?.plugin_version || '未知'}
                                 </Descriptions.Item>
@@ -543,7 +601,9 @@ function ObservationDetail({ observation: obs }: { observation: Observation }) {
                                 </Descriptions.Item>
                                 <Descriptions.Item label="模型产物摘要">
                                     <span className="mono">
-                                        {p?.model_artifact_digest || '未知'}
+                                        {nonModel
+                                            ? '模型不适用'
+                                            : p?.model_artifact_digest || '未知'}
                                     </span>
                                 </Descriptions.Item>
                             </Descriptions>
@@ -554,22 +614,7 @@ function ObservationDetail({ observation: obs }: { observation: Observation }) {
                         label: (
                             <span style={{ fontWeight: 600 }}>结构化原始数据 (Payload JSON)</span>
                         ),
-                        children: (
-                            <pre
-                                style={{
-                                    margin: 0,
-                                    padding: 12,
-                                    borderRadius: 6,
-                                    background: '#0f172a',
-                                    color: '#e2e8f0',
-                                    fontSize: 11,
-                                    maxHeight: 260,
-                                    overflow: 'auto',
-                                }}
-                            >
-                                {JSON.stringify(obs.payload || {}, null, 2)}
-                            </pre>
-                        ),
+                        children: <PluginResult payload={obs.payload} />,
                     },
                 ]}
             />

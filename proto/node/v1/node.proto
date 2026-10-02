@@ -365,7 +365,7 @@ message PluginRuntimeInstance {
 
 message PluginDeploymentOperation {
   string operation_id = 1;
-  string kind = 2; // provision, upgrade, rollback
+  string kind = 2; // provision, upgrade, rollback, retire
   string node_id = 3;
   string instance_id = 4;
   string plugin_id = 5;
@@ -441,4 +441,19 @@ message SyncPluginReleasesResponse {
   // 拒绝原因形如 "<仓库内相对路径>:<稳定错误码>"，不做成结构化字段以免契约随校验项漂移。
   repeated string rejected = 3;
   uint32 total = 4;
+}
+
+// Administrator-approved Ed25519 publishers. Revocation blocks new admission.
+message PluginSigner {
+  string signer_id = 1;
+  string display_name = 2;
+  string public_key = 3;
+  string created_by = 4;
+  string created_at = 5;
+  string revoked_at = 6;
+}
+message PluginSignerList { repeated PluginSigner items = 1; }
+message ApprovePluginSignerRequest {
+  string display_name = 1;
+  string public_key = 2;
 }

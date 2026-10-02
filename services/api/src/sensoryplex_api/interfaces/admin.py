@@ -15,7 +15,8 @@ from ..infrastructure.plugin_configurations import normalize_configuration, save
 def register(app, pool, auth, settings):
     @app.get("/admin/v1/catalog")
     def list_catalog(p: Annotated[object, Depends(auth.require("plugins:manage"))] = None):
-        return out({"items": catalog(settings)}, pb.PluginList)
+        with pool.connection() as conn:
+            return out({"items": catalog(settings, conn)}, pb.PluginList)
 
     @app.get("/admin/v1/plugins")
     def installed(p: Annotated[object, Depends(auth.require("plugins:manage"))] = None):
@@ -56,9 +57,9 @@ def register(app, pool, auth, settings):
     ):
         req = parse(body, pb.SavePluginConfig)
         text_field(req.name)
-        entry = plugin(settings, req.plugin_id)
-        config = normalize_configuration(entry, MessageToDict(req.config))
         with pool.connection() as conn:
+            entry = plugin(settings, req.plugin_id, conn, req.release_id)
+            config = normalize_configuration(entry, MessageToDict(req.config))
             result = save_configuration(
                 conn,
                 plugin_id=req.plugin_id,
@@ -174,9 +175,9 @@ def register(app, pool, auth, settings):
         text_field(req.name)
         if len(req.description) > 2000:
             fail(422, "description_too_long")
-        entry = plugin(settings, req.plugin_id)
         key = identifier("pipeline")
         with pool.connection() as conn:
+            entry = plugin(settings, req.plugin_id, conn)
             config = one(
                 conn,
                 "SELECT id FROM console_plugin_config WHERE id=%s AND plugin_id=%s",
@@ -213,6 +214,7 @@ def register(app, pool, auth, settings):
         return out(result, pb.Pipeline)
 
     @app.post("/admin/v1/multimodal-pipelines:validate")
+    @app.post("/admin/v1/plugin-graphs:validate")
     def validate_multimodal_pipeline(
         body: Annotated[dict, Body()] = ...,
         p: Annotated[object, Depends(auth.require("pipelines:manage"))] = None,
@@ -234,6 +236,7 @@ def register(app, pool, auth, settings):
         }
 
     @app.post("/admin/v1/multimodal-pipelines", status_code=201)
+    @app.post("/admin/v1/plugin-graphs", status_code=201)
     def save_multimodal_pipeline(
         body: Annotated[dict, Body()] = ...,
         p: Annotated[object, Depends(auth.require("pipelines:manage"))] = None,
@@ -263,7 +266,7 @@ def register(app, pool, auth, settings):
                 "SELECT coalesce(max(revision),0)+1 FROM console_pipeline WHERE name=%s",
                 (name,),
             ).fetchone()[0]
-            ocr_config = next(node["config_id"] for node in nodes if node["id"] == "ocr_fast")
+            ocr_config = next(node["config_id"] for node in nodes if node.get("config_id"))
             result = one(
                 conn,
                 """
@@ -277,7 +280,9 @@ def register(app, pool, auth, settings):
                     console_id,
                     name,
                     description,
-                    "org.sensoryplex.multimodal-file",
+                    "org.sensoryplex.generic-file"
+                    if "nodes" in body
+                    else "org.sensoryplex.multimodal-file",
                     published["graph_digest"],
                     ocr_config,
                     revision,

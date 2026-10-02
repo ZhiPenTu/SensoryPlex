@@ -201,6 +201,7 @@ class ObservationFacts:
     observation_id: str
     modality: str
     payload: dict
+    contract_bytes: bytes = b""
 
 
 @dataclass(frozen=True)
@@ -234,6 +235,7 @@ def resolve_material(conn, ref: MaterialRef) -> MaterialFacts | None:
                 observation_id=item["observation_id"],
                 modality=item["modality"],
                 payload=item["payload"],
+                contract_bytes=item.get("contract_bytes", b""),
             )
             for item in observations
         ),
@@ -315,7 +317,13 @@ def consume_event(
     report.observations = len(facts.observations)
     model_release_registered = False
     for facts_item in facts.observations:
-        if facts_item.modality not in EMBEDDABLE_MODALITIES:
+        generic = bool(
+            facts_item.modality not in EMBEDDABLE_MODALITIES
+            and facts_item.modality.count(".") >= 2
+            and facts_item.contract_bytes
+            and material.Observation.FromString(facts_item.contract_bytes).schema_digest
+        )
+        if facts_item.modality not in EMBEDDABLE_MODALITIES and not generic:
             # 不是受控的可编码文本观测（如 ASR）：本 sink 不处理，但要计数——静默跳过会让
             # "这个素材根本没产出向量"变成无从解释的现象。
             report.skipped_modality += 1
@@ -363,7 +371,47 @@ def _sink_observation(
     """
     upstream = upstream_observation(item)
     try:
-        source = bge_text.collect_text(upstream)
+        if (
+            item.modality not in EMBEDDABLE_MODALITIES
+            and item.modality.count(".") >= 2
+            and item.contract_bytes
+            and material.Observation.FromString(item.contract_bytes).schema_digest
+        ):
+            from edge_material_sdk.manifest import declared_text, validate_payload
+            from google.protobuf.json_format import MessageToDict
+
+            observation = material.Observation.FromString(item.contract_bytes)
+            registration = conn.execute(
+                "SELECT manifest,schemas FROM plugin_registration WHERE release_id=%s",
+                (observation.provenance.processor_release_id,),
+            ).fetchone()
+            if not registration:
+                raise ConsumerError("processor_release_missing")
+            manifest, schemas = registration
+            validate_payload(observation, manifest["spec"]["outputs"], schemas)
+            declaration = next(
+                value
+                for value in manifest["spec"]["outputs"]
+                if value["modality"] == observation.modality
+            )
+            text = declared_text(
+                MessageToDict(observation.payload), declaration.get("textFields", [])
+            )
+            if not text:
+                return SinkSkip(reason=EMPTY_TEXT_REASON)
+            if len(text) > bge_text.MAX_TOTAL_CHARS:
+                return SinkSkip(reason=OVER_BOUND_TEXT_REASON)
+            source = bge_text.TextSource(
+                text=text,
+                text_sha256=bge_text.text_digest(text),
+                block_count=1,
+                blank_blocks=0,
+                char_count=len(text),
+                source_modality=observation.modality,
+                join_separator="\n",
+            )
+        else:
+            source = bge_text.collect_text(upstream)
     except PluginError as error:
         reason = str(error.reason_code or "")
         if reason == EMPTY_TEXT_REASON:

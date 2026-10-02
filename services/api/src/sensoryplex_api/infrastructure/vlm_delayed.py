@@ -250,6 +250,7 @@ def enqueue_vlm_tasks(
     nodes = revision["definition_json"].get("nodes", [])
     timeline = next((item for item in nodes if item.get("id") == "timeline_fusion"), {})
     delayed = timeline.get("delayed_enrichments") or []
+    delayed = [entry for entry in delayed if not entry.get("release_id")]
     if not delayed:
         return []
     if not isinstance(delayed, list) or len(delayed) != 1 or not isinstance(delayed[0], dict):
@@ -545,14 +546,15 @@ def _upsert_model_release(conn, observation: material_pb2.Observation) -> None:
 def _merge_material(conn, task: dict[str, Any], observation: material_pb2.Observation) -> None:
     row = conn.execute(
         """
-        SELECT contract_bytes FROM material_unit WHERE material_unit_id=%s
-        ORDER BY revision DESC LIMIT 1
+        SELECT m.contract_bytes FROM material_unit m JOIN material_execution e ON
+        (e.material_unit_id,e.material_revision)=(m.material_unit_id,m.revision)
+        WHERE m.material_unit_id=%s AND e.execution_id=%s
+        ORDER BY m.revision DESC LIMIT 1
         """,
-        (task["material_unit_id"],),
+        (task["material_unit_id"], task["execution_id"]),
     ).fetchone()
     if row:
         unit = material_pb2.MaterialUnit.FromString(row[0])
-        unit.revision += 1
         if any(item.observation_id == observation.observation_id for item in unit.observations):
             return
         unit.observations.append(observation)
@@ -579,7 +581,7 @@ def _merge_material(conn, task: dict[str, Any], observation: material_pb2.Observ
             pipeline_version="delayed-vlm-v1",
             created_at_unix_ms=int(time.time() * 1000),
         )
-    materials.append_material(
+    materials.append_derived_material(
         conn,
         unit,
         trace_id=f"vlm-task:{task['task_id']}",
@@ -723,20 +725,21 @@ def apply_vlm_result(conn, result: orchestration_pb2.VlmTaskResult) -> dict[str,
                 # 可重试失败不 ACK 任务；Consumer 会让 AckWait 重投给可用节点。
                 raise VlmDelayedError("vlm_result_retryable_must_not_be_published")
             row = conn.execute(
-                "SELECT contract_bytes FROM material_unit WHERE material_unit_id=%s "
-                "ORDER BY revision DESC LIMIT 1",
-                (task["material_unit_id"],),
+                "SELECT m.contract_bytes FROM material_unit m JOIN material_execution e ON "
+                "(e.material_unit_id,e.material_revision)=(m.material_unit_id,m.revision) "
+                "WHERE m.material_unit_id=%s AND e.execution_id=%s "
+                "ORDER BY m.revision DESC LIMIT 1",
+                (task["material_unit_id"], task["execution_id"]),
             ).fetchone()
             if row:
                 unit = material_pb2.MaterialUnit.FromString(row[0])
                 if VLM_MODALITY in unit.pending_enrichments:
-                    unit.revision += 1
                     unit.pending_enrichments[:] = [
                         p for p in unit.pending_enrichments if p != VLM_MODALITY
                     ]
                     if not unit.observations:
                         unit.status = "failed"
-                    materials.append_material(
+                    materials.append_derived_material(
                         conn,
                         unit,
                         trace_id=f"vlm-task:{task['task_id']}",

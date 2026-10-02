@@ -414,6 +414,8 @@ impl BufferHandoff {
         self.retain_inner(buffer_id, kind, stream_id, time_range, format, bytes, false)
     }
 
+    // 与公共 retain 保持同一组零拷贝描述字段；额外参数仅控制重试统计。
+    #[allow(clippy::too_many_arguments)]
     fn retain_inner(
         &mut self,
         buffer_id: &str,

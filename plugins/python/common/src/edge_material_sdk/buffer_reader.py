@@ -172,10 +172,19 @@ class LeaseBufferReader:
         try:
             fd = shm_open(segment_name, os.O_RDONLY, 0o600)
         except OSError as error:
-            # 生产者已退出或段名失效：这是可重试的传输层失败，不是"没有数据"。
-            raise BufferReadError(
-                common.TRANSIENT_BACKEND_FAILURE, f"segment_unavailable:{error.errno}", True
-            ) from error
+            clean = segment_name.lstrip("/")
+            fallback = f"/tmp/sensoryplex-shm-{clean}"
+            if os.path.exists(fallback):
+                try:
+                    fd = os.open(fallback, os.O_RDONLY)
+                except OSError as inner_error:
+                    raise BufferReadError(
+                        common.TRANSIENT_BACKEND_FAILURE, f"segment_unavailable:{inner_error.errno}", True
+                    ) from inner_error
+            else:
+                raise BufferReadError(
+                    common.TRANSIENT_BACKEND_FAILURE, f"segment_unavailable:{error.errno}", True
+                ) from error
         try:
             size = os.fstat(fd).st_size
             mapping = mmap.mmap(fd, size, prot=mmap.PROT_READ)

@@ -453,8 +453,8 @@ impl GstDecoder {
             if let Ok(mut slot) = stream.lock() {
                 *slot = pad.stream_id().map(|id| id.to_string());
             }
-            if pad.link(&sink_pad).is_err() {
-                tracing::error!(track = kind.name(), "failed to link decoded pad");
+            if let Err(link_err) = pad.link(&sink_pad) {
+                tracing::error!(track = kind.name(), ?link_err, "failed to link decoded pad");
                 return;
             }
             // 源里确实有这条轨道：即使随后被准入拒绝，"有没有"和"放不放行"也是两件事。
@@ -628,7 +628,7 @@ fn build_chain(
     // 解码器给哪种内存，归一化链都能接住（GLMemory 走一次 GPU→CPU 下载，像素内容不变）。
     // 元素缺失（无 GL 插件的宿主）时退回原有链路：GLMemory 只有 GL 解码器才可能给出，
     // 那种宿主本来也不会走到这条分支。
-    let memory_download = if kind == TrackKind::Video {
+    let memory_download = if kind == TrackKind::Video && std::env::var("SENSORYPLEX_NO_GL").is_err() {
         gst::ElementFactory::find("gldownload").map(|_| {
             gst::ElementFactory::make("gldownload")
                 .name(format!("{}-gldownload", kind.name()))
