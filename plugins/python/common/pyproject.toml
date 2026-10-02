@@ -1,9 +1,12 @@
 [project]
 name = "edge-material-sdk"
-version = "0.1.0"
+version = "0.1.4"
 description = "SensoryPlex versioned Python plugin SDK"
 requires-python = ">=3.12,<3.13"
-dependencies = ["protobuf>=5.29,<6", "grpcio>=1.71,<1.72"]
+dependencies = ["protobuf>=5.29,<6", "grpcio>=1.71,<1.72", "jsonschema>=4.23,<5", "pyyaml>=6,<7", "cryptography>=44,<47", "packaging>=24,<27"]
+
+[project.scripts]
+sensoryplex-plugin = "edge_material_sdk.cli:main"
 
 [build-system]
 requires = ["hatchling"]

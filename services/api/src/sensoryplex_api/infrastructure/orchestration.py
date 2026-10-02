@@ -83,7 +83,15 @@ def validate_and_normalize_graph(
         }
         # 下列身份字段是可选的通用扩展。Console v2 会强制填满它们；保留通用
         # 编排 API 的老调用兼容性，避免把历史 P1 revision 误判成可执行多模态方案。
-        for field in ("plugin_version", "artifact_digest", "config_hash", "config_id"):
+        for field in (
+            "plugin_version",
+            "artifact_digest",
+            "config_hash",
+            "config_id",
+            "release_id",
+            "execution_mode",
+            "input_selector",
+        ):
             value = node.get(field)
             if value is not None:
                 normalized = str(value).strip()
@@ -91,6 +99,12 @@ def validate_and_normalize_graph(
                     errors.append("invalid_orchestration_plugin_identity")
                     break
                 node_map[node_id][field] = normalized
+        for field in ("input_contracts", "output_contracts"):
+            if field in node:
+                if not isinstance(node[field], list) or len(node[field]) > 32:
+                    errors.append("invalid_orchestration_payload_contract")
+                else:
+                    node_map[node_id][field] = node[field]
         if "execution_policy" in node:
             # 只有受限多模态编译器会写入本字段；它仍进入 graph_digest，避免任务执行
             # 时从可变的全局 YAML 重新推断采样和窗口策略。
@@ -103,7 +117,7 @@ def validate_and_normalize_graph(
             # 仅 Timeline 节点能声明延迟补全；它不是 DAG task，必须随不可变 Revision
             # 一起摘要，不能由执行器或 Consumer 从当前目录/全局配置重新猜测。
             delayed = node["delayed_enrichments"]
-            if node_id != "timeline_fusion" or not isinstance(delayed, list) or len(delayed) > 1:
+            if node_id != "timeline_fusion" or not isinstance(delayed, list) or len(delayed) > 32:
                 errors.append("invalid_orchestration_delayed_enrichment")
                 continue
             normalized_delayed: list[dict[str, Any]] = []
@@ -126,6 +140,17 @@ def validate_and_normalize_graph(
                 if any(not entry.get(field) for field in required_fields):
                     errors.append("invalid_orchestration_delayed_enrichment")
                     break
+                if entry.get("release_id"):
+                    if (
+                        entry.get("execution_mode") != "async_enrichment"
+                        or entry.get("required")
+                        or not 1 <= int(entry["max_attempts"]) <= MAX_ATTEMPTS
+                        or not 1 <= int(entry["deadline_ms"]) <= 300000
+                    ):
+                        errors.append("invalid_orchestration_delayed_enrichment")
+                        break
+                    normalized_delayed.append(entry)
+                    continue
                 if (
                     entry["id"] != "vlm_enrich"
                     or entry["plugin_id"] != "org.sensoryplex.vlm-moondream"
@@ -337,11 +362,17 @@ def submit_pipeline_run(
 
     rev_record = one(
         conn,
-        "SELECT * FROM pipeline_revision WHERE pipeline_id=%s AND revision=%s",
+        "SELECT * FROM pipeline_revision WHERE pipeline_id=%s AND revision=%s FOR SHARE",
         (pipeline_id, revision),
     )
     if not rev_record:
         fail(404, "pipeline_revision_not_found")
+    if one(
+        conn,
+        "SELECT 1 FROM pipeline_revision_retirement WHERE pipeline_id=%s AND revision=%s",
+        (pipeline_id, revision),
+    ):
+        fail(409, "pipeline_revision_retired")
 
     # 幂等检查：活跃状态的同参运行直接返回
     existing_run = one(
@@ -490,7 +521,12 @@ def cancel_pipeline_run(
     if not run_record:
         fail(404, "run_not_found")
 
-    if run_record["state"] in ("succeeded", "failed", "cancelled", "expired"):
+    enrichment_pending = one(
+        conn, "SELECT 1 FROM enrichment_task WHERE run_id=%s AND state='queued' LIMIT 1", (run_id,)
+    )
+    if run_record["state"] in ("failed", "cancelled", "expired") or (
+        run_record["state"] == "succeeded" and not enrichment_pending
+    ):
         tasks = rows(conn, "SELECT * FROM pipeline_task WHERE run_id=%s", (run_id,))
         return {"run": run_record, "cancelled_tasks": tasks}
 
@@ -525,6 +561,13 @@ def cancel_pipeline_run(
     )
 
     audit(conn, actor, "pipeline.run.cancel", run_id)
+    conn.execute(
+        "UPDATE enrichment_task SET "
+        "state='cancelled',reason_code='run_cancelled',completed_at=now(),lease_expires_at=NULL "
+        "WHERE run_id=%s AND state='queued'",
+        (run_id,),
+    )
+    _sync_console_execution(conn, run_id)
     updated_run = one(conn, "SELECT * FROM pipeline_run WHERE run_id=%s", (run_id,))
     return {"run": updated_run, "cancelled_tasks": cancelled_tasks}
 
@@ -950,6 +993,21 @@ def _sync_console_execution(conn, run_id: str) -> str | None:
     )
     delayed_pending = any(item["state"] not in {"succeeded", "failed"} for item in delayed_rows)
     delayed_failed = any(item["state"] == "failed" for item in delayed_rows)
+    generic = rows(
+        conn,
+        "SELECT state,reason_code,count(*) AS count FROM enrichment_task WHERE execution_id=%s "
+        "GROUP BY state,reason_code",
+        (execution["execution_id"],),
+    )
+    delayed_pending = delayed_pending or any(item["state"] == "queued" for item in generic)
+    delayed_failed = delayed_failed or any(item["state"] == "failed" for item in generic)
+    summary["enrichments"] = {
+        "counts": {
+            state: sum(item["count"] for item in generic if item["state"] == state)
+            for state in {item["state"] for item in generic}
+        },
+        "failures": [item for item in generic if item["state"] == "failed"],
+    }
 
     state = "running"
     if run["state"] == "cancelled":

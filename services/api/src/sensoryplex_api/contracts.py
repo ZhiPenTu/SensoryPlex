@@ -1,6 +1,7 @@
 """HTTP 使用 Proto JSON；这里不重新声明跨语言字段。"""
 
 import hashlib
+import re
 from datetime import datetime
 from uuid import uuid4
 
@@ -9,6 +10,16 @@ from google.protobuf.json_format import MessageToDict, ParseDict, ParseError
 from psycopg.rows import dict_row
 
 RETRYABLE_HEADER = "X-Retryable"
+
+
+def validate_processor_reason(value, *, required=False):
+    """处理器原因只接收有界机器码，防止异常文本泄漏到控制台账。"""
+    if (
+        not isinstance(value, str)
+        or (not value and required)
+        or (value and not re.fullmatch(r"[a-z][a-z0-9_]{0,119}", value))
+    ):
+        raise ValueError("plugin_result_reason_invalid")
 
 
 def hash_token(token: str) -> str:
@@ -38,9 +49,26 @@ def parse(body, cls):
 def out(value, cls=None):
     if cls:
         value = ParseDict(clean(value), cls(), ignore_unknown_fields=True)
-    return MessageToDict(
+    result = MessageToDict(
         value, preserving_proto_field_name=True, always_print_fields_with_no_presence=True
     )
+
+    # v1 血缘的 JSON 保持原有形状；v2 显式声明时保留追加字段。
+    def compatible(item):
+        if isinstance(item, dict):
+            provenance = item.get("provenance")
+            if isinstance(provenance, dict) and not provenance.get("processor_release_id"):
+                provenance.pop("processor_release_id", None)
+                if provenance.get("model_applicability") == "MODEL_APPLICABILITY_UNSPECIFIED":
+                    provenance.pop("model_applicability", None)
+            for child in item.values():
+                compatible(child)
+        elif isinstance(item, list):
+            for child in item:
+                compatible(child)
+
+    compatible(result)
+    return result
 
 
 def clean(value):

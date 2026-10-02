@@ -734,6 +734,11 @@ def test_rollback_creates_reverse_operation_without_rewriting_history(client, re
     assert payload["stage"] == "PLUGIN_OPERATION_STAGE_ACCEPTED"
     assert payload["candidate"]["release_id"] == releases["0.1.0"]["release_id"]
 
+    # 逻辑槽位仍是新版本；回滚候选的意图必须使用目标实例自己的身份。
+    intent = pending_intent(client, node, token, "DEPLOYMENT_ACTION_STAGE_RELEASE")
+    assert intent["plugin_version"] == "0.1.0"
+    assert intent["config_hash"]
+
     # 历史操作行不被改写：旧操作仍是 succeeded，回滚只是新增一行反向操作。
     history = operation(client, second["operation_id"])
     assert history["stage"] == "PLUGIN_OPERATION_STAGE_SUCCEEDED"
@@ -746,7 +751,13 @@ def test_rollback_creates_reverse_operation_without_rewriting_history(client, re
 
     # 回滚本身也是一次完整蓝绿：切换完成后 active 回到 0.1.0，旧版本留作 previous。
     cutover(
-        client, node, token, payload["operation_id"], releases["0.1.0"], expected="draining_old"
+        client,
+        node,
+        token,
+        payload["operation_id"],
+        releases["0.1.0"],
+        expected="draining_old",
+        intent=intent,
     )
     drain_previous(client, node, token)
     slot = slot_row(db, node)

@@ -9,7 +9,6 @@ import json
 from typing import Any
 
 from ..contracts import fail, one
-from . import orchestration
 from .catalog import plugin
 
 WINDOW_MS = 1_000
@@ -169,6 +168,10 @@ def build_graph(
     conn, settings, body: dict[str, Any]
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, int]]:
     """将受限组件列表编译为固定的文件多模态 DAG，并锁定插件与配置身份。"""
+    if "nodes" in body:
+        from .plugin_graph import build_graph as build_registered_graph
+
+        return build_registered_graph(conn, settings, body)
     raw_components = body.get("components")
     if not isinstance(raw_components, list) or not raw_components:
         fail(422, "multimodal_components_required")
@@ -236,50 +239,14 @@ def build_graph(
     if policy["audio_overlap_ms"] >= policy["audio_segment_ms"]:
         fail(422, "invalid_multimodal_audio_overlap")
 
-    timeline_consumes = ["observation.ocr_blocks", "observation.asr_segment"]
     # VLM 不是 ADR-029 同机数据面 DAG 的一个可调度节点：它在快路径 Timeline 已落库后，
     # 由独立的 JetStream WorkQueue 竞争消费。把它塞进这里会让 Executor 再次全片解码，
     # 也会把 VLM 实例可用性错误地变成 L1 准入门槛。
     delayed_enrichments = [selected["vlm_enrich"]] if "vlm_enrich" in selected else []
-    nodes = [selected[key] for key in sorted(selected) if key != "vlm_enrich"]
-    nodes.append(
-        {
-            "id": "timeline_fusion",
-            "plugin_id": RUNTIME_TIMELINE_PLUGIN,
-            "plugin_version": RUNTIME_TIMELINE_VERSION,
-            "artifact_digest": RUNTIME_TIMELINE_DIGEST,
-            "config_hash": _sha256_json(policy),
-            "consumes": timeline_consumes,
-            "produces": ["material.unit"],
-            "placement": "data_plane_local",
-            "deadline_ms": 60_000,
-            "max_attempts": 2,
-            "priority": 10,
-            "required": True,
-            # 策略属于不可变 Revision，不能让执行器在全局 YAML 里重新猜一次。
-            "execution_policy": policy,
-            # 这是 Revision 的不可变元数据，不是 DAG 节点：快路径完成后由底座据此生成
-            # 只含对象引用与时间锚点的 WorkQueue 消息。
-            "delayed_enrichments": delayed_enrichments,
-        }
+    from .plugin_graph import compile_graph
+
+    return compile_graph(
+        [selected[key] for key in sorted(selected) if key != "vlm_enrich"],
+        delayed_enrichments,
+        policy,
     )
-    edges = [
-        {
-            "from_node_id": "ocr_fast",
-            "to_node_id": "timeline_fusion",
-            "modality": "observation.ocr_blocks",
-            "join_policy": "same_stream_window",
-            "required": True,
-        },
-        {
-            "from_node_id": "asr_fast",
-            "to_node_id": "timeline_fusion",
-            "modality": "observation.asr_segment",
-            "join_policy": "same_stream_window",
-            "required": True,
-        },
-    ]
-    valid, errors, _, _, _ = orchestration.validate_and_normalize_graph(nodes, edges)
-    if not valid:
-        fail(422, errors[0])
-    return nodes, edges, policy

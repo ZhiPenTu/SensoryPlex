@@ -173,6 +173,11 @@ def register_references(
     for unit in units:
         for observation in unit.observations:
             p = observation.provenance
+            if p.model_applicability == material.MODEL_APPLICABILITY_NOT_APPLICABLE:
+                from .materials import _registered_observation
+
+                _registered_observation(conn, observation)
+                continue
             releases[p.model_release_id] = (
                 p.model_id,
                 p.model_version,

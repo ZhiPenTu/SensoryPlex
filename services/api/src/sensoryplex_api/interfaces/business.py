@@ -123,6 +123,74 @@ def register(app, pool, auth, settings):
             fail(404, "material_not_found")
         return out(result)
 
+    @app.get("/v1/materials/{key}/index-status")
+    def indexing(
+        key: str,
+        revision: int | None = Query(None, ge=1),
+        execution_id: str = Query("", max_length=128),
+        p: Annotated[object, Depends(auth.require("materials:read"))] = None,
+    ):
+        from edge_material_sdk.manifest import declared_text
+        from google.protobuf.json_format import MessageToDict
+
+        with pool.connection() as conn:
+            unit = materials.get_material(conn, p.name, key, revision, execution_id)
+            if unit is None:
+                fail(404, "material_not_found")
+            items = []
+            for observation in unit.observations:
+                fields, reason, state = [], "", "not_declared"
+                if observation.provenance.processor_release_id:
+                    registration = one(
+                        conn,
+                        "SELECT manifest FROM plugin_registration WHERE release_id=%s",
+                        (observation.provenance.processor_release_id,),
+                    )
+                    declaration = (
+                        next(
+                            (
+                                d
+                                for d in registration["manifest"]["spec"]["outputs"]
+                                if d["modality"] == observation.modality
+                            ),
+                            None,
+                        )
+                        if registration
+                        else None
+                    )
+                    fields = declaration.get("textFields", []) if declaration else []
+                    if fields:
+                        state = (
+                            "pending"
+                            if declared_text(MessageToDict(observation.payload), fields)
+                            else "empty_text"
+                        )
+                    else:
+                        reason = "index_text_not_declared"
+                elif observation.modality in {"ocr_blocks", "vision.scene_description"}:
+                    state = "pending"
+                records = rows(
+                    conn,
+                    "SELECT state FROM embedding_record WHERE observation_id=%s AND "
+                    "material_unit_id=%s AND material_revision=%s",
+                    (observation.observation_id, unit.material_unit_id, unit.revision),
+                )
+                if records:
+                    state = (
+                        "ready"
+                        if all(r["state"] == "ready" for r in records)
+                        else records[0]["state"]
+                    )
+                items.append(
+                    {
+                        "observation_id": observation.observation_id,
+                        "state": state,
+                        "reason_code": reason,
+                        "text_fields": fields,
+                    }
+                )
+        return out({"items": items}, pb.MaterialIndexStatus)
+
     @app.get("/v1/streams/{key}")
     def stream(key: str, p: Annotated[object, Depends(auth.require("materials:read"))] = None):
         with pool.connection() as conn:
@@ -150,6 +218,12 @@ def register(app, pool, auth, settings):
         """派发前核验每个外部处理器都有同节点、同制品、同配置的 active 实例。"""
         for node in revision["definition_json"].get("nodes", []):
             if node["plugin_id"] == multimodal.RUNTIME_TIMELINE_PLUGIN:
+                continue
+            if node.get("release_id"):
+                from ..infrastructure.runtime_bindings import pinned_runtime
+
+                if not pinned_runtime(conn, node_id, node):
+                    fail(409, "plugin_pinned_release_unavailable")
                 continue
             instance = one(
                 conn,

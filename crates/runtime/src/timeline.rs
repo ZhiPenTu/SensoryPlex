@@ -152,6 +152,12 @@ struct RawObservation {
     timing_source: String,
     #[serde(default)]
     timing_confidence: Option<f64>,
+    #[serde(default)]
+    schema_id: String,
+    #[serde(default)]
+    schema_version: String,
+    #[serde(default)]
+    schema_digest: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -190,12 +196,20 @@ struct RawProvenance {
     plugin: String,
     plugin_version: String,
     artifact_digest: String,
+    #[serde(default)]
     model_release_id: String,
+    #[serde(default)]
     model_id: String,
+    #[serde(default)]
     model_version: String,
     config_hash: String,
     execution_backend: String,
+    #[serde(default)]
     model_artifact_digest: String,
+    #[serde(default)]
+    processor_release_id: String,
+    #[serde(default)]
+    model_applicability: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -877,11 +891,21 @@ fn to_observation(raw: &RawObservation, limits: &FusionLimits) -> Result<Observa
             config_hash: raw.provenance.config_hash.clone(),
             execution_backend: raw.provenance.execution_backend.clone(),
             model_artifact_digest: raw.provenance.model_artifact_digest.clone(),
+            processor_release_id: raw.provenance.processor_release_id.clone(),
+            model_applicability: match raw.provenance.model_applicability.as_str() {
+                "" | "MODEL_APPLICABILITY_UNSPECIFIED" => 0,
+                "MODEL_APPLICABILITY_MODEL_BASED" => 1,
+                "MODEL_APPLICABILITY_NOT_APPLICABLE" => 2,
+                _ => return Err("model_applicability_invalid".into()),
+            },
         }),
         content_hash: raw.content_hash.clone(),
         created_at_unix_ms: raw.created_at_unix_ms,
         timing_source: raw.timing_source.clone(),
         timing_confidence: raw.timing_confidence,
+        schema_id: raw.schema_id.clone(),
+        schema_version: raw.schema_version.clone(),
+        schema_digest: raw.schema_digest.clone(),
     })
 }
 

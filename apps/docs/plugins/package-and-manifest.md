@@ -1,5 +1,7 @@
 # Packaging & manifest
 
+This page describes the retained v1 format. For signed external releases, use [Independent plugins (v2)](/plugins/independent-v2).
+
 Every plugin ships a `plugin.yaml` at the root of its package. The runtime discovers and pre-checks plugins
 **from the manifest only** — it never imports plugin code to read metadata.
 
@@ -151,4 +153,3 @@ future work. Do not describe a passing manifest check as a certified or signed p
       all been executed.
 - [ ] The README states capability boundaries, known limitations, resource needs, egress behaviour and the
       upgrade/rollback procedure.
-

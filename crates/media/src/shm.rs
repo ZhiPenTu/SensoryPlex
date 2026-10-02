@@ -45,6 +45,7 @@ pub struct ShmSegment {
     fd: RawFd,
     name: CString,
     owner: bool,
+    fallback_path: Option<CString>,
 }
 
 // 映射本身是进程私有的地址空间，访问由持有者串行化；段名与 fd 都是进程局部资源。
@@ -74,7 +75,25 @@ impl ShmSegment {
         } else {
             libc::O_RDWR
         };
-        let fd = unsafe { libc::shm_open(c_name.as_ptr(), flags, 0o600) };
+        let mut fallback_path = None;
+        let mut fd = unsafe { libc::shm_open(c_name.as_ptr(), flags, 0o600) };
+        if fd < 0 {
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() == Some(libc::EPERM)
+                || err.raw_os_error() == Some(libc::EACCES)
+                || (!owner && err.raw_os_error() == Some(libc::ENOENT))
+            {
+                let clean = name.trim_start_matches('/');
+                let fallback = format!("/tmp/sensoryplex-shm-{clean}");
+                if let Ok(c_fallback) = CString::new(fallback) {
+                    let file_fd = unsafe { libc::open(c_fallback.as_ptr(), flags, 0o600) };
+                    if file_fd >= 0 {
+                        fd = file_fd;
+                        fallback_path = Some(c_fallback);
+                    }
+                }
+            }
+        }
         if fd < 0 {
             return Err(MediaError::IoFailed(format!(
                 "shm_open_failed: {}",
@@ -84,7 +103,11 @@ impl ShmSegment {
         if owner && unsafe { libc::ftruncate(fd, capacity as libc::off_t) } != 0 {
             let error = std::io::Error::last_os_error();
             unsafe { libc::close(fd) };
-            unsafe { libc::shm_unlink(c_name.as_ptr()) };
+            if let Some(ref path) = fallback_path {
+                unsafe { libc::unlink(path.as_ptr()) };
+            } else {
+                unsafe { libc::shm_unlink(c_name.as_ptr()) };
+            }
             return Err(MediaError::IoFailed(format!(
                 "shm_ftruncate_failed: {error}"
             )));
@@ -103,7 +126,11 @@ impl ShmSegment {
             let error = std::io::Error::last_os_error();
             unsafe { libc::close(fd) };
             if owner {
-                unsafe { libc::shm_unlink(c_name.as_ptr()) };
+                if let Some(ref path) = fallback_path {
+                    unsafe { libc::unlink(path.as_ptr()) };
+                } else {
+                    unsafe { libc::shm_unlink(c_name.as_ptr()) };
+                }
             }
             return Err(MediaError::IoFailed(format!("shm_mmap_failed: {error}")));
         }
@@ -113,6 +140,7 @@ impl ShmSegment {
             fd,
             name: c_name,
             owner,
+            fallback_path,
         })
     }
 
@@ -140,7 +168,11 @@ impl Drop for ShmSegment {
             libc::close(self.fd);
             // 只有创建者负责删名；消费者关闭自己的映射即可。删除段名不影响已经映射的消费者。
             if self.owner {
-                libc::shm_unlink(self.name.as_ptr());
+                if let Some(ref path) = self.fallback_path {
+                    libc::unlink(path.as_ptr());
+                } else {
+                    libc::shm_unlink(self.name.as_ptr());
+                }
             }
         }
     }

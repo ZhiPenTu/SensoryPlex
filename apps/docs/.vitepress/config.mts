@@ -55,7 +55,8 @@ const EN_SIDEBAR = [
     items: [
       { text: 'Plugin system', link: '/plugins/overview' },
       { text: 'Packaging & manifest', link: '/plugins/package-and-manifest' },
-      { text: 'Python SDK', link: '/plugins/python-sdk' }
+      { text: 'Python SDK', link: '/plugins/python-sdk' },
+      { text: 'Independent plugins (v2)', link: '/plugins/independent-v2' }
     ]
   },
   {
@@ -114,7 +115,8 @@ const ZH_SIDEBAR = [
     items: [
       { text: '插件体系', link: '/zh/plugins/overview' },
       { text: '打包与 Manifest', link: '/zh/plugins/package-and-manifest' },
-      { text: 'Python SDK', link: '/zh/plugins/python-sdk' }
+      { text: 'Python SDK', link: '/zh/plugins/python-sdk' },
+      { text: '独立插件（v2）', link: '/zh/plugins/independent-v2' }
     ]
   },
   {

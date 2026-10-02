@@ -28,6 +28,7 @@ import {
 } from '@ant-design/icons';
 import { PluginFields, readConfig } from './PluginFields';
 import PluginDeployments from './PluginDeployments';
+import PluginTrust from './PluginTrust';
 import { api, post, RequestError } from '../api/client';
 import type {
     NodeList,
@@ -90,9 +91,13 @@ export default function Plugins() {
 
     const deploy = useMutation({
         mutationFn: () =>
-            post(`/admin/v1/nodes/${targetNodeId}/plugins/${installingPlugin!.id}:deploy`, {
-                config_id: selectedConfigId || undefined,
-            }),
+            post(
+                `/admin/v1/nodes/${targetNodeId}/plugins/${installingPlugin!.id}:${installingPlugin!.release_id ? (nodes.data?.items.find((n) => n.node_id === targetNodeId)?.instances.some((i) => i.plugin_id === installingPlugin!.id && i.active_runtime_instance_id) ? 'upgrade' : 'provision') : 'deploy'}`,
+                {
+                    config_id: selectedConfigId || undefined,
+                    release_id: installingPlugin!.release_id || undefined,
+                },
+            ),
         onSuccess: () => {
             message.success('已成功下发插件部署指令至计算节点');
             void cache.invalidateQueries({ queryKey: ['nodes'] });
@@ -123,6 +128,7 @@ export default function Plugins() {
         mutationFn: (form: FormData) =>
             post('/admin/v1/plugin-configurations', {
                 plugin_id: selected!.id,
+                release_id: selected!.release_id || undefined,
                 name: form.get('name'),
                 config: readConfig(form, selected!.config_schema),
             }),
@@ -224,7 +230,7 @@ export default function Plugins() {
             <Heading
                 eyebrow="Plugin Center"
                 title="插件生态与配置中心"
-                description="统一接入视觉大模型 (VLM)、语音识别 (ASR)、光学字符 (OCR) 与向量特征嵌入等模型算力插件。"
+                description="管理模型与确定性处理插件，配置参数并安装已验证的发布版本。"
                 action={
                     <Popconfirm
                         title="确定向同机数据面节点 (local-host) 一键装配全部基础处理插件（VLM、ASR、OCR、Embedding）吗？"
@@ -318,6 +324,7 @@ export default function Plugins() {
                     activeKey={tab}
                     onChange={setTab}
                     items={[
+                        { key: 'trust', label: '发布者与外部制品', children: <PluginTrust /> },
                         {
                             key: 'catalog',
                             label: (
@@ -333,7 +340,11 @@ export default function Plugins() {
                                     ) : (
                                         <Row gutter={[8, 8]}>
                                             {catalogItems.map((plugin) => (
-                                                <Col xs={24} md={12} key={plugin.id}>
+                                                <Col
+                                                    xs={24}
+                                                    md={12}
+                                                    key={plugin.release_id || plugin.id}
+                                                >
                                                     <Card
                                                         size="small"
                                                         style={{
@@ -387,11 +398,9 @@ export default function Plugins() {
                                                                             : 'orange'
                                                                     }
                                                                 >
-                                                                    {isInstalled(plugin)
-                                                                        ? '本机已安装运行'
-                                                                        : plugin.trust ||
-                                                                          'unverified'}
+                                                                    {plugin.trust === 'trusted_publisher' ? '受信发布者' : plugin.trust || '未验证'}
                                                                 </Tag>
+                                                                {isInstalled(plugin) ? <Tag color="green">本机已安装运行</Tag> : null}
                                                             </Space>
                                                         </div>
 
@@ -404,7 +413,7 @@ export default function Plugins() {
                                                             }}
                                                         >
                                                             {plugin.description ||
-                                                                '按官方契约提供的高性能模型处理组件。'}
+                                                                '按标准契约提供的处理插件。'}
                                                         </Paragraph>
 
                                                         <div style={{ marginBottom: 8 }}>
@@ -472,7 +481,7 @@ export default function Plugins() {
                                                                     setSelectedConfigId('');
                                                                 }}
                                                             >
-                                                                部署意图
+                                                                {plugin.release_id ? '安装此版本' : '部署意图'}
                                                             </Button>
                                                         </div>
                                                     </Card>
@@ -578,7 +587,7 @@ export default function Plugins() {
             {/* 部署插件至目标节点 Modal */}
             {installingPlugin ? (
                 <Modal
-                    title={`下发插件部署意图 · ${installingPlugin.name}`}
+                    title={`${installingPlugin.release_id ? '安装插件版本' : '下发插件部署意图'} · ${installingPlugin.name}`}
                     onClose={() => setInstallingPlugin(null)}
                     width={580}
                 >
@@ -685,7 +694,7 @@ export default function Plugins() {
                                 loading={deploy.isPending}
                                 onClick={() => deploy.mutate()}
                             >
-                                下发部署意图（旧通路）
+                                {installingPlugin.release_id ? '开始安装' : '下发部署意图'}
                             </Button>
                         </div>
                     </div>

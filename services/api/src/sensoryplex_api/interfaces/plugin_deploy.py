@@ -375,6 +375,98 @@ def purge_node_deployment_rows(conn, node_id: str) -> None:
 
 
 def register(app, pool, auth, settings):
+    @app.post("/admin/v1/nodes/{node_id}/plugins/{plugin_id}/runtimes/{runtime_id}:retire")
+    def retire_runtime(
+        node_id: str,
+        plugin_id: str,
+        runtime_id: str,
+        p: Annotated[object, Depends(auth.require("plugins:manage"))] = None,
+    ):
+        from ..infrastructure.runtime_bindings import runtime_is_pinned
+
+        with pool.connection() as conn:
+            node = one(conn, "SELECT * FROM console_node WHERE node_id=%s FOR UPDATE", (node_id,))
+            if not node or node["status"] != "ready":
+                fail(409, "target_node_not_ready")
+            slot = one(
+                conn,
+                "SELECT * FROM console_plugin_instance WHERE node_id=%s AND plugin_id=%s "
+                "FOR UPDATE",
+                (node_id, plugin_id),
+            )
+            runtime = one(
+                conn,
+                "SELECT * FROM plugin_runtime_instance WHERE runtime_instance_id=%s "
+                "AND node_id=%s AND plugin_id=%s FOR UPDATE",
+                (runtime_id, node_id, plugin_id),
+            )
+            if not slot or not runtime:
+                fail(404, "plugin_runtime_not_found")
+            if slot["active_runtime_instance_id"] == runtime_id or runtime["role"] != "previous":
+                fail(409, "plugin_active_runtime_cannot_retire")
+            if runtime["state"] != "active":
+                fail(409, "plugin_runtime_not_active")
+            if runtime_is_pinned(conn, runtime):
+                fail(409, "plugin_runtime_revision_pinned")
+            if one(
+                conn,
+                "SELECT 1 FROM plugin_deployment_operation WHERE instance_id=%s "
+                "AND stage NOT IN ('succeeded','failed','cancelled')",
+                (slot["instance_id"],),
+            ):
+                fail(409, "plugin_deployment_in_progress")
+            release = one(
+                conn, "SELECT * FROM plugin_release WHERE release_id=%s", (runtime["release_id"],)
+            )
+            grace = min(
+                max(release["default_deadline_ms"], DRAIN_GRACE_FLOOR_MS), DRAIN_GRACE_CEILING_MS
+            )
+            deadline = int(datetime.now(UTC).timestamp() * 1000) + grace + 60000
+            operation = one(
+                conn,
+                "INSERT INTO plugin_deployment_operation(operation_id,kind,node_id,"
+                "instance_id,plugin_id,release_id,from_runtime_instance_id,"
+                "candidate_runtime_instance_id,generation,stage,deadline_unix_ms,"
+                "config,created_by) "
+                "VALUES (%s,'retire',%s,%s,%s,%s,%s,%s,%s,'draining_old',%s,%s,%s) RETURNING *",
+                (
+                    identifier("op"),
+                    node_id,
+                    slot["instance_id"],
+                    plugin_id,
+                    runtime["release_id"],
+                    runtime_id,
+                    runtime_id,
+                    slot["generation"],
+                    deadline,
+                    Jsonb(runtime["config"]),
+                    p.name,
+                ),
+            )
+            conn.execute(
+                "UPDATE plugin_runtime_instance SET state='draining',updated_at=now() "
+                "WHERE runtime_instance_id=%s",
+                (runtime_id,),
+            )
+            insert_intent(
+                conn,
+                node_id=node_id,
+                instance_id=slot["instance_id"],
+                action="drain",
+                artifact_digest=runtime["artifact_digest"],
+                config=runtime["config"],
+                created_by=p.name,
+                operation_id=operation["operation_id"],
+                generation=slot["generation"],
+                release_id=runtime["release_id"],
+                bundle_digest=runtime["bundle_digest"],
+                runtime_instance_id=runtime_id,
+                grace_period_ms=grace,
+                deadline_unix_ms=deadline,
+            )
+            audit(conn, p.name, "plugin.runtime.retire", runtime_id)
+            return out(operation_proto(conn, operation), pb.PluginDeploymentOperation)
+
     # ── 受控制品仓：release 列表与导入 ─────────────────────────────────────
 
     @app.get("/admin/v1/plugin-releases")
@@ -587,18 +679,35 @@ def register(app, pool, auth, settings):
                 fail(404, "plugin_release_not_found")
             if release["plugin_id"] != plugin_id:
                 fail(422, "plugin_release_plugin_mismatch")
-            if release["trust"] != "first_party" or not release["authenticated"]:
+            if (
+                release["trust"] not in {"first_party", "trusted_publisher"}
+                or not release["authenticated"]
+            ):
                 fail(422, "plugin_release_not_authenticated")
+            from ..infrastructure.plugin_registry import require_release_trust
+
+            require_release_trust(conn, release)
             if release["platform"] != node["platform"] or release["arch"] != node["arch"]:
                 fail(422, "plugin_release_platform_mismatch")
 
-            entry = catalog_plugin(settings, plugin_id)
+            entry = catalog_plugin(
+                settings,
+                plugin_id,
+                conn,
+                release_id if release["trust"] == "trusted_publisher" else "",
+            )
             if config_id and not config:
                 cfg_row = one(
-                    conn, "SELECT config FROM console_plugin_config WHERE id=%s", (config_id,)
+                    conn,
+                    "SELECT config FROM console_plugin_config WHERE id=%s AND plugin_id=%s",
+                    (config_id, plugin_id),
                 )
                 if cfg_row:
                     config = cfg_row["config"]
+                else:
+                    fail(422, "plugin_config_not_found")
+            if release["trust"] == "trusted_publisher":
+                config = normalize_configuration(entry, config)
 
             preflight = check_preflight(node, entry, config=config)
             if not preflight["eligible"]:
@@ -629,14 +738,15 @@ def register(app, pool, auth, settings):
                     (slot["active_runtime_instance_id"],),
                 )
             occupied = 0
-            if active_runtime:
-                occupied = (
-                    conn.execute(
-                        "SELECT declared_memory_bytes FROM plugin_release WHERE release_id=%s",
-                        (active_runtime["release_id"],),
-                    ).fetchone()[0]
-                    or 0
-                )
+            if slot:
+                count, occupied = conn.execute(
+                    "SELECT count(*),coalesce(sum(r.declared_memory_bytes),0) "
+                    "FROM plugin_runtime_instance i JOIN plugin_release r USING(release_id) "
+                    "WHERE i.instance_id=%s AND i.state NOT IN ('stopped','failed','uninstalled')",
+                    (slot["instance_id"],),
+                ).fetchone()
+                if release["trust"] == "trusted_publisher" and count >= 4:
+                    fail(422, "plugin_resident_version_limit")
             total, occupied_by_others = node_headroom_bytes(
                 conn, node, slot["instance_id"] if slot else ""
             )
@@ -719,6 +829,11 @@ def register(app, pool, auth, settings):
             grace_period_ms = min(
                 max(int(release["default_deadline_ms"]), DRAIN_GRACE_FLOOR_MS),
                 DRAIN_GRACE_CEILING_MS,
+            )
+            conn.execute(
+                "UPDATE plugin_runtime_instance SET config_hash=%s,config=%s "
+                "WHERE runtime_instance_id=%s",
+                (config_hash(config), Jsonb(config), candidate["runtime_instance_id"]),
             )
             deadline = datetime.now(UTC) + timedelta(
                 milliseconds=OPERATION_DEADLINE_MS + grace_period_ms
@@ -830,7 +945,8 @@ def register(app, pool, auth, settings):
                     release = one(
                         conn,
                         "SELECT * FROM plugin_release WHERE plugin_id=%s AND platform=%s "
-                        "AND arch=%s AND trust='first_party' AND authenticated "
+                        "AND arch=%s AND trust IN ('first_party','trusted_publisher') AND "
+                        "authenticated "
                         "AND form='local_native' AND plugin_version=%s AND artifact_digest=%s",
                         (
                             plugin_id,
@@ -1124,6 +1240,24 @@ def register(app, pool, auth, settings):
                 "SELECT * FROM plugin_release WHERE release_id=%s",
                 (target["release_id"],),
             )
+            from ..infrastructure.plugin_registry import require_release_trust
+
+            require_release_trust(conn, release)
+
+            # 回滚还原目标版本自己的配置；升级后的槽位配置不适用于旧 release。
+            restore_config = target["config"] if target["config_hash"] else slot["config"]
+            count, occupied = conn.execute(
+                "SELECT count(*),coalesce(sum(r.declared_memory_bytes),0) "
+                "FROM plugin_runtime_instance i JOIN plugin_release r USING(release_id) "
+                "WHERE i.instance_id=%s AND i.state NOT IN ('stopped','failed','uninstalled')",
+                (slot["instance_id"],),
+            ).fetchone()
+            if release["trust"] == "trusted_publisher" and count >= 4:
+                fail(422, "plugin_resident_version_limit")
+            node = one(conn, "SELECT * FROM console_node WHERE node_id=%s", (operation["node_id"],))
+            total, others = node_headroom_bytes(conn, node, slot["instance_id"])
+            if total - others - int(occupied) < int(release["declared_memory_bytes"]):
+                fail(422, "plugin_memory_headroom_insufficient")
 
             generation = slot["generation"] + 1
             conn.execute(
@@ -1136,8 +1270,8 @@ def register(app, pool, auth, settings):
                 """
                 INSERT INTO plugin_runtime_instance(
                     runtime_instance_id, instance_id, node_id, plugin_id, release_id,
-                    artifact_digest, bundle_digest, generation, role, state
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'candidate', 'planned')
+                    artifact_digest, bundle_digest, generation, role, state, config_hash, config
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'candidate', 'planned', %s, %s)
                 RETURNING *
                 """,
                 (
@@ -1149,6 +1283,8 @@ def register(app, pool, auth, settings):
                     target["artifact_digest"],
                     target["bundle_digest"],
                     generation,
+                    config_hash(restore_config),
+                    Jsonb(restore_config),
                 ),
             )
             grace_period_ms = min(
@@ -1180,7 +1316,7 @@ def register(app, pool, auth, settings):
                     operation_id,
                     generation,
                     int(deadline.timestamp() * 1000),
-                    Jsonb(slot["config"]),
+                    Jsonb(restore_config),
                     p.name,
                 ),
             )
@@ -1190,7 +1326,7 @@ def register(app, pool, auth, settings):
                 instance_id=slot["instance_id"],
                 action="stage_release",
                 artifact_digest=target["artifact_digest"],
-                config=slot["config"],
+                config=restore_config,
                 created_by=p.name,
                 operation_id=new_operation["operation_id"],
                 generation=generation,
@@ -1508,6 +1644,7 @@ def _cutover(conn, node_id, req, operation) -> dict:
         UPDATE console_plugin_instance
         SET active_runtime_instance_id=%s, active_release_id=%s, previous_runtime_instance_id=%s,
             generation=%s, endpoint=%s, plugin_version=%s, artifact_digest=%s,
+            config=%s, config_hash=%s,
             desired_state='ready', actual_state='ready', error_code=NULL, error_detail=NULL,
             updated_at=now()
         WHERE instance_id=%s AND generation=%s
@@ -1522,6 +1659,8 @@ def _cutover(conn, node_id, req, operation) -> dict:
             req.endpoint,
             _release_version(conn, candidate["release_id"]),
             candidate["artifact_digest"],
+            Jsonb(candidate["config"]),
+            candidate["config_hash"],
             operation["instance_id"],
             operation["generation"],
             candidate["runtime_instance_id"],
@@ -1558,6 +1697,21 @@ def _cutover(conn, node_id, req, operation) -> dict:
         "SELECT * FROM plugin_runtime_instance WHERE runtime_instance_id=%s",
         (old_runtime_id,),
     )
+    from ..infrastructure.runtime_bindings import runtime_is_pinned
+
+    if runtime_is_pinned(conn, old_runtime):
+        conn.execute(
+            "UPDATE plugin_runtime_instance SET role='previous',state='active',updated_at=now() "
+            "WHERE runtime_instance_id=%s",
+            (old_runtime_id,),
+        )
+        conn.execute(
+            "UPDATE plugin_deployment_operation SET stage='succeeded',completed_at=now(), "
+            "updated_at=now() WHERE operation_id=%s",
+            (operation["operation_id"],),
+        )
+        audit(conn, node_id, "plugin.deploy.retained_for_revision", old_runtime_id)
+        return {"status": "recorded", "reason_code": "cutover_retained_pinned_version"}
     conn.execute(
         "UPDATE plugin_runtime_instance SET role='previous', state='draining', updated_at=now() "
         "WHERE runtime_instance_id=%s",

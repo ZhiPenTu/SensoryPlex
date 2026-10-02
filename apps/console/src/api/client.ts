@@ -114,7 +114,7 @@ export class RequestError extends Error {
     }
 }
 
-export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
+export async function api<T>(path: string, init: RequestInit = {}, timeoutMs = 15000): Promise<T> {
     const headers = new Headers(init.headers);
     if (init.body && typeof init.body === 'string') headers.set('Content-Type', 'application/json');
     if (csrf) headers.set('X-CSRF-Token', csrf);
@@ -123,8 +123,8 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
         headers,
         credentials: 'same-origin',
         signal: init.signal
-            ? AbortSignal.any([init.signal, AbortSignal.timeout(15000)])
-            : AbortSignal.timeout(15000),
+            ? AbortSignal.any([init.signal, AbortSignal.timeout(timeoutMs)])
+            : AbortSignal.timeout(timeoutMs),
     });
     if (!response.ok) {
         const error: Partial<ApiError> = await response.json().catch(() => ({}));

@@ -18,7 +18,7 @@ services:
   nats:
     image: nats:2.11.3-alpine@sha256:a79a6ff6e42ef41ef964c52bef9fe6eed02fc91cf348801e3dddbbd57636077a
     command: ["-js", "-sd", "/data", "-m", "8222"]
-    ports: ["127.0.0.1:${NATS_PORT:-24222}:4222", "127.0.0.1:28222:8222"]
+    ports: ["127.0.0.1:${NATS_PORT:-24222}:4222", "127.0.0.1:${NATS_MONITOR_PORT:-28222}:8222"]
     volumes: ["nats-data:/data"]
     restart: unless-stopped
 
@@ -26,7 +26,7 @@ services:
     build:
       context: ../..
       dockerfile: services/gateway/Dockerfile
-    image: sensoryplex-gateway:0.1.0
+    image: ${GATEWAY_IMAGE:-sensoryplex-gateway:0.1.0}
     command: ["/app/.venv/bin/python", "tools/migrate.py"]
     environment:
       SENSORYPLEX_DATABASE_URL: postgresql://sensoryplex:${POSTGRES_PASSWORD}@postgres:5432/sensoryplex
@@ -43,7 +43,7 @@ services:
     build:
       context: ../..
       dockerfile: services/gateway/Dockerfile
-    image: sensoryplex-gateway:0.1.0
+    image: ${GATEWAY_IMAGE:-sensoryplex-gateway:0.1.0}
     environment:
       SENSORYPLEX_DATABASE_URL: postgresql://sensoryplex:${POSTGRES_PASSWORD}@postgres:5432/sensoryplex
       SENSORYPLEX_API_TOKEN: ${SENSORYPLEX_API_TOKEN:?Run make configure}
@@ -82,7 +82,7 @@ services:
     build:
       context: ../..
       dockerfile: services/api/Dockerfile
-    image: sensoryplex-api:0.1.0
+    image: ${API_IMAGE:-sensoryplex-api:0.1.0}
     environment:
       SENSORYPLEX_DATABASE_URL: postgresql://sensoryplex:${POSTGRES_PASSWORD}@postgres:5432/sensoryplex
       SENSORYPLEX_API_TOKEN: ${SENSORYPLEX_API_TOKEN:?Run make configure}
@@ -129,7 +129,7 @@ services:
     build:
       context: ../..
       dockerfile: apps/console/Dockerfile
-    image: sensoryplex-console:0.1.0
+    image: ${CONSOLE_IMAGE:-sensoryplex-console:0.1.0}
     working_dir: /workspace/apps/console
     volumes:
       - type: bind
@@ -177,7 +177,7 @@ services:
       # 要产出子路径产物请用 `make docs-build DOCS_BASE=/your-prefix/`（见 docs-build 注释）。
       args:
         DOCS_SITE_URL: ${DOCS_SITE_URL:-}
-    image: sensoryplex-docs:0.1.0
+    image: ${DOCS_IMAGE:-sensoryplex-docs:0.1.0}
     working_dir: /workspace/apps/docs
     volumes:
       - type: bind
@@ -212,7 +212,7 @@ services:
   # workspace 依赖（sensoryplex-relay / sensoryplex-index-worker）就在这份镜像里。
   relay:
     profiles: ["events"]
-    image: sensoryplex-api:0.1.0
+    image: ${API_IMAGE:-sensoryplex-api:0.1.0}
     build:
       context: ../..
       dockerfile: services/api/Dockerfile
@@ -262,7 +262,7 @@ services:
   # 不改变任务状态。它不读媒体、不运行模型，也不与素材事件流共用 subject。
   vlm-publisher:
     profiles: ["events"]
-    image: sensoryplex-api:0.1.0
+    image: ${API_IMAGE:-sensoryplex-api:0.1.0}
     build:
       context: ../..
       dockerfile: services/api/Dockerfile
@@ -305,7 +305,7 @@ services:
   # 不解码媒体；消息重投或结果冲突都不被误记为成功。
   vlm-result-fuser:
     profiles: ["events"]
-    image: sensoryplex-api:0.1.0
+    image: ${API_IMAGE:-sensoryplex-api:0.1.0}
     build:
       context: ../..
       dockerfile: services/api/Dockerfile
@@ -346,7 +346,7 @@ services:
   # 所以"事件驱动写入的向量"必须由持有向量库的那个进程自己消费出来（ADR-025 §1）。
   index:
     profiles: ["events"]
-    image: sensoryplex-api:0.1.0
+    image: ${API_IMAGE:-sensoryplex-api:0.1.0}
     build:
       context: ../..
       dockerfile: services/api/Dockerfile
@@ -411,6 +411,57 @@ services:
       retries: 12
       start_period: 60s
     restart: unless-stopped
+
+  enrichment-publisher:
+    profiles: ["events"]
+    image: ${API_IMAGE:-sensoryplex-api:0.1.0}
+    command: [/app/.venv/bin/python, -m, sensoryplex_api.enrichment_service, publisher]
+    environment:
+      <<: &enrichment-environment
+        SENSORYPLEX_DATABASE_URL: postgresql://sensoryplex:${POSTGRES_PASSWORD}@postgres:5432/sensoryplex
+        SENSORYPLEX_NATS_URL: nats://nats:4222
+        PYTHONPATH: /workspace/services/api/src:/workspace/plugins/python/common/src:/workspace
+      SENSORYPLEX_ENRICHMENT_ROLE: publisher
+    working_dir: /workspace
+    volumes:
+      - type: bind
+        source: ${REPO_ROOT:-../../}
+        target: /workspace
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      nats: {condition: service_started}
+    restart: unless-stopped
+
+    healthcheck: &enrichment-health
+      test:
+        - CMD
+        - /app/.venv/bin/python
+        - -c
+        - >-
+          import json,os,pathlib,time;
+          value=json.loads(pathlib.Path('/workspace/.data/events/enrichment-'+os.environ['SENSORYPLEX_ENRICHMENT_ROLE']+'-status.json').read_text());
+          assert value['state']=='ready' and 0<=time.time()*1000-value['updated_at_unix_ms']<30000
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  enrichment-result-fuser:
+    profiles: ["events"]
+    image: ${API_IMAGE:-sensoryplex-api:0.1.0}
+    command: [/app/.venv/bin/python, -m, sensoryplex_api.enrichment_service, fuser]
+    environment:
+      <<: *enrichment-environment
+      SENSORYPLEX_ENRICHMENT_ROLE: fuser
+    working_dir: /workspace
+    volumes:
+      - type: bind
+        source: ${REPO_ROOT:-../../}
+        target: /workspace
+    depends_on:
+      enrichment-publisher: {condition: service_healthy}
+    restart: unless-stopped
+    healthcheck: *enrichment-health
 
 volumes:
   postgres-data:

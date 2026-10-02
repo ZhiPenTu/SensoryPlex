@@ -1,5 +1,6 @@
 from edge_material_sdk.generated.common.v1 import common_pb2 as _common_pb2
 from edge_material_sdk.generated.material.v1 import material_pb2 as _material_pb2
+from edge_material_sdk.generated.runtime.v1 import runtime_pb2 as _runtime_pb2
 from google.protobuf import struct_pb2 as _struct_pb2
 from google.protobuf.internal import containers as _containers
 from google.protobuf.internal import enum_type_wrapper as _enum_type_wrapper
@@ -66,7 +67,7 @@ class PluginReference(_message.Message):
     def __init__(self, plugin_id: _Optional[str] = ..., version: _Optional[str] = ..., artifact_digest: _Optional[str] = ..., config_hash: _Optional[str] = ...) -> None: ...
 
 class PipelineNode(_message.Message):
-    __slots__ = ("node_id", "plugin", "consumes", "produces", "placement", "deadline_ms", "max_attempts", "priority", "required")
+    __slots__ = ("node_id", "plugin", "consumes", "produces", "placement", "deadline_ms", "max_attempts", "priority", "required", "execution_mode", "input_selector", "release_id", "input_contracts", "output_contracts")
     NODE_ID_FIELD_NUMBER: _ClassVar[int]
     PLUGIN_FIELD_NUMBER: _ClassVar[int]
     CONSUMES_FIELD_NUMBER: _ClassVar[int]
@@ -76,6 +77,11 @@ class PipelineNode(_message.Message):
     MAX_ATTEMPTS_FIELD_NUMBER: _ClassVar[int]
     PRIORITY_FIELD_NUMBER: _ClassVar[int]
     REQUIRED_FIELD_NUMBER: _ClassVar[int]
+    EXECUTION_MODE_FIELD_NUMBER: _ClassVar[int]
+    INPUT_SELECTOR_FIELD_NUMBER: _ClassVar[int]
+    RELEASE_ID_FIELD_NUMBER: _ClassVar[int]
+    INPUT_CONTRACTS_FIELD_NUMBER: _ClassVar[int]
+    OUTPUT_CONTRACTS_FIELD_NUMBER: _ClassVar[int]
     node_id: str
     plugin: PluginReference
     consumes: _containers.RepeatedScalarFieldContainer[str]
@@ -85,7 +91,12 @@ class PipelineNode(_message.Message):
     max_attempts: int
     priority: int
     required: bool
-    def __init__(self, node_id: _Optional[str] = ..., plugin: _Optional[_Union[PluginReference, _Mapping]] = ..., consumes: _Optional[_Iterable[str]] = ..., produces: _Optional[_Iterable[str]] = ..., placement: _Optional[str] = ..., deadline_ms: _Optional[int] = ..., max_attempts: _Optional[int] = ..., priority: _Optional[int] = ..., required: bool = ...) -> None: ...
+    execution_mode: str
+    input_selector: str
+    release_id: str
+    input_contracts: _containers.RepeatedCompositeFieldContainer[_runtime_pb2.PayloadContract]
+    output_contracts: _containers.RepeatedCompositeFieldContainer[_runtime_pb2.PayloadContract]
+    def __init__(self, node_id: _Optional[str] = ..., plugin: _Optional[_Union[PluginReference, _Mapping]] = ..., consumes: _Optional[_Iterable[str]] = ..., produces: _Optional[_Iterable[str]] = ..., placement: _Optional[str] = ..., deadline_ms: _Optional[int] = ..., max_attempts: _Optional[int] = ..., priority: _Optional[int] = ..., required: bool = ..., execution_mode: _Optional[str] = ..., input_selector: _Optional[str] = ..., release_id: _Optional[str] = ..., input_contracts: _Optional[_Iterable[_Union[_runtime_pb2.PayloadContract, _Mapping]]] = ..., output_contracts: _Optional[_Iterable[_Union[_runtime_pb2.PayloadContract, _Mapping]]] = ...) -> None: ...
 
 class PipelineEdge(_message.Message):
     __slots__ = ("from_node_id", "to_node_id", "modality", "join_policy", "required")
@@ -114,6 +125,36 @@ class PipelineRevision(_message.Message):
     nodes: _containers.RepeatedCompositeFieldContainer[PipelineNode]
     edges: _containers.RepeatedCompositeFieldContainer[PipelineEdge]
     def __init__(self, pipeline_id: _Optional[str] = ..., revision: _Optional[int] = ..., graph_digest: _Optional[str] = ..., nodes: _Optional[_Iterable[_Union[PipelineNode, _Mapping]]] = ..., edges: _Optional[_Iterable[_Union[PipelineEdge, _Mapping]]] = ...) -> None: ...
+
+class ProcessorCallReceipt(_message.Message):
+    __slots__ = ("input_id", "time_range", "outcome", "reason_code", "observation_count")
+    INPUT_ID_FIELD_NUMBER: _ClassVar[int]
+    TIME_RANGE_FIELD_NUMBER: _ClassVar[int]
+    OUTCOME_FIELD_NUMBER: _ClassVar[int]
+    REASON_CODE_FIELD_NUMBER: _ClassVar[int]
+    OBSERVATION_COUNT_FIELD_NUMBER: _ClassVar[int]
+    input_id: str
+    time_range: _common_pb2.TimeRange
+    outcome: _runtime_pb2.ProcessOutcome
+    reason_code: str
+    observation_count: int
+    def __init__(self, input_id: _Optional[str] = ..., time_range: _Optional[_Union[_common_pb2.TimeRange, _Mapping]] = ..., outcome: _Optional[_Union[_runtime_pb2.ProcessOutcome, str]] = ..., reason_code: _Optional[str] = ..., observation_count: _Optional[int] = ...) -> None: ...
+
+class PluginTaskOutput(_message.Message):
+    __slots__ = ("task_id", "assignment_id", "attempt", "observations", "processing_receipts", "skipped_reason")
+    TASK_ID_FIELD_NUMBER: _ClassVar[int]
+    ASSIGNMENT_ID_FIELD_NUMBER: _ClassVar[int]
+    ATTEMPT_FIELD_NUMBER: _ClassVar[int]
+    OBSERVATIONS_FIELD_NUMBER: _ClassVar[int]
+    PROCESSING_RECEIPTS_FIELD_NUMBER: _ClassVar[int]
+    SKIPPED_REASON_FIELD_NUMBER: _ClassVar[int]
+    task_id: str
+    assignment_id: str
+    attempt: int
+    observations: _containers.RepeatedCompositeFieldContainer[_material_pb2.Observation]
+    processing_receipts: _containers.RepeatedCompositeFieldContainer[ProcessorCallReceipt]
+    skipped_reason: str
+    def __init__(self, task_id: _Optional[str] = ..., assignment_id: _Optional[str] = ..., attempt: _Optional[int] = ..., observations: _Optional[_Iterable[_Union[_material_pb2.Observation, _Mapping]]] = ..., processing_receipts: _Optional[_Iterable[_Union[ProcessorCallReceipt, _Mapping]]] = ..., skipped_reason: _Optional[str] = ...) -> None: ...
 
 class PipelineRun(_message.Message):
     __slots__ = ("run_id", "pipeline_id", "revision", "input_ref", "idempotency_key", "deadline_unix_ms", "state", "owner", "error_code", "error_detail", "created_at_unix_ms", "updated_at_unix_ms", "completed_at_unix_ms")
@@ -264,6 +305,88 @@ class VlmTaskResult(_message.Message):
     result_digest: str
     completed_at_unix_ms: int
     def __init__(self, task: _Optional[_Union[TaskInputManifest, _Mapping]] = ..., success: bool = ..., retryable: bool = ..., reason_code: _Optional[str] = ..., observation: _Optional[_Union[_material_pb2.Observation, _Mapping]] = ..., result_digest: _Optional[str] = ..., completed_at_unix_ms: _Optional[int] = ...) -> None: ...
+
+class EnrichmentTask(_message.Message):
+    __slots__ = ("task_id", "execution_id", "run_id", "node_id", "data_plane_node_id", "route_id", "plugin", "release_id", "config_id", "observation_refs", "asset_id", "stream_id", "source_id", "material_unit_id", "time_range", "content_hash", "max_attempts", "deadline_unix_ms", "input_modality", "process_timeout_ms")
+    TASK_ID_FIELD_NUMBER: _ClassVar[int]
+    EXECUTION_ID_FIELD_NUMBER: _ClassVar[int]
+    RUN_ID_FIELD_NUMBER: _ClassVar[int]
+    NODE_ID_FIELD_NUMBER: _ClassVar[int]
+    DATA_PLANE_NODE_ID_FIELD_NUMBER: _ClassVar[int]
+    ROUTE_ID_FIELD_NUMBER: _ClassVar[int]
+    PLUGIN_FIELD_NUMBER: _ClassVar[int]
+    RELEASE_ID_FIELD_NUMBER: _ClassVar[int]
+    CONFIG_ID_FIELD_NUMBER: _ClassVar[int]
+    OBSERVATION_REFS_FIELD_NUMBER: _ClassVar[int]
+    ASSET_ID_FIELD_NUMBER: _ClassVar[int]
+    STREAM_ID_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_ID_FIELD_NUMBER: _ClassVar[int]
+    MATERIAL_UNIT_ID_FIELD_NUMBER: _ClassVar[int]
+    TIME_RANGE_FIELD_NUMBER: _ClassVar[int]
+    CONTENT_HASH_FIELD_NUMBER: _ClassVar[int]
+    MAX_ATTEMPTS_FIELD_NUMBER: _ClassVar[int]
+    DEADLINE_UNIX_MS_FIELD_NUMBER: _ClassVar[int]
+    INPUT_MODALITY_FIELD_NUMBER: _ClassVar[int]
+    PROCESS_TIMEOUT_MS_FIELD_NUMBER: _ClassVar[int]
+    task_id: str
+    execution_id: str
+    run_id: str
+    node_id: str
+    data_plane_node_id: str
+    route_id: str
+    plugin: PluginReference
+    release_id: str
+    config_id: str
+    observation_refs: _containers.RepeatedScalarFieldContainer[str]
+    asset_id: str
+    stream_id: str
+    source_id: str
+    material_unit_id: str
+    time_range: _common_pb2.TimeRange
+    content_hash: str
+    max_attempts: int
+    deadline_unix_ms: int
+    input_modality: str
+    process_timeout_ms: int
+    def __init__(self, task_id: _Optional[str] = ..., execution_id: _Optional[str] = ..., run_id: _Optional[str] = ..., node_id: _Optional[str] = ..., data_plane_node_id: _Optional[str] = ..., route_id: _Optional[str] = ..., plugin: _Optional[_Union[PluginReference, _Mapping]] = ..., release_id: _Optional[str] = ..., config_id: _Optional[str] = ..., observation_refs: _Optional[_Iterable[str]] = ..., asset_id: _Optional[str] = ..., stream_id: _Optional[str] = ..., source_id: _Optional[str] = ..., material_unit_id: _Optional[str] = ..., time_range: _Optional[_Union[_common_pb2.TimeRange, _Mapping]] = ..., content_hash: _Optional[str] = ..., max_attempts: _Optional[int] = ..., deadline_unix_ms: _Optional[int] = ..., input_modality: _Optional[str] = ..., process_timeout_ms: _Optional[int] = ...) -> None: ...
+
+class EnrichmentResult(_message.Message):
+    __slots__ = ("task", "observations", "outcome", "outcome_reason", "error", "result_digest", "input_receipts")
+    TASK_FIELD_NUMBER: _ClassVar[int]
+    OBSERVATIONS_FIELD_NUMBER: _ClassVar[int]
+    OUTCOME_FIELD_NUMBER: _ClassVar[int]
+    OUTCOME_REASON_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    RESULT_DIGEST_FIELD_NUMBER: _ClassVar[int]
+    INPUT_RECEIPTS_FIELD_NUMBER: _ClassVar[int]
+    task: EnrichmentTask
+    observations: _containers.RepeatedCompositeFieldContainer[_material_pb2.Observation]
+    outcome: _runtime_pb2.ProcessOutcome
+    outcome_reason: str
+    error: _common_pb2.ProcessingError
+    result_digest: str
+    input_receipts: _containers.RepeatedCompositeFieldContainer[EnrichmentInputReceipt]
+    def __init__(self, task: _Optional[_Union[EnrichmentTask, _Mapping]] = ..., observations: _Optional[_Iterable[_Union[_material_pb2.Observation, _Mapping]]] = ..., outcome: _Optional[_Union[_runtime_pb2.ProcessOutcome, str]] = ..., outcome_reason: _Optional[str] = ..., error: _Optional[_Union[_common_pb2.ProcessingError, _Mapping]] = ..., result_digest: _Optional[str] = ..., input_receipts: _Optional[_Iterable[_Union[EnrichmentInputReceipt, _Mapping]]] = ...) -> None: ...
+
+class EnrichmentInputReceipt(_message.Message):
+    __slots__ = ("source_item_id", "content_hash", "kind", "time_range")
+    SOURCE_ITEM_ID_FIELD_NUMBER: _ClassVar[int]
+    CONTENT_HASH_FIELD_NUMBER: _ClassVar[int]
+    KIND_FIELD_NUMBER: _ClassVar[int]
+    TIME_RANGE_FIELD_NUMBER: _ClassVar[int]
+    source_item_id: str
+    content_hash: str
+    kind: str
+    time_range: _common_pb2.TimeRange
+    def __init__(self, source_item_id: _Optional[str] = ..., content_hash: _Optional[str] = ..., kind: _Optional[str] = ..., time_range: _Optional[_Union[_common_pb2.TimeRange, _Mapping]] = ...) -> None: ...
+
+class EnrichmentResultReference(_message.Message):
+    __slots__ = ("task_id", "result_digest")
+    TASK_ID_FIELD_NUMBER: _ClassVar[int]
+    RESULT_DIGEST_FIELD_NUMBER: _ClassVar[int]
+    task_id: str
+    result_digest: str
+    def __init__(self, task_id: _Optional[str] = ..., result_digest: _Optional[str] = ...) -> None: ...
 
 class TaskExecutionReceipt(_message.Message):
     __slots__ = ("run_id", "task_id", "attempt", "assignment_id", "plugin", "started_at_unix_ms", "completed_at_unix_ms", "input_count", "output_count", "result_manifest_ref", "reason_code", "receipt_digest")

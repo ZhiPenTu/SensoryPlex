@@ -4,6 +4,12 @@ package edge.material.material.v1;
 import "common/v1/common.proto";
 import "google/protobuf/struct.proto";
 
+enum ModelApplicability {
+  MODEL_APPLICABILITY_UNSPECIFIED = 0;
+  MODEL_APPLICABILITY_MODEL_BASED = 1;
+  MODEL_APPLICABILITY_NOT_APPLICABLE = 2;
+}
+
 message Provenance {
   string plugin = 1;
   string plugin_version = 2;
@@ -14,6 +20,8 @@ message Provenance {
   string config_hash = 7;
   string execution_backend = 8;
   string model_artifact_digest = 9;
+  string processor_release_id = 10;
+  ModelApplicability model_applicability = 11;
 }
 
 message Observation {
@@ -33,6 +41,9 @@ message Observation {
   int64 created_at_unix_ms = 14;
   string timing_source = 15;
   optional double timing_confidence = 16;
+  string schema_id = 17;
+  string schema_version = 18;
+  string schema_digest = 19;
 }
 
 message SourceReference {

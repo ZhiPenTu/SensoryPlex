@@ -46,6 +46,8 @@ def get_client() -> SensoryPlexClient:
 
 def format_ms(ms: int) -> str:
     """Format milliseconds into HH:MM:SS.mmm."""
+    # Proto JSON 的 int64 使用字符串编码，实际 HTTP 响应同样按毫秒格式化。
+    ms = int(ms)
     seconds, msec = divmod(ms, 1000)
     minutes, sec = divmod(seconds, 60)
     hours, minute = divmod(minutes, 60)
@@ -151,8 +153,9 @@ async def search_materials(
         formatted_items = []
         for idx, m in enumerate(materials_list):
             unit_id = m.get("material_unit_id") or m.get("key", f"item-{idx}")
-            s_ms = m.get("start_ms", 0)
-            e_ms = m.get("end_ms", 0)
+            span = m.get("time_range") or m
+            s_ms = span.get("start_ms", 0)
+            e_ms = span.get("end_ms", 0)
             stream_id = m.get("stream_id", "")
             observations = m.get("observations", [])
 
@@ -160,7 +163,7 @@ async def search_materials(
             facts = []
             for obs in observations:
                 modality = obs.get("modality", "")
-                conf = obs.get("confidence", 0.0)
+                conf = obs.get("confidence")
                 payload = obs.get("payload_jsonb") or obs.get("payload", {})
                 text_content = ""
                 if isinstance(payload, dict):
@@ -174,7 +177,17 @@ async def search_materials(
                 facts.append(
                     {
                         "modality": modality,
-                        "confidence": round(conf, 3) if conf else None,
+                        "confidence": round(conf, 3) if conf is not None else None,
+                        "confidence_unavailable_reason": obs.get(
+                            "confidence_unavailable_reason", ""
+                        ),
+                        "observation_id": obs.get("observation_id", ""),
+                        "schema_id": obs.get("schema_id", ""),
+                        "schema_digest": obs.get("schema_digest", ""),
+                        "processor_release_id": (obs.get("provenance") or {}).get(
+                            "processor_release_id", ""
+                        ),
+                        "payload": payload if obs.get("schema_id") else None,
                         "text": text_content,
                     }
                 )

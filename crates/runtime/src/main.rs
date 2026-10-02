@@ -30,6 +30,7 @@ use tonic::{Request, Response, Status};
 
 use crate::handoff_service::{HandoffService, DEFAULT_HANDOFF_TTL_MS};
 
+mod enrichment_media;
 mod handoff_service;
 mod media_ledger;
 mod timeline;
@@ -1531,6 +1532,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("enrichment-media") {
+        return enrichment_media::run(&args[1..]).await;
+    }
     if args.first().map(String::as_str) == Some("check") && args.len() == 2 {
         Pipeline::parse(&std::fs::read_to_string(&args[1])?).map_err(std::io::Error::other)?;
         println!("pipeline schema valid; capability availability must be checked before execution");

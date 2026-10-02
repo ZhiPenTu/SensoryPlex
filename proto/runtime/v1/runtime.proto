@@ -17,6 +17,12 @@ service ProcessorPluginService {
 }
 
 message DescribeRequest {}
+message PayloadContract {
+  string modality = 1;
+  string schema_id = 2;
+  string schema_version = 3;
+  string schema_digest = 4;
+}
 message PluginDescription {
   string name = 1;
   string version = 2;
@@ -27,6 +33,12 @@ message PluginDescription {
   // 插件对自身可执行内容的摘要自证（ADR-030）。进程启动时必须与 --expect-digest 一致，
   // 否则拒绝启动；Describe 回报的是真实计算值，不是意图回显。
   string artifact_digest = 7;
+  repeated PayloadContract input_contracts = 8;
+  repeated PayloadContract output_contracts = 9;
+  repeated string execution_modes = 10;
+  uint32 max_concurrency = 11;
+  uint32 max_batch_size = 12;
+  string ordering = 13;
 }
 message ValidateConfigRequest { google.protobuf.Struct config = 1; }
 message ValidationResult { bool valid = 1; repeated string field_errors = 2; }
@@ -47,6 +59,13 @@ message ProcessResponse {
   repeated edge.material.material.v1.Observation observations = 1;
   repeated string warnings = 2;
   edge.material.common.v1.ProcessingError error = 3;
+  ProcessOutcome outcome = 4;
+  string outcome_reason = 5;
+}
+enum ProcessOutcome {
+  PROCESS_OUTCOME_UNSPECIFIED = 0;
+  PROCESS_OUTCOME_OBSERVED = 1;
+  PROCESS_OUTCOME_NO_OBSERVATIONS = 2;
 }
 message CancelRequest { string request_id = 1; }
 message HealthRequest {}

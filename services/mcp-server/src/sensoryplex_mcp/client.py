@@ -130,6 +130,21 @@ class SensoryPlexClient:
         """Execute an HTTP request with error handling and optional demo login retry."""
         client = await self.get_client()
 
+        # 显式用户凭据优先；验证失败不能切换成演示用户而改变内容授权身份。
+        if not self.api_token and self.username and not self._session_cookies:
+            if not self.password:
+                raise SensoryPlexAPIError(401, "authentication_required")
+            response = await client.post(
+                "/auth/v1/session",
+                json={"username": self.username, "password": self.password},
+            )
+            if response.status_code != 200:
+                raise SensoryPlexAPIError(401, "authentication_required")
+            self._csrf_token = response.json()["csrf_token"]
+            self._session_cookies.update(response.cookies)
+            client.cookies.clear()
+            self._demo_attempted = True
+
         # Attempt initial demo login if no token is configured
         if not self.api_token and not self._session_cookies and not self._demo_attempted:
             await self._try_demo_login(client)

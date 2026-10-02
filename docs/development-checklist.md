@@ -13,6 +13,7 @@
 
 ## 当前基线（已核对）
 
+- [x] **PL-01 插件平台通用化首期（ADR-032）**：独立仓库插件构建、Ed25519 签名导入、通用图编排、同步与异步补全、崩溃/回滚/取消韧性与真实媒体检索回看已通过实机验收；详见 `docs/verification-plugin-platform-v2.md`。
 - [x] 控制面、鉴权、迁移、素材查询/回看、Web Console 和可审计的 revision/来源血缘已具备；素材回看不等于自动媒体入库。
 - [x] 文件/SRT 媒体数据面已具备真实解码、抽帧、音频切段、lease、跨进程交接、背压和格式准入；这些均有 macOS 本机证据。
 - [x] VLM、ASR、OCR、BGE、Milvus Lite 索引、纯语义检索、outbox → JetStream → sink 消费与事件 profile 已有单项/链路验收。

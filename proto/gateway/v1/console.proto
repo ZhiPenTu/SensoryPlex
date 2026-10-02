@@ -2,6 +2,7 @@ syntax = "proto3";
 package edge.material.gateway.v1;
 
 import "google/protobuf/struct.proto";
+import "runtime/v1/runtime.proto";
 
 // Console metadata contracts. Execution readiness is never implied by a saved draft.
 message LoginRequest { string username = 1; string password = 2; }
@@ -28,9 +29,25 @@ message PluginEntry {
   string digest = 5; string trust = 6; string state = 7;
   repeated string consumes = 8; repeated string produces = 9;
   google.protobuf.Struct config_schema = 10; string reason = 11;
+  string release_id = 12;
+  string manifest_version = 13;
+  string form = 14;
+  repeated string accepts_memory_kinds = 15;
+  google.protobuf.Struct resources = 16;
+  repeated edge.material.runtime.v1.PayloadContract input_contracts = 17;
+  repeated edge.material.runtime.v1.PayloadContract output_contracts = 18;
+  repeated string execution_modes = 19;
+  google.protobuf.Struct output_text_fields = 20;
 }
+message ObservationIndexStatus {
+  string observation_id = 1;
+  string state = 2;
+  string reason_code = 3;
+  repeated string text_fields = 4;
+}
+message MaterialIndexStatus { repeated ObservationIndexStatus items = 1; }
 message PluginList { repeated PluginEntry items = 1; }
-message SavePluginConfig { string plugin_id = 1; string name = 2; google.protobuf.Struct config = 3; }
+message SavePluginConfig { string plugin_id = 1; string name = 2; google.protobuf.Struct config = 3; string release_id = 4; }
 message PluginConfig {
   string id = 1; string plugin_id = 2; string name = 3; uint32 revision = 4;
   google.protobuf.Struct config = 5; string config_hash = 6; string created_at = 7;

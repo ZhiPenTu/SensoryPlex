@@ -56,6 +56,9 @@ def console_database():
 def console_app(console_database, tmp_path):
     return create_app(
         Settings(
+            _env_file=None,
+            demo_username="",
+            demo_password=None,
             database_url=console_database,
             api_token=None,
             blob_root=tmp_path / "blobs",

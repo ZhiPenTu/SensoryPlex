@@ -1,7 +1,11 @@
 import math
 import re
 
-from .generated.material.v1.material_pb2 import MaterialUnit, Observation
+from .generated.material.v1.material_pb2 import (
+    MODEL_APPLICABILITY_NOT_APPLICABLE,
+    MaterialUnit,
+    Observation,
+)
 
 
 def validate_digest(value: str):
@@ -52,16 +56,25 @@ def validate_observation(value: Observation):
         (
             p.plugin,
             p.plugin_version,
-            p.model_release_id,
-            p.model_id,
-            p.model_version,
             p.execution_backend,
         )
     ):
         raise ValueError("incomplete_provenance")
     validate_digest(p.artifact_digest)
-    validate_digest(p.model_artifact_digest)
+    if p.model_applicability == MODEL_APPLICABILITY_NOT_APPLICABLE:
+        if not p.processor_release_id or any(
+            (p.model_release_id, p.model_id, p.model_version, p.model_artifact_digest)
+        ):
+            raise ValueError("non_model_provenance_invalid")
+    else:
+        if not all((p.model_release_id, p.model_id, p.model_version)):
+            raise ValueError("incomplete_provenance")
+        validate_digest(p.model_artifact_digest)
     validate_digest(p.config_hash)
+    if any((value.schema_id, value.schema_version, value.schema_digest)):
+        if not all((value.schema_id, value.schema_version, value.schema_digest)):
+            raise ValueError("incomplete_payload_schema")
+        validate_digest(value.schema_digest)
 
 
 def validate_material(value: MaterialUnit):
@@ -82,6 +95,7 @@ def validate_material(value: MaterialUnit):
         "failed",
         "conflict",
         "low_confidence",
+        "no_observations",
     }:
         raise ValueError("invalid_material_status")
     validate_range(value.time_range)
@@ -89,7 +103,11 @@ def validate_material(value: MaterialUnit):
         raise ValueError("missing_source_references")
     # 逐秒来源切片可以先于模型结果存在，但必须明确仍待补充，不能冒充已完成素材。
     pending_window = value.status == "partial" and bool(value.pending_enrichments)
-    if not value.observations and value.status != "failed" and not pending_window:
+    if (
+        not value.observations
+        and value.status not in {"failed", "no_observations"}
+        and not pending_window
+    ):
         raise ValueError("missing_observations")
     ids = set()
     for observation in value.observations:

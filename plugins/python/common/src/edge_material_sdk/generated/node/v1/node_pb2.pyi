@@ -734,3 +734,33 @@ class SyncPluginReleasesResponse(_message.Message):
     rejected: _containers.RepeatedScalarFieldContainer[str]
     total: int
     def __init__(self, imported: _Optional[_Iterable[str]] = ..., unchanged: _Optional[_Iterable[str]] = ..., rejected: _Optional[_Iterable[str]] = ..., total: _Optional[int] = ...) -> None: ...
+
+class PluginSigner(_message.Message):
+    __slots__ = ("signer_id", "display_name", "public_key", "created_by", "created_at", "revoked_at")
+    SIGNER_ID_FIELD_NUMBER: _ClassVar[int]
+    DISPLAY_NAME_FIELD_NUMBER: _ClassVar[int]
+    PUBLIC_KEY_FIELD_NUMBER: _ClassVar[int]
+    CREATED_BY_FIELD_NUMBER: _ClassVar[int]
+    CREATED_AT_FIELD_NUMBER: _ClassVar[int]
+    REVOKED_AT_FIELD_NUMBER: _ClassVar[int]
+    signer_id: str
+    display_name: str
+    public_key: str
+    created_by: str
+    created_at: str
+    revoked_at: str
+    def __init__(self, signer_id: _Optional[str] = ..., display_name: _Optional[str] = ..., public_key: _Optional[str] = ..., created_by: _Optional[str] = ..., created_at: _Optional[str] = ..., revoked_at: _Optional[str] = ...) -> None: ...
+
+class PluginSignerList(_message.Message):
+    __slots__ = ("items",)
+    ITEMS_FIELD_NUMBER: _ClassVar[int]
+    items: _containers.RepeatedCompositeFieldContainer[PluginSigner]
+    def __init__(self, items: _Optional[_Iterable[_Union[PluginSigner, _Mapping]]] = ...) -> None: ...
+
+class ApprovePluginSignerRequest(_message.Message):
+    __slots__ = ("display_name", "public_key")
+    DISPLAY_NAME_FIELD_NUMBER: _ClassVar[int]
+    PUBLIC_KEY_FIELD_NUMBER: _ClassVar[int]
+    display_name: str
+    public_key: str
+    def __init__(self, display_name: _Optional[str] = ..., public_key: _Optional[str] = ...) -> None: ...

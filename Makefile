@@ -76,6 +76,18 @@ TEST_NATS_URL ?= $(if $(filter container,$(EXEC_MODE)),nats://nats:4222,nats://1
 .PHONY: vlm-workqueue-check
 .PHONY: timeline-check timeline-resident-check
 .PHONY: docs-install docs-build docs-check docs-dev docs-serve
+.PHONY: enrichments-up plugin-platform-check plugin-platform-fault-check
+
+# ADR-032：独立制品位于验收目录，Agent/Consumer 在宿主启动；控制端始终走容器。
+enrichments-up:
+	./deploy/up-enrichments.sh
+
+plugin-platform-check:
+	@test -n "$(MEDIA)" -a -n "$(RELEASE_VERSION)" || { echo "需要 MEDIA 与 RELEASE_VERSION" >&2; exit 1; }
+	$(EXEC_API) $(PY_API) -m tools.verify_plugin_platform full --media /host-media/$(notdir $(MEDIA)) --release-version $(RELEASE_VERSION) --threshold 10
+
+plugin-platform-fault-check:
+	$(EXEC_API) $(PY_API) -m tools.verify_plugin_rejections
 
 # ── 项目引导 ────────────────────────────────────────────────────────────────
 

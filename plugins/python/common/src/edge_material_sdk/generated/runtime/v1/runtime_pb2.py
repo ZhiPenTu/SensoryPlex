@@ -27,59 +27,63 @@ from edge_material_sdk.generated.material.v1 import material_pb2 as material_dot
 from google.protobuf import struct_pb2 as google_dot_protobuf_dot_struct__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x18runtime/v1/runtime.proto\x12\x18\x65\x64ge.material.runtime.v1\x1a\x16\x63ommon/v1/common.proto\x1a\x1amaterial/v1/material.proto\x1a\x1cgoogle/protobuf/struct.proto\"\x11\n\x0f\x44\x65scribeRequest\"\x97\x01\n\x11PluginDescription\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x0f\n\x07version\x18\x02 \x01(\t\x12\x10\n\x08protocol\x18\x03 \x01(\t\x12\x10\n\x08\x63onsumes\x18\x04 \x03(\t\x12\x10\n\x08produces\x18\x05 \x03(\t\x12\x14\n\x0cmemory_kinds\x18\x06 \x03(\t\x12\x17\n\x0f\x61rtifact_digest\x18\x07 \x01(\t\"@\n\x15ValidateConfigRequest\x12\'\n\x06\x63onfig\x18\x01 \x01(\x0b\x32\x17.google.protobuf.Struct\"7\n\x10ValidationResult\x12\r\n\x05valid\x18\x01 \x01(\x08\x12\x14\n\x0c\x66ield_errors\x18\x02 \x03(\t\"7\n\x0cStartRequest\x12\'\n\x06\x63onfig\x18\x01 \x01(\x0b\x32\x17.google.protobuf.Struct\"[\n\x11LifecycleResponse\x12\r\n\x05state\x18\x01 \x01(\t\x12\x37\n\x05\x65rror\x18\x02 \x01(\x0b\x32(.edge.material.common.v1.ProcessingError\"\x92\x01\n\x0bPluginInput\x12;\n\x06\x62uffer\x18\x01 \x01(\x0b\x32).edge.material.common.v1.BufferDescriptorH\x00\x12=\n\x0bobservation\x18\x02 \x01(\x0b\x32&.edge.material.material.v1.ObservationH\x00\x42\x07\n\x05value\"\x9f\x01\n\x0eProcessRequest\x12\x38\n\x07\x63ontext\x18\x01 \x01(\x0b\x32\'.edge.material.common.v1.RequestContext\x12\x35\n\x06inputs\x18\x02 \x03(\x0b\x32%.edge.material.runtime.v1.PluginInput\x12\x1c\n\x14processor_release_id\x18\x03 \x01(\t\"\x9a\x01\n\x0fProcessResponse\x12<\n\x0cobservations\x18\x01 \x03(\x0b\x32&.edge.material.material.v1.Observation\x12\x10\n\x08warnings\x18\x02 \x03(\t\x12\x37\n\x05\x65rror\x18\x03 \x01(\x0b\x32(.edge.material.common.v1.ProcessingError\"#\n\rCancelRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\"\x0f\n\rHealthRequest\"A\n\x0eHealthResponse\x12\r\n\x05state\x18\x01 \x01(\t\x12 \n\x18unavailable_capabilities\x18\x02 \x03(\t\"\'\n\x0c\x44rainRequest\x12\x17\n\x0fgrace_period_ms\x18\x01 \x01(\r\"\r\n\x0bStopRequest\"`\n\rHostResources\x12\x1c\n\x14unified_memory_bytes\x18\x01 \x01(\x04\x12\x1a\n\x12total_memory_bytes\x18\x02 \x01(\x04\x12\x15\n\rlogical_cores\x18\x03 \x01(\r\"\xe8\x01\n\x11\x42\x61\x63kendCapability\x12\x0f\n\x07\x62\x61\x63kend\x18\x01 \x01(\t\x12\x10\n\x08platform\x18\x02 \x01(\t\x12\x17\n\x0fruntime_version\x18\x03 \x01(\t\x12\x12\n\nprecisions\x18\x04 \x03(\t\x12\x14\n\x0cmemory_kinds\x18\x05 \x03(\t\x12\x17\n\x0fmax_concurrency\x18\x06 \x01(\r\x12\x38\n\x05state\x18\x07 \x01(\x0e\x32).edge.material.runtime.v1.CapabilityState\x12\x1a\n\x12unavailable_reason\x18\x08 \x01(\t\"\xd4\x01\n\x0fHostAccelerator\x12\x13\n\x0b\x61\x63\x63\x65lerator\x18\x01 \x01(\t\x12\x10\n\x08platform\x18\x02 \x01(\t\x12\x39\n\x05state\x18\x03 \x01(\x0e\x32*.edge.material.runtime.v1.AcceleratorState\x12\x18\n\x10\x64\x65tection_source\x18\x04 \x01(\t\x12\x17\n\x0fruntime_version\x18\x05 \x01(\t\x12\x10\n\x08\x65vidence\x18\x06 \x03(\t\x12\x1a\n\x12unavailable_reason\x18\x07 \x01(\t\"X\n\x0fResidencyLimits\x12\x0c\n\x04tier\x18\x01 \x01(\t\x12\x1c\n\x14media_queue_capacity\x18\x02 \x01(\x04\x12\x19\n\x11model_parallelism\x18\x03 \x01(\x04\"\x1d\n\x1b\x44\x65scribeCapabilitiesRequest\"\xeb\x02\n\x1c\x44\x65scribeCapabilitiesResponse\x12\x10\n\x08platform\x18\x01 \x01(\t\x12\x35\n\x04host\x18\x02 \x01(\x0b\x32\'.edge.material.runtime.v1.HostResources\x12=\n\x08\x62\x61\x63kends\x18\x03 \x03(\x0b\x32+.edge.material.runtime.v1.BackendCapability\x12 \n\x18unavailable_capabilities\x18\x04 \x03(\t\x12\x1d\n\x15\x61\x64mitted_memory_kinds\x18\x05 \x03(\t\x12\x44\n\x11host_accelerators\x18\x07 \x03(\x0b\x32).edge.material.runtime.v1.HostAccelerator\x12<\n\tresidency\x18\x06 \x01(\x0b\x32).edge.material.runtime.v1.ResidencyLimits*u\n\x0f\x43\x61pabilityState\x12 \n\x1c\x43\x41PABILITY_STATE_UNSPECIFIED\x10\x00\x12\x1e\n\x1a\x43\x41PABILITY_STATE_AVAILABLE\x10\x01\x12 \n\x1c\x43\x41PABILITY_STATE_UNAVAILABLE\x10\x02*\x98\x01\n\x10\x41\x63\x63\x65leratorState\x12!\n\x1d\x41\x43\x43\x45LERATOR_STATE_UNSPECIFIED\x10\x00\x12\x1f\n\x1b\x41\x43\x43\x45LERATOR_STATE_AVAILABLE\x10\x01\x12!\n\x1d\x41\x43\x43\x45LERATOR_STATE_UNAVAILABLE\x10\x02\x12\x1d\n\x19\x41\x43\x43\x45LERATOR_STATE_UNKNOWN\x10\x03\x32\xa0\x06\n\x16ProcessorPluginService\x12\x62\n\x08\x44\x65scribe\x12).edge.material.runtime.v1.DescribeRequest\x1a+.edge.material.runtime.v1.PluginDescription\x12m\n\x0eValidateConfig\x12/.edge.material.runtime.v1.ValidateConfigRequest\x1a*.edge.material.runtime.v1.ValidationResult\x12\\\n\x05Start\x12&.edge.material.runtime.v1.StartRequest\x1a+.edge.material.runtime.v1.LifecycleResponse\x12^\n\x07Process\x12(.edge.material.runtime.v1.ProcessRequest\x1a).edge.material.runtime.v1.ProcessResponse\x12^\n\x06\x43\x61ncel\x12\'.edge.material.runtime.v1.CancelRequest\x1a+.edge.material.runtime.v1.LifecycleResponse\x12[\n\x06Health\x12\'.edge.material.runtime.v1.HealthRequest\x1a(.edge.material.runtime.v1.HealthResponse\x12\\\n\x05\x44rain\x12&.edge.material.runtime.v1.DrainRequest\x1a+.edge.material.runtime.v1.LifecycleResponse\x12Z\n\x04Stop\x12%.edge.material.runtime.v1.StopRequest\x1a+.edge.material.runtime.v1.LifecycleResponse2\xf5\x01\n\x0eRuntimeService\x12[\n\x06Health\x12\'.edge.material.runtime.v1.HealthRequest\x1a(.edge.material.runtime.v1.HealthResponse\x12\x85\x01\n\x14\x44\x65scribeCapabilities\x12\x35.edge.material.runtime.v1.DescribeCapabilitiesRequest\x1a\x36.edge.material.runtime.v1.DescribeCapabilitiesResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x18runtime/v1/runtime.proto\x12\x18\x65\x64ge.material.runtime.v1\x1a\x16\x63ommon/v1/common.proto\x1a\x1amaterial/v1/material.proto\x1a\x1cgoogle/protobuf/struct.proto\"\x11\n\x0f\x44\x65scribeRequest\"e\n\x0fPayloadContract\x12\x10\n\x08modality\x18\x01 \x01(\t\x12\x11\n\tschema_id\x18\x02 \x01(\t\x12\x16\n\x0eschema_version\x18\x03 \x01(\t\x12\x15\n\rschema_digest\x18\x04 \x01(\t\"\xfc\x02\n\x11PluginDescription\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x0f\n\x07version\x18\x02 \x01(\t\x12\x10\n\x08protocol\x18\x03 \x01(\t\x12\x10\n\x08\x63onsumes\x18\x04 \x03(\t\x12\x10\n\x08produces\x18\x05 \x03(\t\x12\x14\n\x0cmemory_kinds\x18\x06 \x03(\t\x12\x17\n\x0f\x61rtifact_digest\x18\x07 \x01(\t\x12\x42\n\x0finput_contracts\x18\x08 \x03(\x0b\x32).edge.material.runtime.v1.PayloadContract\x12\x43\n\x10output_contracts\x18\t \x03(\x0b\x32).edge.material.runtime.v1.PayloadContract\x12\x17\n\x0f\x65xecution_modes\x18\n \x03(\t\x12\x17\n\x0fmax_concurrency\x18\x0b \x01(\r\x12\x16\n\x0emax_batch_size\x18\x0c \x01(\r\x12\x10\n\x08ordering\x18\r \x01(\t\"@\n\x15ValidateConfigRequest\x12\'\n\x06\x63onfig\x18\x01 \x01(\x0b\x32\x17.google.protobuf.Struct\"7\n\x10ValidationResult\x12\r\n\x05valid\x18\x01 \x01(\x08\x12\x14\n\x0c\x66ield_errors\x18\x02 \x03(\t\"7\n\x0cStartRequest\x12\'\n\x06\x63onfig\x18\x01 \x01(\x0b\x32\x17.google.protobuf.Struct\"[\n\x11LifecycleResponse\x12\r\n\x05state\x18\x01 \x01(\t\x12\x37\n\x05\x65rror\x18\x02 \x01(\x0b\x32(.edge.material.common.v1.ProcessingError\"\x92\x01\n\x0bPluginInput\x12;\n\x06\x62uffer\x18\x01 \x01(\x0b\x32).edge.material.common.v1.BufferDescriptorH\x00\x12=\n\x0bobservation\x18\x02 \x01(\x0b\x32&.edge.material.material.v1.ObservationH\x00\x42\x07\n\x05value\"\x9f\x01\n\x0eProcessRequest\x12\x38\n\x07\x63ontext\x18\x01 \x01(\x0b\x32\'.edge.material.common.v1.RequestContext\x12\x35\n\x06inputs\x18\x02 \x03(\x0b\x32%.edge.material.runtime.v1.PluginInput\x12\x1c\n\x14processor_release_id\x18\x03 \x01(\t\"\xed\x01\n\x0fProcessResponse\x12<\n\x0cobservations\x18\x01 \x03(\x0b\x32&.edge.material.material.v1.Observation\x12\x10\n\x08warnings\x18\x02 \x03(\t\x12\x37\n\x05\x65rror\x18\x03 \x01(\x0b\x32(.edge.material.common.v1.ProcessingError\x12\x39\n\x07outcome\x18\x04 \x01(\x0e\x32(.edge.material.runtime.v1.ProcessOutcome\x12\x16\n\x0eoutcome_reason\x18\x05 \x01(\t\"#\n\rCancelRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\"\x0f\n\rHealthRequest\"A\n\x0eHealthResponse\x12\r\n\x05state\x18\x01 \x01(\t\x12 \n\x18unavailable_capabilities\x18\x02 \x03(\t\"\'\n\x0c\x44rainRequest\x12\x17\n\x0fgrace_period_ms\x18\x01 \x01(\r\"\r\n\x0bStopRequest\"`\n\rHostResources\x12\x1c\n\x14unified_memory_bytes\x18\x01 \x01(\x04\x12\x1a\n\x12total_memory_bytes\x18\x02 \x01(\x04\x12\x15\n\rlogical_cores\x18\x03 \x01(\r\"\xe8\x01\n\x11\x42\x61\x63kendCapability\x12\x0f\n\x07\x62\x61\x63kend\x18\x01 \x01(\t\x12\x10\n\x08platform\x18\x02 \x01(\t\x12\x17\n\x0fruntime_version\x18\x03 \x01(\t\x12\x12\n\nprecisions\x18\x04 \x03(\t\x12\x14\n\x0cmemory_kinds\x18\x05 \x03(\t\x12\x17\n\x0fmax_concurrency\x18\x06 \x01(\r\x12\x38\n\x05state\x18\x07 \x01(\x0e\x32).edge.material.runtime.v1.CapabilityState\x12\x1a\n\x12unavailable_reason\x18\x08 \x01(\t\"\xd4\x01\n\x0fHostAccelerator\x12\x13\n\x0b\x61\x63\x63\x65lerator\x18\x01 \x01(\t\x12\x10\n\x08platform\x18\x02 \x01(\t\x12\x39\n\x05state\x18\x03 \x01(\x0e\x32*.edge.material.runtime.v1.AcceleratorState\x12\x18\n\x10\x64\x65tection_source\x18\x04 \x01(\t\x12\x17\n\x0fruntime_version\x18\x05 \x01(\t\x12\x10\n\x08\x65vidence\x18\x06 \x03(\t\x12\x1a\n\x12unavailable_reason\x18\x07 \x01(\t\"X\n\x0fResidencyLimits\x12\x0c\n\x04tier\x18\x01 \x01(\t\x12\x1c\n\x14media_queue_capacity\x18\x02 \x01(\x04\x12\x19\n\x11model_parallelism\x18\x03 \x01(\x04\"\x1d\n\x1b\x44\x65scribeCapabilitiesRequest\"\xeb\x02\n\x1c\x44\x65scribeCapabilitiesResponse\x12\x10\n\x08platform\x18\x01 \x01(\t\x12\x35\n\x04host\x18\x02 \x01(\x0b\x32\'.edge.material.runtime.v1.HostResources\x12=\n\x08\x62\x61\x63kends\x18\x03 \x03(\x0b\x32+.edge.material.runtime.v1.BackendCapability\x12 \n\x18unavailable_capabilities\x18\x04 \x03(\t\x12\x1d\n\x15\x61\x64mitted_memory_kinds\x18\x05 \x03(\t\x12\x44\n\x11host_accelerators\x18\x07 \x03(\x0b\x32).edge.material.runtime.v1.HostAccelerator\x12<\n\tresidency\x18\x06 \x01(\x0b\x32).edge.material.runtime.v1.ResidencyLimits*t\n\x0eProcessOutcome\x12\x1f\n\x1bPROCESS_OUTCOME_UNSPECIFIED\x10\x00\x12\x1c\n\x18PROCESS_OUTCOME_OBSERVED\x10\x01\x12#\n\x1fPROCESS_OUTCOME_NO_OBSERVATIONS\x10\x02*u\n\x0f\x43\x61pabilityState\x12 \n\x1c\x43\x41PABILITY_STATE_UNSPECIFIED\x10\x00\x12\x1e\n\x1a\x43\x41PABILITY_STATE_AVAILABLE\x10\x01\x12 \n\x1c\x43\x41PABILITY_STATE_UNAVAILABLE\x10\x02*\x98\x01\n\x10\x41\x63\x63\x65leratorState\x12!\n\x1d\x41\x43\x43\x45LERATOR_STATE_UNSPECIFIED\x10\x00\x12\x1f\n\x1b\x41\x43\x43\x45LERATOR_STATE_AVAILABLE\x10\x01\x12!\n\x1d\x41\x43\x43\x45LERATOR_STATE_UNAVAILABLE\x10\x02\x12\x1d\n\x19\x41\x43\x43\x45LERATOR_STATE_UNKNOWN\x10\x03\x32\xa0\x06\n\x16ProcessorPluginService\x12\x62\n\x08\x44\x65scribe\x12).edge.material.runtime.v1.DescribeRequest\x1a+.edge.material.runtime.v1.PluginDescription\x12m\n\x0eValidateConfig\x12/.edge.material.runtime.v1.ValidateConfigRequest\x1a*.edge.material.runtime.v1.ValidationResult\x12\\\n\x05Start\x12&.edge.material.runtime.v1.StartRequest\x1a+.edge.material.runtime.v1.LifecycleResponse\x12^\n\x07Process\x12(.edge.material.runtime.v1.ProcessRequest\x1a).edge.material.runtime.v1.ProcessResponse\x12^\n\x06\x43\x61ncel\x12\'.edge.material.runtime.v1.CancelRequest\x1a+.edge.material.runtime.v1.LifecycleResponse\x12[\n\x06Health\x12\'.edge.material.runtime.v1.HealthRequest\x1a(.edge.material.runtime.v1.HealthResponse\x12\\\n\x05\x44rain\x12&.edge.material.runtime.v1.DrainRequest\x1a+.edge.material.runtime.v1.LifecycleResponse\x12Z\n\x04Stop\x12%.edge.material.runtime.v1.StopRequest\x1a+.edge.material.runtime.v1.LifecycleResponse2\xf5\x01\n\x0eRuntimeService\x12[\n\x06Health\x12\'.edge.material.runtime.v1.HealthRequest\x1a(.edge.material.runtime.v1.HealthResponse\x12\x85\x01\n\x14\x44\x65scribeCapabilities\x12\x35.edge.material.runtime.v1.DescribeCapabilitiesRequest\x1a\x36.edge.material.runtime.v1.DescribeCapabilitiesResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'edge_material_sdk.generated.runtime.v1.runtime_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_CAPABILITYSTATE']._serialized_start=2262
-  _globals['_CAPABILITYSTATE']._serialized_end=2379
-  _globals['_ACCELERATORSTATE']._serialized_start=2382
-  _globals['_ACCELERATORSTATE']._serialized_end=2534
+  _globals['_PROCESSOUTCOME']._serialized_start=2677
+  _globals['_PROCESSOUTCOME']._serialized_end=2793
+  _globals['_CAPABILITYSTATE']._serialized_start=2795
+  _globals['_CAPABILITYSTATE']._serialized_end=2912
+  _globals['_ACCELERATORSTATE']._serialized_start=2915
+  _globals['_ACCELERATORSTATE']._serialized_end=3067
   _globals['_DESCRIBEREQUEST']._serialized_start=136
   _globals['_DESCRIBEREQUEST']._serialized_end=153
-  _globals['_PLUGINDESCRIPTION']._serialized_start=156
-  _globals['_PLUGINDESCRIPTION']._serialized_end=307
-  _globals['_VALIDATECONFIGREQUEST']._serialized_start=309
-  _globals['_VALIDATECONFIGREQUEST']._serialized_end=373
-  _globals['_VALIDATIONRESULT']._serialized_start=375
-  _globals['_VALIDATIONRESULT']._serialized_end=430
-  _globals['_STARTREQUEST']._serialized_start=432
-  _globals['_STARTREQUEST']._serialized_end=487
-  _globals['_LIFECYCLERESPONSE']._serialized_start=489
-  _globals['_LIFECYCLERESPONSE']._serialized_end=580
-  _globals['_PLUGININPUT']._serialized_start=583
-  _globals['_PLUGININPUT']._serialized_end=729
-  _globals['_PROCESSREQUEST']._serialized_start=732
-  _globals['_PROCESSREQUEST']._serialized_end=891
-  _globals['_PROCESSRESPONSE']._serialized_start=894
-  _globals['_PROCESSRESPONSE']._serialized_end=1048
-  _globals['_CANCELREQUEST']._serialized_start=1050
-  _globals['_CANCELREQUEST']._serialized_end=1085
-  _globals['_HEALTHREQUEST']._serialized_start=1087
-  _globals['_HEALTHREQUEST']._serialized_end=1102
-  _globals['_HEALTHRESPONSE']._serialized_start=1104
-  _globals['_HEALTHRESPONSE']._serialized_end=1169
-  _globals['_DRAINREQUEST']._serialized_start=1171
-  _globals['_DRAINREQUEST']._serialized_end=1210
-  _globals['_STOPREQUEST']._serialized_start=1212
-  _globals['_STOPREQUEST']._serialized_end=1225
-  _globals['_HOSTRESOURCES']._serialized_start=1227
-  _globals['_HOSTRESOURCES']._serialized_end=1323
-  _globals['_BACKENDCAPABILITY']._serialized_start=1326
-  _globals['_BACKENDCAPABILITY']._serialized_end=1558
-  _globals['_HOSTACCELERATOR']._serialized_start=1561
-  _globals['_HOSTACCELERATOR']._serialized_end=1773
-  _globals['_RESIDENCYLIMITS']._serialized_start=1775
-  _globals['_RESIDENCYLIMITS']._serialized_end=1863
-  _globals['_DESCRIBECAPABILITIESREQUEST']._serialized_start=1865
-  _globals['_DESCRIBECAPABILITIESREQUEST']._serialized_end=1894
-  _globals['_DESCRIBECAPABILITIESRESPONSE']._serialized_start=1897
-  _globals['_DESCRIBECAPABILITIESRESPONSE']._serialized_end=2260
-  _globals['_PROCESSORPLUGINSERVICE']._serialized_start=2537
-  _globals['_PROCESSORPLUGINSERVICE']._serialized_end=3337
-  _globals['_RUNTIMESERVICE']._serialized_start=3340
-  _globals['_RUNTIMESERVICE']._serialized_end=3585
+  _globals['_PAYLOADCONTRACT']._serialized_start=155
+  _globals['_PAYLOADCONTRACT']._serialized_end=256
+  _globals['_PLUGINDESCRIPTION']._serialized_start=259
+  _globals['_PLUGINDESCRIPTION']._serialized_end=639
+  _globals['_VALIDATECONFIGREQUEST']._serialized_start=641
+  _globals['_VALIDATECONFIGREQUEST']._serialized_end=705
+  _globals['_VALIDATIONRESULT']._serialized_start=707
+  _globals['_VALIDATIONRESULT']._serialized_end=762
+  _globals['_STARTREQUEST']._serialized_start=764
+  _globals['_STARTREQUEST']._serialized_end=819
+  _globals['_LIFECYCLERESPONSE']._serialized_start=821
+  _globals['_LIFECYCLERESPONSE']._serialized_end=912
+  _globals['_PLUGININPUT']._serialized_start=915
+  _globals['_PLUGININPUT']._serialized_end=1061
+  _globals['_PROCESSREQUEST']._serialized_start=1064
+  _globals['_PROCESSREQUEST']._serialized_end=1223
+  _globals['_PROCESSRESPONSE']._serialized_start=1226
+  _globals['_PROCESSRESPONSE']._serialized_end=1463
+  _globals['_CANCELREQUEST']._serialized_start=1465
+  _globals['_CANCELREQUEST']._serialized_end=1500
+  _globals['_HEALTHREQUEST']._serialized_start=1502
+  _globals['_HEALTHREQUEST']._serialized_end=1517
+  _globals['_HEALTHRESPONSE']._serialized_start=1519
+  _globals['_HEALTHRESPONSE']._serialized_end=1584
+  _globals['_DRAINREQUEST']._serialized_start=1586
+  _globals['_DRAINREQUEST']._serialized_end=1625
+  _globals['_STOPREQUEST']._serialized_start=1627
+  _globals['_STOPREQUEST']._serialized_end=1640
+  _globals['_HOSTRESOURCES']._serialized_start=1642
+  _globals['_HOSTRESOURCES']._serialized_end=1738
+  _globals['_BACKENDCAPABILITY']._serialized_start=1741
+  _globals['_BACKENDCAPABILITY']._serialized_end=1973
+  _globals['_HOSTACCELERATOR']._serialized_start=1976
+  _globals['_HOSTACCELERATOR']._serialized_end=2188
+  _globals['_RESIDENCYLIMITS']._serialized_start=2190
+  _globals['_RESIDENCYLIMITS']._serialized_end=2278
+  _globals['_DESCRIBECAPABILITIESREQUEST']._serialized_start=2280
+  _globals['_DESCRIBECAPABILITIESREQUEST']._serialized_end=2309
+  _globals['_DESCRIBECAPABILITIESRESPONSE']._serialized_start=2312
+  _globals['_DESCRIBECAPABILITIESRESPONSE']._serialized_end=2675
+  _globals['_PROCESSORPLUGINSERVICE']._serialized_start=3070
+  _globals['_PROCESSORPLUGINSERVICE']._serialized_end=3870
+  _globals['_RUNTIMESERVICE']._serialized_start=3873
+  _globals['_RUNTIMESERVICE']._serialized_end=4118
 # @@protoc_insertion_point(module_scope)

@@ -277,12 +277,21 @@ def load_observations(conn, *, material_unit_id: str, revision: int) -> list[dic
     否则"重跑得到同一份向量"这条幂等性就没有依据。
     """
     rows = conn.execute(
-        "SELECT o.observation_id, o.modality, o.payload_jsonb FROM material_observation mo "
+        "SELECT o.observation_id, o.modality, o.payload_jsonb, o.contract_bytes FROM "
+        "material_observation mo "
         "JOIN observation o ON o.observation_id = mo.observation_id "
         "WHERE mo.material_unit_id=%s AND mo.revision=%s ORDER BY o.observation_id",
         (material_unit_id, revision),
     ).fetchall()
-    return [{"observation_id": row[0], "modality": row[1], "payload": dict(row[2])} for row in rows]
+    return [
+        {
+            "observation_id": row[0],
+            "modality": row[1],
+            "payload": dict(row[2]),
+            "contract_bytes": row[3],
+        }
+        for row in rows
+    ]
 
 
 def ensure_model_release(

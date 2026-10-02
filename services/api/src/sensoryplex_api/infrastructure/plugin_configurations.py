@@ -53,6 +53,13 @@ MULTIMODAL_CONFIG_DEFAULTS = {
 
 def normalize_configuration(entry: dict, config: dict) -> dict:
     """拒绝不可发布的配置，并恢复 protobuf Struct 丢失的整数类型。"""
+    if entry.get("manifest_version") == "edge.material.plugin/v2":
+        from edge_material_sdk.manifest import normalize_config
+
+        try:
+            return normalize_config(entry["config_schema"], config)
+        except ValueError as error:
+            fail(422, str(error))
     schema = dict(entry["config_schema"])
     schema["properties"] = {
         k: v for k, v in schema["properties"].items() if k != "handoff_endpoint"
@@ -135,7 +142,10 @@ def save_configuration(conn, *, plugin_id, name, config, created_by, reuse=False
 
 def save_deployment_configuration(conn, entry, config, created_by):
     """补齐部署实际使用的多模态配置；不把不兼容的旧配置静默改成另一份。"""
-    if entry["id"] not in MULTIMODAL_CONFIG_DEFAULTS:
+    if (
+        entry["id"] not in MULTIMODAL_CONFIG_DEFAULTS
+        and entry.get("manifest_version") != "edge.material.plugin/v2"
+    ):
         return
     normalized = normalize_configuration(entry, config)
     if configuration_hash(normalized) != configuration_hash(config):

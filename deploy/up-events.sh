@@ -32,11 +32,11 @@ cd "${ROOT}"
 mkdir -p "${ROOT}/.data/events" "${ROOT}/.data/index"
 # 不传 --build：镜像缺失时 compose 会自己构建（这两个服务与 api 共用同一份 Dockerfile 与镜像标签）。
 docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" --profile events up -d --wait \
-    relay index vlm-publisher vlm-result-fuser "$@"
+    relay index vlm-publisher vlm-result-fuser enrichment-publisher enrichment-result-fuser "$@"
 
 echo "[events-up] 事件链路状态："
 docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" --profile events ps \
-    relay index vlm-publisher vlm-result-fuser
+    relay index vlm-publisher vlm-result-fuser enrichment-publisher enrichment-result-fuser
 
 echo
 echo "[events-up] 常驻进程的落盘位置（仓库 bind mount，主机与容器同视角）："

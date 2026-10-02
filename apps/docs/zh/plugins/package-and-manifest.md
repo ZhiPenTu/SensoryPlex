@@ -1,5 +1,7 @@
 # 打包与 Manifest
 
+本页描述保留的 v1 格式。签名外部制品见 [独立插件（v2）](/zh/plugins/independent-v2)。
+
 每个插件都在包根目录提供 `plugin.yaml`。运行时**只**依据 manifest 做发现与预检——它绝不 import 插件代码来读元数据。
 
 ## 推荐目录
