@@ -106,7 +106,7 @@ make docs-build DOCS_SITE_URL=https://docs.example.com     # 带 sitemap/绝对�
 
 ### GitHub Pages
 
-本站以项目页形式发布在 <https://jaytu211.github.io/SensoryPlex/>，由**手动派发**的工作流
+本站以项目页形式发布在 <https://zhipentu.github.io/SensoryPlex/>，由**手动派发**的工作流
 `.github/workflows/docs-pages.yml` 完成：
 
 ```sh
@@ -120,12 +120,12 @@ gh workflow run docs-pages.yml --ref master      # 或在 GitHub：Actions → d
 
 ```yaml
 DOCS_BASE: /SensoryPlex/                   # 项目页托管在子路径下
-DOCS_SITE_URL: https://jaytu211.github.io   # 只写域名——子路径是另一件事
+DOCS_SITE_URL: https://zhipentu.github.io   # 只写域名——子路径是另一件事
 ```
 
 `DOCS_SITE_URL` **不能**带子路径。VitePress 交给 sitemap 包的是站点内相对路径，而 sitemap 包按
 `new URL(路径, hostname)` 解析：带前导 `/` 的路径会把 `hostname` 里的子路径整体丢掉，于是
-`https://jaytu211.github.io/SensoryPlex` 会悄悄产出指向 `https://jaytu211.github.io/...` 的 sitemap 条目。
+`https://zhipentu.github.io/SensoryPlex` 会悄悄产出指向 `https://zhipentu.github.io/...` 的 sitemap 条目。
 `.vitepress/config.mts` 里的 `sitemap.transformItems` 负责把 `base` 补回去，`scripts/check-docs.mjs`
 则在任何一条 sitemap URL 落在基础路径之外时直接让构建失败。
 
@@ -133,5 +133,5 @@ DOCS_SITE_URL: https://jaytu211.github.io   # 只写域名——子路径是另�
 而不是把一套链接不自洽的产物推上去。要在本机复现"线上那一份产物"：
 
 ```sh
-make docs-check DOCS_BASE=/SensoryPlex/ DOCS_SITE_URL=https://jaytu211.github.io
+make docs-check DOCS_BASE=/SensoryPlex/ DOCS_SITE_URL=https://zhipentu.github.io
 ```

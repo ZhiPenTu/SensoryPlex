@@ -1,7 +1,7 @@
 name: docs-pages
 
 # 把开源使用文档站（apps/docs，VitePress）发布到 GitHub Pages 项目页：
-#   https://jaytu211.github.io/SensoryPlex/
+#   https://zhipentu.github.io/SensoryPlex/
 # 与 ci.yml 同一约定：**仅手动触发**，不在 push/PR 上自动消耗托管 runner 额度。
 # 派发方式（本机仓库根目录执行）：
 #   gh workflow run docs-pages.yml --ref master
@@ -34,7 +34,7 @@ jobs:
       # DOCS_SITE_URL 只写站点域名：sitemap 的基路径由 config.mts 的 transformItems 补回
       # （VitePress 自身会用相对路径覆盖掉 hostname 里的子路径，不能靠在域名后拼前缀绕过）。
       DOCS_BASE: /SensoryPlex/
-      DOCS_SITE_URL: https://jaytu211.github.io
+      DOCS_SITE_URL: https://zhipentu.github.io
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

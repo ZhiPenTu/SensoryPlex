@@ -2,7 +2,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License"></a>
-  <a href="https://jaytu211.github.io/SensoryPlex/"><img src="https://img.shields.io/badge/Docs-VitePress-green.svg" alt="Documentation"></a>
+  <a href="https://zhipentu.github.io/SensoryPlex/"><img src="https://img.shields.io/badge/Docs-VitePress-green.svg" alt="Documentation"></a>
   <a href="CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome"></a>
   <a href="CODE_OF_CONDUCT.md"><img src="https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg" alt="Code of Conduct"></a>
   <a href="https://github.com/ZhiPenTu/SensoryPlex/issues"><img src="https://img.shields.io/badge/Community-Open%20Governance-orange.svg" alt="Community"></a>
@@ -67,7 +67,7 @@ SRT 实时接入（M4）同样可用：`ingest` 在有限窗口内拉流、解�
 - 🤝 **社区行为准则**：[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
 - 🛡️ **安全策略与漏洞披露**：[SECURITY.md](SECURITY.md)
 - 📜 **开源许可证**：[Apache License 2.0](LICENSE)
-- 🌐 **在线开源文档站**：[https://jaytu211.github.io/SensoryPlex/](https://jaytu211.github.io/SensoryPlex/)
+- 🌐 **在线开源文档站**：[https://zhipentu.github.io/SensoryPlex/](https://zhipentu.github.io/SensoryPlex/)
 
 ---
 
@@ -310,8 +310,8 @@ tools/                  配置、代码生成、迁移、测试与真实媒体�
 
 ## 社区交流与支持 (Community & Support)
 
-- **Issues & RFCs**: 提交 Bug 报告、新特性建议与架构 RFC 提案至 [GitHub Issues](https://github.com/jaytu211/SensoryPlex/issues)；
-- **Discussions**: 参与技术讨论与新硬件适配交流至 [GitHub Discussions](https://github.com/jaytu211/SensoryPlex/discussions)；
+- **Issues & RFCs**: 提交 Bug 报告、新特性建议与架构 RFC 提案至 [GitHub Issues](https://github.com/ZhiPenTu/SensoryPlex/issues)；
+- **Discussions**: 参与技术讨论与新硬件适配交流至 [GitHub Discussions](https://github.com/ZhiPenTu/SensoryPlex/discussions)；
 - **核心维护与安全**: 发送邮件至 `50646043@qq.com`（安全漏洞通报、商业合作与核心治理）；
 - **微信交流 (WeChat)**：欢迎扫码添加项目作者个人微信，备注「SensoryPlex」，加入开发者交流群：
 

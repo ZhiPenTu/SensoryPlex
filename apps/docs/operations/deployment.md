@@ -116,7 +116,7 @@ validates locale parity plus every internal link and asset.
 
 ### GitHub Pages
 
-The site is published as a project page at <https://jaytu211.github.io/SensoryPlex/>, by the
+The site is published as a project page at <https://zhipentu.github.io/SensoryPlex/>, by the
 **manually dispatched** workflow `.github/workflows/docs-pages.yml`:
 
 ```sh
@@ -131,13 +131,13 @@ The workflow owns the two build inputs, and they must stay in sync with this pag
 
 ```yaml
 DOCS_BASE: /SensoryPlex/                   # a project page is served from a sub-path
-DOCS_SITE_URL: https://jaytu211.github.io   # origin only — the sub-path is separate
+DOCS_SITE_URL: https://zhipentu.github.io   # origin only — the sub-path is separate
 ```
 
 `DOCS_SITE_URL` must **not** include the sub-path. VitePress hands relative page paths to the sitemap
 package, which resolves them as `new URL(path, hostname)`: a leading `/` discards any path inside
-`hostname`, so `https://jaytu211.github.io/SensoryPlex` would silently emit sitemap entries pointing at
-`https://jaytu211.github.io/...`. `sitemap.transformItems` in `.vitepress/config.mts` re-adds `base`,
+`hostname`, so `https://zhipentu.github.io/SensoryPlex` would silently emit sitemap entries pointing at
+`https://zhipentu.github.io/...`. `sitemap.transformItems` in `.vitepress/config.mts` re-adds `base`,
 and `scripts/check-docs.mjs` fails the build when any sitemap URL falls outside it.
 
 The workflow builds the artifact, runs the same `check-docs.mjs` gate, and only then deploys — a
@@ -145,5 +145,5 @@ failed validation keeps the previously published version live instead of shippin
 To reproduce the exact published artifact locally:
 
 ```sh
-make docs-check DOCS_BASE=/SensoryPlex/ DOCS_SITE_URL=https://jaytu211.github.io
+make docs-check DOCS_BASE=/SensoryPlex/ DOCS_SITE_URL=https://zhipentu.github.io
 ```
