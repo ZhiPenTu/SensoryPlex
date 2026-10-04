@@ -44,6 +44,7 @@ import {
     Notice,
     StatSummary,
 } from '../components';
+import PluginPruneModal from './PluginPruneModal';
 
 const { Text } = Typography;
 
@@ -52,6 +53,7 @@ export default function Nodes() {
     const [tokenModalOpen, setTokenModalOpen] = useState(false);
     const [createdToken, setCreatedToken] = useState<EnrollmentToken | null>(null);
     const [copied, setCopied] = useState(false);
+    const [pruneModalNodeId, setPruneModalNodeId] = useState<string | null>(null);
     const [form] = Form.useForm();
 
     const nodesQuery = useQuery({
@@ -395,6 +397,17 @@ export default function Nodes() {
                                     </div>
 
                                     <Space size={8}>
+                                        {(node.is_co_located || node.node_id === 'local-host') &&
+                                        node.status !== 'NODE_STATUS_REVOKED' ? (
+                                            <Button
+                                                size="small"
+                                                icon={<ClearOutlined />}
+                                                onClick={() => setPruneModalNodeId(node.node_id)}
+                                            >
+                                                清理旧安装
+                                            </Button>
+                                        ) : null}
+
                                         {node.status === 'NODE_STATUS_READY' ? (
                                             <Popconfirm
                                                 title="确定排空该节点？排空后将不再接收新任务。"
@@ -647,6 +660,13 @@ export default function Nodes() {
                         </Form>
                     )}
                 </Modal>
+            ) : null}
+
+            {pruneModalNodeId ? (
+                <PluginPruneModal
+                    nodeId={pruneModalNodeId}
+                    onClose={() => setPruneModalNodeId(null)}
+                />
             ) : null}
         </div>
     );

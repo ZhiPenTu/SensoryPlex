@@ -688,6 +688,24 @@ def main():
     run_parser.add_argument("--interval-s", type=float, default=5.0)
     run_parser.add_argument("--once", action="store_true")
 
+    prune_parser = subparsers.add_parser(
+        "prune", help="Prune old inactive plugin releases and runtimes"
+    )
+    prune_parser.add_argument("--base-dir", default="")
+    prune_parser.add_argument(
+        "--keep", type=int, default=1, help="Number of inactive releases to keep"
+    )
+    prune_parser.add_argument("--dry-run", action="store_true", help="Simulate pruning")
+    prune_parser.add_argument(
+        "--include-tasks", action="store_true", help="Prune task-executions"
+    )
+    prune_parser.add_argument(
+        "--include-bundles", action="store_true", help="Prune bundle cache"
+    )
+    prune_parser.add_argument(
+        "--all", action="store_true", help="Prune all old releases and caches"
+    )
+
     args = parser.parse_args()
 
     if args.command == "enroll":
@@ -769,6 +787,28 @@ def main():
             LOGGER.info("Cleaned local state file", state_file=str(sf_path))
 
         LOGGER.info("Node cleanly uninstalled and deregistered", node_id=args.node_id)
+
+    elif args.command == "prune":
+        from tools.prune_installations import format_bytes, prune_all
+
+        target_base = Path(args.base_dir) if args.base_dir else base_dir
+        total_freed, actions = prune_all(
+            base_dir=target_base,
+            keep_releases=args.keep,
+            include_tasks=args.include_tasks or args.all,
+            include_bundles=args.include_bundles or args.all,
+            dry_run=args.dry_run,
+        )
+        if not actions:
+            LOGGER.info("No old plugin installations found to prune")
+        else:
+            for act in actions:
+                print(f"  • {act}")
+            LOGGER.info(
+                "Prune completed",
+                freed=format_bytes(total_freed),
+                dry_run=args.dry_run,
+            )
 
     elif args.command == "run":
         token = args.session_token

@@ -16,6 +16,7 @@ import {
 import {
     AppstoreOutlined,
     CheckCircleFilled,
+    ClearOutlined,
     CloudDownloadOutlined,
     CloudUploadOutlined,
     ClusterOutlined,
@@ -40,6 +41,7 @@ import type {
 } from '../api/contracts';
 import { ErrorNotice, Loading, StatSummary } from '../components';
 import { usePermission } from '../session';
+import PluginPruneModal from './PluginPruneModal';
 
 const { Text } = Typography;
 
@@ -57,6 +59,7 @@ export default function PluginFleetMatrix({
     const cache = useQueryClient();
     const canManage = usePermission('plugins:manage');
     const [batchAligning, setBatchAligning] = useState(false);
+    const [pruneModalOpen, setPruneModalOpen] = useState(false);
 
     // 1. 节点列表
     const nodes = useQuery({
@@ -592,6 +595,16 @@ export default function PluginFleetMatrix({
                     ) : null}
 
                     {canManage ? (
+                        <Button
+                            size="small"
+                            icon={<ClearOutlined />}
+                            onClick={() => setPruneModalOpen(true)}
+                        >
+                            清理旧安装
+                        </Button>
+                    ) : null}
+
+                    {canManage ? (
                         <Popconfirm
                             title="确定向同机数据面节点 (local-host) 一键装配全部基础处理插件（VLM、ASR、OCR、Embedding）吗？"
                             onConfirm={() => batchDeploy.mutate()}
@@ -627,6 +640,13 @@ export default function PluginFleetMatrix({
                     bordered
                 />
             )}
+
+            {pruneModalOpen ? (
+                <PluginPruneModal
+                    availableNodes={activeNodes}
+                    onClose={() => setPruneModalOpen(false)}
+                />
+            ) : null}
         </div>
     );
 }

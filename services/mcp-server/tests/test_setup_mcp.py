@@ -15,6 +15,11 @@ from tools.setup_mcp import (  # noqa: E402
     configure_codex_mcp,
     configure_local_project,
     install_codex_skill,
+    uninstall_claude_code,
+    uninstall_claude_desktop,
+    uninstall_codex_mcp,
+    uninstall_codex_skill,
+    uninstall_local_project,
 )
 
 
@@ -125,3 +130,109 @@ def test_configure_local_project(tmp_path):
     # Check .vscode/mcp.json
     vscode_json = json.loads((workspace / ".vscode/mcp.json").read_text(encoding="utf-8"))
     assert "sensoryplex" in vscode_json["servers"]
+
+
+def test_uninstall_claude_desktop(tmp_path):
+    config_file = tmp_path / "claude_desktop_config.json"
+    initial = {
+        "mcpServers": {
+            "other": {"command": "node"},
+            "sensoryplex": {"command": "uv", "args": ["run"]},
+        }
+    }
+    config_file.write_text(json.dumps(initial), encoding="utf-8")
+
+    ok = uninstall_claude_desktop(config_file)
+    assert ok is True
+
+    result = json.loads(config_file.read_text(encoding="utf-8"))
+    assert "other" in result["mcpServers"]
+    assert "sensoryplex" not in result["mcpServers"]
+
+
+def test_uninstall_claude_code(tmp_path):
+    config_file = tmp_path / ".claude.json"
+    initial = {
+        "mcpServers": {
+            "other": {"command": "node"},
+            "sensoryplex": {"command": "uv"},
+        }
+    }
+    config_file.write_text(json.dumps(initial), encoding="utf-8")
+
+    ok = uninstall_claude_code(config_file)
+    assert ok is True
+
+    result = json.loads(config_file.read_text(encoding="utf-8"))
+    assert "other" in result["mcpServers"]
+    assert "sensoryplex" not in result["mcpServers"]
+
+
+def test_uninstall_codex_mcp(tmp_path):
+    config_file = tmp_path / "config.toml"
+    initial = """[first_table]
+key = "1"
+
+[mcp_servers.sensoryplex]
+command = "uv"
+args = ["run", "sensoryplex-mcp"]
+
+[mcp_servers.sensoryplex.env]
+SENSORYPLEX_BASE_URL = "http://localhost:8091"
+
+[last_table]
+key = "2"
+"""
+    config_file.write_text(initial, encoding="utf-8")
+
+    ok = uninstall_codex_mcp(config_file)
+    assert ok is True
+
+    text = config_file.read_text(encoding="utf-8")
+    assert "[first_table]" in text
+    assert "[last_table]" in text
+    assert "[mcp_servers.sensoryplex" not in text
+    assert "SENSORYPLEX_BASE_URL" not in text
+
+
+def test_uninstall_codex_skill(tmp_path):
+    codex_home = tmp_path / ".codex"
+    skill_dir = codex_home / "skills/sensoryplex"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text("dummy", encoding="utf-8")
+
+    ok = uninstall_codex_skill(codex_home)
+    assert ok is True
+    assert not skill_dir.exists()
+
+
+def test_uninstall_local_project(tmp_path):
+    workspace = tmp_path / "my_project"
+    workspace.mkdir()
+
+    # 首先配置
+    configure_local_project(workspace, "http://localhost:8091", "token_local")
+    assert (workspace / ".codex/skills/sensoryplex").is_dir()
+    assert (workspace / ".agents/skills/sensoryplex").is_dir()
+
+    # 然后卸载清理
+    ok = uninstall_local_project(workspace)
+    assert ok is True
+
+    # 验证技能目录已被物理删除
+    assert not (workspace / ".codex/skills/sensoryplex").exists()
+    assert not (workspace / ".agents/skills/sensoryplex").exists()
+
+    # 验证配置文件中的条目已被移除
+    codex_toml = (workspace / ".codex/config.toml").read_text(encoding="utf-8")
+    assert "[mcp_servers.sensoryplex" not in codex_toml
+
+    cursor_json = json.loads((workspace / ".cursor/mcp.json").read_text(encoding="utf-8"))
+    assert "sensoryplex" not in cursor_json.get("mcpServers", {})
+
+    mcp_json = json.loads((workspace / ".mcp.json").read_text(encoding="utf-8"))
+    assert "sensoryplex" not in mcp_json.get("mcpServers", {})
+
+    vscode_json = json.loads((workspace / ".vscode/mcp.json").read_text(encoding="utf-8"))
+    assert "sensoryplex" not in vscode_json.get("servers", {})
+

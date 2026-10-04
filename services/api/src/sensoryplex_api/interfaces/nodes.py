@@ -2092,6 +2092,61 @@ def register_lifecycle_convenience_endpoints(app, pool, auth, settings):
             audit(conn, p.name, "node.purge_stale", f"count={len(purged)}")
         return {"purged": purged, "total": len(purged)}
 
+    @app.post("/admin/v1/nodes/{node_id}:prune")
+    def prune_node_installations(
+        node_id: str,
+        body: Annotated[dict | None, Body()] = None,
+        p: Annotated[object, Depends(auth.require("plugins:manage"))] = None,
+    ):
+        """物理或预检清理算力节点上的旧版本插件、废弃 runtime 与临时缓存。"""
+        with pool.connection() as conn:
+            nr = one(
+                conn,
+                "SELECT * FROM console_node WHERE node_id=%s FOR SHARE",
+                (node_id,),
+            )
+            if not nr:
+                fail(404, "node_not_found")
+            if not nr["is_co_located"] and node_id != "local-host":
+                fail(400, "remote_node_prune_unsupported")
+
+            payload = body or {}
+            keep = int(payload.get("keep", 1))
+            include_tasks = bool(payload.get("include_tasks", False))
+            include_bundles = bool(payload.get("include_bundles", False))
+            dry_run = bool(payload.get("dry_run", False))
+
+            from tools.prune_installations import DEFAULT_AGENT_BASE, format_bytes, prune_all
+
+            freed_bytes, actions = prune_all(
+                base_dir=DEFAULT_AGENT_BASE,
+                keep_releases=keep,
+                include_tasks=include_tasks,
+                include_bundles=include_bundles,
+                dry_run=dry_run,
+            )
+
+            audit_action = "node.prune_dry_run" if dry_run else "node.prune"
+            audit(
+                conn,
+                p.name,
+                audit_action,
+                f"{node_id}:keep={keep}:freed={freed_bytes}:count={len(actions)}",
+            )
+
+            return {
+                "success": True,
+                "node_id": node_id,
+                "dry_run": dry_run,
+                "keep": keep,
+                "include_tasks": include_tasks,
+                "include_bundles": include_bundles,
+                "freed_bytes": freed_bytes,
+                "freed_human": format_bytes(freed_bytes),
+                "actions": actions,
+                "action_count": len(actions),
+            }
+
     @app.post("/v1/agent/candidate-register")
     def candidate_register(body: Annotated[dict, Body()] = ...):
         """子节点零配置自报到，初始进入待接纳状态（等待管理员在网页一键批准）。"""

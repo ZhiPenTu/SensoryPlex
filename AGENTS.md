@@ -178,6 +178,8 @@
 | **业务闭环与宿主 Worker** | `make task-worker` | **host** | 前台运行宿主任务工作器（处理控制台任务 + 节点心跳） |
 | | `make task-worker-daemon` | **host** | 后台常驻守护运行宿主任务工作器（double-fork，抗 SIGHUP） |
 | | `make task-worker-status` / `stop` | **host** | 查看状态或安全停止后台任务工作器 |
+| | `make prune-plugins` | **host** | 物理清理各节点历史淘汰插件版本、非活跃 runtimes 与孤立 units |
+| | `make prune-mcp` | **host** | 一键安全清理当前项目或全局的 SensoryPlex MCP 与 AI 技能配置 |
 | | `make golden-path-check` | host + api 容器 | **GP-01 全链路业务回归验收**：视频准入 -> 任务执行 -> 融合入库 -> 向量索引 -> 语义检索 -> Range 回看 |
 
 ---

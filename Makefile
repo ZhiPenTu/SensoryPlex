@@ -77,6 +77,7 @@ TEST_NATS_URL ?= $(if $(filter container,$(EXEC_MODE)),nats://nats:4222,nats://1
 .PHONY: timeline-check timeline-resident-check
 .PHONY: docs-install docs-build docs-check docs-dev docs-serve
 .PHONY: enrichments-up plugin-platform-check plugin-platform-fault-check
+.PHONY: prune-plugins prune-mcp
 
 # ADR-032：独立制品位于验收目录，Agent/Consumer 在宿主启动；控制端始终走容器。
 enrichments-up:
@@ -319,6 +320,15 @@ plugin-deploy-check-api:
 # 槽位已有 active 时自动改走蓝绿 upgrade 并在报告里注明（控制面的 provision 是引导动作）。
 plugin-deploy-check-native:
 	$(PY_HOST) tools/verify_plugin_hot_deploy.py --scope native
+
+# ── 旧安装与历史版本物理清理 ──────────────────────────────────────────────
+# 清理各节点磁盘上的历史淘汰插件版本、已停止 runtimes、临时 staging 及孤立 units
+prune-plugins:
+	uv run --no-project python tools/prune_installations.py $(if $(DRY_RUN),--dry-run,) $(if $(KEEP),--keep $(KEEP),) $(if $(ALL),--all,) $(if $(YES),-y,)
+
+# 清理当前项目内或全局的 MCP 服务与 AI 技能配置
+prune-mcp:
+	uv run --no-project python tools/setup_mcp.py --uninstall --local $(if $(DRY_RUN),--dry-run,)
 
 # 多模态文件方案（v2）控制面契约与 DAG 发布拒绝验收（ADR-028/029/030）
 multimodal-pipeline-check:

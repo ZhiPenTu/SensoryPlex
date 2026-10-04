@@ -509,3 +509,89 @@ def test_node_agent_deregister_and_cleanup(client, tmp_path):
     assert node_info["status"] == "NODE_STATUS_REVOKED"
     for inst in node_info["instances"]:
         assert inst["actual_state"] == "uninstalled"
+
+
+def test_node_prune_endpoint(client):
+    # 1. 节点不存在应返回 404
+    non_existent = client.post("/admin/v1/nodes/non-existent-node:prune", json={})
+    assert non_existent.status_code == 404
+    assert non_existent.json()["reason_code"] == "node_not_found"
+
+    # 2. 注册一个同机节点
+    co_node_id = "prune-node-" + uuid.uuid4().hex[:6]
+    tok1 = client.post(
+        "/admin/v1/nodes/enrollment-tokens",
+        json={"node_id": co_node_id, "expires_in_minutes": 30},
+    ).json()["token"]
+    enroll1 = client.post(
+        "/v1/agent/enroll",
+        json={
+            "enrollment_token": tok1,
+            "node_id": co_node_id,
+            "display_name": "Co-located Node",
+            "is_co_located": True,
+            "capabilities": {
+                "platform": "macos",
+                "arch": "aarch64",
+                "cpu_cores": 8,
+                "memory_bytes": "17179869184",
+                "unified_memory_bytes": "17179869184",
+                "supported_artifacts": ["local_native"],
+            },
+        },
+    )
+    assert enroll1.status_code == 200
+
+    # 3. 对同机节点执行 dry_run 预检
+    dry_res = client.post(
+        f"/admin/v1/nodes/{co_node_id}:prune",
+        json={"keep": 1, "dry_run": True, "include_tasks": True},
+    )
+    assert dry_res.status_code == 200
+    dry_data = dry_res.json()
+    assert dry_data["success"] is True
+    assert dry_data["node_id"] == co_node_id
+    assert dry_data["dry_run"] is True
+    assert dry_data["keep"] == 1
+    assert "freed_bytes" in dry_data
+    assert "freed_human" in dry_data
+    assert isinstance(dry_data["actions"], list)
+
+    # 4. 对同机节点执行物理清理
+    exec_res = client.post(
+        f"/admin/v1/nodes/{co_node_id}:prune",
+        json={"keep": 1, "dry_run": False},
+    )
+    assert exec_res.status_code == 200
+    exec_data = exec_res.json()
+    assert exec_data["success"] is True
+    assert exec_data["dry_run"] is False
+
+    # 5. 注册一个非同机远端节点，调用 prune 应返回 400
+    remote_node_id = "prune-remote-" + uuid.uuid4().hex[:6]
+    tok2 = client.post(
+        "/admin/v1/nodes/enrollment-tokens",
+        json={"node_id": remote_node_id, "expires_in_minutes": 30},
+    ).json()["token"]
+    enroll2 = client.post(
+        "/v1/agent/enroll",
+        json={
+            "enrollment_token": tok2,
+            "node_id": remote_node_id,
+            "display_name": "Remote Node",
+            "is_co_located": False,
+            "capabilities": {
+                "platform": "linux",
+                "arch": "x86_64",
+                "cpu_cores": 16,
+                "memory_bytes": "34359738368",
+                "unified_memory_bytes": "0",
+                "supported_artifacts": ["container"],
+            },
+        },
+    )
+    assert enroll2.status_code == 200
+
+    remote_res = client.post(f"/admin/v1/nodes/{remote_node_id}:prune", json={})
+    assert remote_res.status_code == 400
+    assert remote_res.json()["reason_code"] == "remote_node_prune_unsupported"

@@ -366,6 +366,212 @@ def configure_local_project(
     return success
 
 
+def remove_codex_mcp_section(text: str) -> str:
+    """Remove [mcp_servers.sensoryplex] and [mcp_servers.sensoryplex.*] sections from TOML text."""
+    lines = text.splitlines(keepends=True)
+    out: list[str] = []
+    in_target = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("["):
+            if stripped.startswith("[mcp_servers.sensoryplex"):
+                in_target = True
+                continue
+            else:
+                in_target = False
+        if not in_target:
+            out.append(line)
+    result = "".join(out).strip()
+    return (result + "\n") if result else ""
+
+
+def uninstall_claude_desktop(config_path: Path, dry_run: bool = False) -> bool:
+    """Safely remove sensoryplex MCP server from Claude Desktop config."""
+    print(f"\n[Uninstall 1/5] Cleaning Claude Desktop ({config_path})...")
+    if not config_path.is_file():
+        print("      Claude Desktop configuration file not found, skipping.")
+        return True
+
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"      ✗ Error parsing Claude Desktop config: {exc}")
+        return False
+
+    servers = data.get("mcpServers")
+    if isinstance(servers, dict) and "sensoryplex" in servers:
+        del servers["sensoryplex"]
+        if dry_run:
+            print("      [DRY RUN] Would remove sensoryplex from Claude Desktop mcpServers")
+            return True
+        try:
+            shutil.copy2(config_path, config_path.with_suffix(".json.bak"))
+            config_path.write_text(
+                json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+            )
+            print("      ✓ Successfully removed sensoryplex from Claude Desktop!")
+            return True
+        except Exception as exc:
+            print(f"      ✗ Error updating Claude Desktop config: {exc}")
+            return False
+    else:
+        print("      sensoryplex MCP not present in Claude Desktop, skipped.")
+        return True
+
+
+def uninstall_claude_code(config_path: Path, dry_run: bool = False) -> bool:
+    """Safely remove sensoryplex MCP server from Claude Code CLI (~/.claude.json)."""
+    print(f"\n[Uninstall 2/5] Cleaning Claude Code CLI ({config_path})...")
+    if not config_path.is_file():
+        print("      Claude Code CLI configuration file not found, skipping.")
+        return True
+
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"      ✗ Error parsing ~/.claude.json: {exc}")
+        return False
+
+    servers = data.get("mcpServers")
+    if isinstance(servers, dict) and "sensoryplex" in servers:
+        del servers["sensoryplex"]
+        if dry_run:
+            print("      [DRY RUN] Would remove sensoryplex from ~/.claude.json mcpServers")
+            return True
+        try:
+            shutil.copy2(config_path, config_path.with_suffix(".json.bak"))
+            config_path.write_text(
+                json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+            )
+            print("      ✓ Successfully removed sensoryplex from Claude Code CLI config!")
+            return True
+        except Exception as exc:
+            print(f"      ✗ Error updating Claude Code config: {exc}")
+            return False
+    else:
+        print("      sensoryplex MCP not present in Claude Code, skipped.")
+        return True
+
+
+def uninstall_codex_mcp(codex_config_path: Path, dry_run: bool = False) -> bool:
+    """Safely remove sensoryplex MCP section from Codex config.toml."""
+    print(f"\n[Uninstall 3/5] Cleaning Codex MCP config ({codex_config_path})...")
+    if not codex_config_path.is_file():
+        print("      Codex configuration file not found, skipping.")
+        return True
+
+    text = codex_config_path.read_text(encoding="utf-8")
+    if "[mcp_servers.sensoryplex" not in text:
+        print("      sensoryplex MCP section not present in Codex config, skipped.")
+        return True
+
+    cleaned_text = remove_codex_mcp_section(text)
+    if dry_run:
+        print("      [DRY RUN] Would remove sensoryplex section from Codex config")
+        return True
+
+    try:
+        shutil.copy2(codex_config_path, codex_config_path.with_suffix(".toml.bak"))
+        codex_config_path.write_text(cleaned_text, encoding="utf-8")
+        print("      ✓ Successfully removed sensoryplex from Codex config.toml!")
+        return True
+    except Exception as exc:
+        print(f"      ✗ Error updating Codex config: {exc}")
+        return False
+
+
+def uninstall_codex_skill(codex_home: Path, dry_run: bool = False) -> bool:
+    """Remove SensoryPlex skill from skills/sensoryplex."""
+    target_skill_dir = codex_home / "skills/sensoryplex"
+    print(f"\n[Uninstall 4/5] Cleaning SensoryPlex Skill ({target_skill_dir})...")
+    if not target_skill_dir.exists():
+        print("      Skill directory not found, skipped.")
+        return True
+
+    if dry_run:
+        print(f"      [DRY RUN] Would delete skill directory {target_skill_dir}")
+        return True
+
+    try:
+        if target_skill_dir.is_symlink():
+            target_skill_dir.unlink()
+        else:
+            shutil.rmtree(target_skill_dir)
+        print("      ✓ Successfully removed skill directory!")
+        return True
+    except Exception as exc:
+        print(f"      ✗ Error removing skill directory: {exc}")
+        return False
+
+
+def uninstall_json_mcp_file(
+    file_path: Path, root_key: str, dry_run: bool = False
+) -> bool:
+    """Safely remove sensoryplex from a JSON config file."""
+    print(f"      Cleaning {file_path}...")
+    if not file_path.is_file():
+        print(f"      {file_path.name} not found, skipped.")
+        return True
+
+    try:
+        data = json.loads(file_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"      ✗ Error reading {file_path}: {exc}")
+        return False
+
+    servers = data.get(root_key)
+    if isinstance(servers, dict) and "sensoryplex" in servers:
+        del servers["sensoryplex"]
+        if dry_run:
+            print(f"      [DRY RUN] Would remove sensoryplex from {file_path}")
+            return True
+        try:
+            file_path.write_text(
+                json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+            )
+            print(f"      ✓ Successfully cleaned {file_path.name}!")
+            return True
+        except Exception as exc:
+            print(f"      ✗ Error writing {file_path}: {exc}")
+            return False
+    else:
+        print(f"      sensoryplex not present in {file_path.name}, skipped.")
+        return True
+
+
+def uninstall_local_project(workspace_root: Path, dry_run: bool = False) -> bool:
+    """Clean all project-local MCP and Skill configurations without touching global user files."""
+    print(f"\n[Project-Local Uninstall] Cleaning MCP and Skills under {workspace_root}...")
+
+    # 1. Codex config
+    codex_config = workspace_root / ".codex/config.toml"
+    ok1 = uninstall_codex_mcp(codex_config, dry_run=dry_run)
+
+    # 2. Codex skill
+    ok2 = uninstall_codex_skill(workspace_root / ".codex", dry_run=dry_run)
+
+    # 3. Agents skill
+    ok3 = uninstall_codex_skill(workspace_root / ".agents", dry_run=dry_run)
+
+    # 4. Cursor config
+    ok4 = uninstall_json_mcp_file(
+        workspace_root / ".cursor/mcp.json", "mcpServers", dry_run=dry_run
+    )
+
+    # 5. Claude Code / Universal mcp.json
+    ok5 = uninstall_json_mcp_file(workspace_root / ".mcp.json", "mcpServers", dry_run=dry_run)
+
+    # 6. VS Code config
+    ok6 = uninstall_json_mcp_file(workspace_root / ".vscode/mcp.json", "servers", dry_run=dry_run)
+
+    success = ok1 and ok2 and ok3 and ok4 and ok5 and ok6
+    if success:
+        print("\n" + "═" * 60)
+        print("   Project-Local Cleanup Complete / 本地项目旧配置清理完成")
+        print("═" * 60)
+    return success
+
+
 def print_cli_summary(base_url: str, token: str) -> None:
     """Print quick reference commands for CLI and alternative tools."""
     print("\n" + "═" * 60)
@@ -408,26 +614,70 @@ def main() -> int:
         action="store_true",
         help="Configure project-local MCP and skills without touching global configs",
     )
+    parser.add_argument(
+        "--uninstall",
+        "--clean",
+        "--remove",
+        dest="uninstall",
+        action="store_true",
+        help="Clean / uninstall SensoryPlex MCP and skills configurations",
+    )
     args = parser.parse_args()
 
     api_port = read_env_value("API_PORT") or "8091"
     base_url = args.base_url or os.getenv("SENSORYPLEX_BASE_URL") or f"http://127.0.0.1:{api_port}"
     token = args.token or read_env_value("SENSORYPLEX_API_TOKEN")
 
+    action_label = "Clean & Uninstall" if args.uninstall else "Automated Setup"
     print("════════════════════════════════════════════════════════════")
-    print("   SensoryPlex MCP Server & AI Skills Automated Setup      ")
+    print(f"   SensoryPlex MCP Server & AI Skills {action_label}      ")
     print("════════════════════════════════════════════════════════════")
     print(f"• Repo Root:       {REPO_ROOT}")
     print(f"• MCP Server:      {MCP_SERVER_DIR}")
-    print(f"• API Base URL:    {base_url}")
-    token_label = "[Configured]" if token else "[Not Set - Will use local demo fallback]"
-    print(f"• API Token:       {token_label}")
+    if not args.uninstall:
+        print(f"• API Base URL:    {base_url}")
+        token_label = "[Configured]" if token else "[Not Set - Will use local demo fallback]"
+        print(f"• API Token:       {token_label}")
 
-    mcp_entry = build_mcp_config(base_url, token)
     claude_desktop_config = get_claude_desktop_config_path()
     claude_code_config = get_claude_code_config_path()
     codex_home = get_codex_home()
     codex_config = codex_home / "config.toml"
+
+    # 执行清理/卸载模式
+    if args.uninstall:
+        if args.local:
+            if uninstall_local_project(REPO_ROOT, dry_run=args.dry_run):
+                print("\n🎉 Project-local cleanup complete! All configs removed.")
+                return 0
+            return 1
+
+        success = True
+        only_specified = args.claude_only or args.codex_only or args.cursor_only
+
+        if not only_specified or args.claude_only:
+            ok1 = uninstall_claude_desktop(claude_desktop_config, dry_run=args.dry_run)
+            ok2 = uninstall_claude_code(claude_code_config, dry_run=args.dry_run)
+            success = success and ok1 and ok2
+
+        if not only_specified or args.codex_only:
+            ok3 = uninstall_codex_mcp(codex_config, dry_run=args.dry_run)
+            ok4 = uninstall_codex_skill(codex_home, dry_run=args.dry_run)
+            success = success and ok3 and ok4
+
+        if not only_specified or args.cursor_only:
+            ok5 = uninstall_json_mcp_file(
+                REPO_ROOT / ".cursor/mcp.json", "mcpServers", dry_run=args.dry_run
+            )
+            success = success and ok5
+
+        if success:
+            print("\n🎉 Cleanup complete! SensoryPlex MCP and skills configurations removed.")
+            return 0
+        return 1
+
+    # 执行常规安装/配置模式
+    mcp_entry = build_mcp_config(base_url, token)
 
     if args.local:
         if configure_local_project(REPO_ROOT, base_url, token, dry_run=args.dry_run):
