@@ -13,6 +13,7 @@ from tools.setup_mcp import (  # noqa: E402
     configure_claude_code,
     configure_claude_desktop,
     configure_codex_mcp,
+    configure_local_project,
     install_codex_skill,
 )
 
@@ -91,3 +92,36 @@ key = "value"
     assert "[mcp_servers.sensoryplex.env]" in text
     assert "token_xyz" in text
     assert "[some_table]" in text
+
+
+def test_configure_local_project(tmp_path):
+    workspace = tmp_path / "my_project"
+    workspace.mkdir()
+
+    ok = configure_local_project(workspace, "http://localhost:8091", "token_local")
+    assert ok is True
+
+    # Check .codex/config.toml
+    codex_toml = (workspace / ".codex/config.toml").read_text(encoding="utf-8")
+    assert "[mcp_servers.sensoryplex]" in codex_toml
+    assert "token_local" in codex_toml
+
+    # Check .codex/skills/sensoryplex
+    codex_skill = workspace / ".codex/skills/sensoryplex/SKILL.md"
+    assert codex_skill.is_file()
+
+    # Check .agents/skills/sensoryplex
+    agents_skill = workspace / ".agents/skills/sensoryplex/SKILL.md"
+    assert agents_skill.is_file()
+
+    # Check .cursor/mcp.json
+    cursor_json = json.loads((workspace / ".cursor/mcp.json").read_text(encoding="utf-8"))
+    assert "sensoryplex" in cursor_json["mcpServers"]
+
+    # Check .mcp.json
+    mcp_json = json.loads((workspace / ".mcp.json").read_text(encoding="utf-8"))
+    assert "sensoryplex" in mcp_json["mcpServers"]
+
+    # Check .vscode/mcp.json
+    vscode_json = json.loads((workspace / ".vscode/mcp.json").read_text(encoding="utf-8"))
+    assert "sensoryplex" in vscode_json["servers"]

@@ -30,3 +30,8 @@ video/
 *.tsbuildinfo
 
 .cursor/
+# 本地项目级 AI 配置（包含本地私有绝对路径与令牌）
+.codex/
+.agents/
+.vscode/
+.mcp.json

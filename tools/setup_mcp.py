@@ -283,6 +283,89 @@ def configure_cursor_mcp(workspace_root: Path, mcp_entry: dict, dry_run: bool = 
         return False
 
 
+def configure_json_mcp_file(
+    file_path: Path, root_key: str, mcp_entry: dict, dry_run: bool = False
+) -> bool:
+    """Safely write or merge MCP configuration into a JSON file."""
+    print(f"      Updating {file_path}...")
+    existing: dict = {}
+    if file_path.is_file():
+        try:
+            existing = json.loads(file_path.read_text(encoding="utf-8"))
+        except Exception:
+            existing = {}
+
+    if not isinstance(existing, dict):
+        existing = {}
+
+    servers = existing.setdefault(root_key, {})
+    servers["sensoryplex"] = mcp_entry
+
+    if dry_run:
+        print(f"      [DRY RUN] Would write {file_path}")
+        return True
+
+    try:
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_text(
+            json.dumps(existing, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+        print(f"      ✓ Successfully updated {file_path.name}!")
+        return True
+    except Exception as exc:
+        print(f"      ✗ Error writing {file_path}: {exc}")
+        return False
+
+
+def configure_local_project(
+    workspace_root: Path, base_url: str, token: str, dry_run: bool = False
+) -> bool:
+    """Configure MCP and Skills strictly inside workspace without touching global user files."""
+    print(f"\n[Project-Local Setup] Configuring MCP and Skills under {workspace_root}...")
+
+    mcp_entry = build_mcp_config(base_url, token)
+
+    # 1. Codex project config: .codex/config.toml
+    codex_dir = workspace_root / ".codex"
+    codex_config = codex_dir / "config.toml"
+    ok1 = configure_codex_mcp(codex_config, base_url, token, dry_run=dry_run)
+
+    # 2. Codex project skills: .codex/skills/sensoryplex
+    ok2 = install_codex_skill(codex_dir, dry_run=dry_run)
+
+    # 3. Agents standard project skills: .agents/skills/sensoryplex
+    agents_dir = workspace_root / ".agents"
+    ok3 = install_codex_skill(agents_dir, dry_run=dry_run)
+
+    # 4. Cursor / Windsurf workspace config: .cursor/mcp.json
+    ok4 = configure_cursor_mcp(workspace_root, mcp_entry, dry_run=dry_run)
+
+    # 5. Claude Code / Universal workspace config: .mcp.json
+    mcp_json_path = workspace_root / ".mcp.json"
+    ok5 = configure_json_mcp_file(mcp_json_path, "mcpServers", mcp_entry, dry_run=dry_run)
+
+    # 6. VS Code workspace config: .vscode/mcp.json
+    vscode_json_path = workspace_root / ".vscode/mcp.json"
+    ok6 = configure_json_mcp_file(vscode_json_path, "servers", mcp_entry, dry_run=dry_run)
+
+    success = ok1 and ok2 and ok3 and ok4 and ok5 and ok6
+    if success:
+        print("\n" + "═" * 60)
+        print("   Project-Local MCP & Skills Summary / 本地项目配置摘要")
+        print("═" * 60)
+        print("▶ 1. Codex 本地配置:")
+        print("   - MCP 配置文件:   .codex/config.toml")
+        print("   - 本地技能目录:   .codex/skills/sensoryplex 与 .agents/skills/sensoryplex")
+        print("▶ 2. Claude Code 项目配置:")
+        print("   - MCP 配置文件:   .mcp.json (mcpServers.sensoryplex)")
+        print("▶ 3. Cursor / Windsurf 工作区配置:")
+        print("   - MCP 配置文件:   .cursor/mcp.json")
+        print("▶ 4. VS Code 工作区配置:")
+        print("   - MCP 配置文件:   .vscode/mcp.json")
+        print("═" * 60)
+    return success
+
+
 def print_cli_summary(base_url: str, token: str) -> None:
     """Print quick reference commands for CLI and alternative tools."""
     print("\n" + "═" * 60)
@@ -320,6 +403,11 @@ def main() -> int:
         "--codex-only", action="store_true", help="Only configure Codex (MCP and Skill)"
     )
     parser.add_argument("--cursor-only", action="store_true", help="Only configure Cursor")
+    parser.add_argument(
+        "--local",
+        action="store_true",
+        help="Configure project-local MCP and skills without touching global configs",
+    )
     args = parser.parse_args()
 
     api_port = read_env_value("API_PORT") or "8091"
@@ -340,6 +428,12 @@ def main() -> int:
     claude_code_config = get_claude_code_config_path()
     codex_home = get_codex_home()
     codex_config = codex_home / "config.toml"
+
+    if args.local:
+        if configure_local_project(REPO_ROOT, base_url, token, dry_run=args.dry_run):
+            print("\n🎉 Project-local setup complete! All configs scoped under project directory.")
+            return 0
+        return 1
 
     success = True
     only_specified = args.claude_only or args.codex_only or args.cursor_only

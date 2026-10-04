@@ -6,6 +6,7 @@ import {
     Col,
     Descriptions,
     Popconfirm,
+    Radio,
     Row,
     Select,
     Space,
@@ -15,10 +16,13 @@ import {
     message,
 } from 'antd';
 import {
+    BarChartOutlined,
+    BugOutlined,
     CloudUploadOutlined,
     ReloadOutlined,
     RollbackOutlined,
     StopOutlined,
+    ThunderboltOutlined,
 } from '@ant-design/icons';
 import { api, post } from '../api/client';
 import type {
@@ -32,6 +36,9 @@ import type {
 } from '../api/contracts';
 import { Empty, ErrorNotice, Loading, Modal, StatSummary, bytes, date, time } from '../components';
 import { usePermission } from '../session';
+import PluginDeploymentStepper from './PluginDeploymentStepper';
+import PluginDiagnosticsDrawer from './PluginDiagnosticsDrawer';
+import PluginMetricsDashboard from './PluginMetricsDashboard';
 
 const { Text, Paragraph } = Typography;
 
@@ -67,7 +74,7 @@ function StageTag({ stage }: { stage: string }) {
 }
 
 /**
- * 插件热部署（ADR-030）：受控 release 选择、升级确认、实时阶段、当前/上一版本、显式回滚。
+ * 插件热部署（ADR-030）：受控 release 选择、升级确认、实时阶段流水线、双槽位拓扑、排障诊断与指标大盘。
  *
  * 所有写操作都需要 `plugins:manage`；只读状态沿用现有节点/插件读取权限。
  */
@@ -78,6 +85,8 @@ export default function PluginDeployments() {
     const [pluginId, setPluginId] = useState('');
     const [releaseId, setReleaseId] = useState('');
     const [detail, setDetail] = useState<PluginDeploymentOperation | null>(null);
+    const [diagnosticOp, setDiagnosticOp] = useState<PluginDeploymentOperation | null>(null);
+    const [subTab, setSubTab] = useState<'list' | 'metrics'>('list');
 
     const releases = useQuery({
         queryKey: ['plugin-releases'],
@@ -93,8 +102,7 @@ export default function PluginDeployments() {
     const operations = useQuery({
         queryKey: ['plugin-deployments'],
         queryFn: ({ signal }) =>
-            api<PluginDeploymentOperationList>('/admin/v1/plugin-deployments?limit=20', { signal }),
-        // 只在有未结算操作时轮询：阶段、错误码与耗时都是服务端事实，不在这里推断。
+            api<PluginDeploymentOperationList>('/admin/v1/plugin-deployments?limit=30', { signal }),
         refetchInterval: (q) => {
             const pending = q.state.data?.items?.some((item) => !SETTLED.has(item.stage));
             return pending ? 2500 : 15000;
@@ -108,6 +116,7 @@ export default function PluginDeployments() {
             ),
         [releases.data],
     );
+
     const releaseById = useMemo(() => {
         const map = new Map<string, PluginRelease>();
         for (const item of releases.data?.items || []) map.set(item.release_id, item);
@@ -116,7 +125,7 @@ export default function PluginDeployments() {
 
     const targetNode: NodeInfo | undefined = nodes.data?.items?.find((n) => n.node_id === nodeId);
 
-    // 只允许选"与该节点平台/架构一致"的已认证 release：制品装不上去时应当在这一步就说清楚。
+    // 只允许选"与该节点平台/架构一致"的已认证 release
     const nodeReleases = useMemo(() => {
         if (!targetNode?.capabilities) return [];
         return verifiedReleases.filter(
@@ -214,7 +223,7 @@ export default function PluginDeployments() {
                             {row.kind === 'rollback'
                                 ? '回滚'
                                 : row.kind === 'upgrade'
-                                  ? '升级'
+                                  ? '蓝绿升级'
                                   : '首次部署'}
                         </Tag>
                         <Text strong style={{ fontSize: 12 }}>
@@ -231,14 +240,14 @@ export default function PluginDeployments() {
             ),
         },
         {
-            title: '目标',
+            title: '目标节点 / 插件',
             key: 'target',
             width: 180,
             render: (_: unknown, row: PluginDeploymentOperation) => (
                 <Space direction="vertical" size={2}>
-                    <Text style={{ fontSize: 12 }}>{row.node_id}</Text>
+                    <Text strong style={{ fontSize: 12 }}>{row.node_id}</Text>
                     <Text type="secondary" style={{ fontSize: 11, fontFamily: 'monospace' }}>
-                        {row.plugin_id}
+                        {row.plugin_id.replace('org.sensoryplex.', '')}
                     </Text>
                 </Space>
             ),
@@ -257,35 +266,35 @@ export default function PluginDeployments() {
             ),
         },
         {
-            title: '当前 / 上一版本',
+            title: '当前 / 候选版本',
             key: 'versions',
             render: (_: unknown, row: PluginDeploymentOperation) => (
                 <Space direction="vertical" size={2}>
                     <Text style={{ fontSize: 12 }}>
-                        目标 <Text strong>{version(row.release_id)}</Text>
+                        候选目标 <Text strong>{version(row.release_id)}</Text>
                     </Text>
                     <Text type="secondary" style={{ fontSize: 11 }}>
-                        当前 active {row.active ? version(row.active.release_id) : '—'} · 上一版本{' '}
+                        在役 active: {row.active ? version(row.active.release_id) : '—'} · 上代:{' '}
                         {row.previous ? version(row.previous.release_id) : '—'}
                     </Text>
                 </Space>
             ),
         },
         {
-            title: '耗时',
+            title: '各阶段耗时',
             key: 'timing',
             width: 170,
             render: (_: unknown, row: PluginDeploymentOperation) => (
                 <Text type="secondary" style={{ fontSize: 11 }}>
-                    下载/安装 {time(row.staging_ms)} · 启动 {time(row.starting_ms)} · 验证{' '}
+                    安装 {time(row.staging_ms)} · 启动 {time(row.starting_ms)} · 验证{' '}
                     {time(row.validating_ms)} · 排空 {time(row.draining_ms)}
                 </Text>
             ),
         },
         {
-            title: '结果',
+            title: '执行结果与诊断',
             key: 'error',
-            width: 190,
+            width: 200,
             render: (_: unknown, row: PluginDeploymentOperation) =>
                 row.error_code ? (
                     <Space direction="vertical" size={2}>
@@ -298,11 +307,20 @@ export default function PluginDeployments() {
                                 style={{ fontSize: 11 }}
                                 title={row.error_detail}
                             >
-                                {row.error_detail.length > 60
-                                    ? `${row.error_detail.slice(0, 60)}…`
+                                {row.error_detail.length > 50
+                                    ? `${row.error_detail.slice(0, 50)}…`
                                     : row.error_detail}
                             </Text>
                         ) : null}
+                        <Button
+                            type="link"
+                            size="small"
+                            icon={<BugOutlined />}
+                            style={{ padding: 0, height: 20, fontSize: 11, color: '#dc2626' }}
+                            onClick={() => setDiagnosticOp(row)}
+                        >
+                            排障建议 →
+                        </Button>
                     </Space>
                 ) : (
                     <Text type="secondary" style={{ fontSize: 11 }}>
@@ -313,11 +331,11 @@ export default function PluginDeployments() {
         {
             title: '操作',
             key: 'actions',
-            width: 170,
+            width: 180,
             render: (_: unknown, row: PluginDeploymentOperation) => (
                 <Space size={4} wrap>
                     <Button size="small" onClick={() => setDetail(row)}>
-                        详情
+                        流水线详情
                     </Button>
                     {canManage && row.cancellable ? (
                         <Popconfirm
@@ -356,6 +374,7 @@ export default function PluginDeployments() {
 
     return (
         <div>
+            {/* 顶栏统计 */}
             <Row gutter={[8, 8]} style={{ marginBottom: 10 }}>
                 <Col xs={24} sm={8}>
                     <StatSummary title="已认证首方制品" value={verifiedReleases.length} />
@@ -386,18 +405,19 @@ export default function PluginDeployments() {
                 }
             />
 
+            {/* 新建部署/升级表单 */}
             {canManage ? (
                 <div
                     style={{
-                        padding: '8px 12px',
-                        marginBottom: 10,
+                        padding: '10px 14px',
+                        marginBottom: 12,
                         background: '#f8fafc',
                         border: '1px solid #e2e8f0',
-                        borderRadius: 6,
+                        borderRadius: 8,
                     }}
                 >
-                    <Text strong style={{ fontSize: 12.5, display: 'block', marginBottom: 6 }}>
-                        选择已认证 release 发起部署 / 升级
+                    <Text strong style={{ fontSize: 13, display: 'block', marginBottom: 8 }}>
+                        选择已认证 release 发起蓝绿部署 / 升级
                     </Text>
                     <Row gutter={[8, 8]} align="bottom">
                         <Col xs={24} md={6}>
@@ -424,7 +444,7 @@ export default function PluginDeployments() {
                         </Col>
                         <Col xs={24} md={6}>
                             <Text type="secondary" style={{ fontSize: 12 }}>
-                                插件
+                                目标插件
                             </Text>
                             <Select
                                 value={pluginId || undefined}
@@ -438,9 +458,9 @@ export default function PluginDeployments() {
                                 options={pluginOptions}
                             />
                         </Col>
-                        <Col xs={24} md={10}>
+                        <Col xs={24} md={9}>
                             <Text type="secondary" style={{ fontSize: 12 }}>
-                                已认证 release（平台/架构必须与节点一致）
+                                已认证 release (必须平台/架构匹配)
                             </Text>
                             <Select
                                 value={releaseId || undefined}
@@ -451,7 +471,7 @@ export default function PluginDeployments() {
                                 options={releaseOptions}
                             />
                         </Col>
-                        <Col xs={24} md={2}>
+                        <Col xs={24} md={3}>
                             <Popconfirm
                                 title={isUpgrade ? '确认升级该插件？' : '确认部署该插件？'}
                                 description={
@@ -472,7 +492,7 @@ export default function PluginDeployments() {
                                     loading={deploy.isPending}
                                     style={{ width: '100%' }}
                                 >
-                                    {isUpgrade ? '发起升级' : '发起部署'}
+                                    {isUpgrade ? '发起蓝绿升级' : '发起首次部署'}
                                 </Button>
                             </Popconfirm>
                         </Col>
@@ -480,12 +500,11 @@ export default function PluginDeployments() {
                     {isUpgrade ? (
                         <Paragraph
                             type="secondary"
-                            style={{ fontSize: 12, marginTop: 10, marginBottom: 0 }}
+                            style={{ fontSize: 12, marginTop: 8, marginBottom: 0 }}
                         >
                             该节点已存在该插件槽位（当前 active{' '}
                             {activeInstance?.plugin_version || '未知'}，端点{' '}
-                            {activeInstance?.endpoint || '未上报'}），本次将走 upgrade 而不是首次
-                            provision。
+                            {activeInstance?.endpoint || '未上报'}），本次将走 upgrade 并行验证而不是首次 provision。
                         </Paragraph>
                     ) : null}
                 </div>
@@ -498,22 +517,54 @@ export default function PluginDeployments() {
                 />
             )}
 
-            <Space style={{ marginBottom: 8 }}>
-                <Button
+            {/* 视图切换器: 部署操作列表 vs 效能质量大盘 */}
+            <div
+                style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    marginBottom: 10,
+                }}
+            >
+                <Radio.Group
+                    value={subTab}
+                    onChange={(e) => setSubTab(e.target.value)}
+                    buttonStyle="solid"
                     size="small"
-                    icon={<ReloadOutlined />}
-                    onClick={() =>
-                        void cache.invalidateQueries({ queryKey: ['plugin-deployments'] })
-                    }
                 >
-                    刷新
-                </Button>
-                <Text type="secondary" style={{ fontSize: 12 }}>
-                    进行中的操作每 2.5 秒自动刷新；阶段与耗时都来自控制面回报，不做本地推断。
-                </Text>
-            </Space>
+                    <Radio.Button value="list">
+                        <Space size={4}>
+                            <ThunderboltOutlined />
+                            <span>部署操作记录 ({items.length})</span>
+                        </Space>
+                    </Radio.Button>
+                    <Radio.Button value="metrics">
+                        <Space size={4}>
+                            <BarChartOutlined />
+                            <span>效能与质量大盘 (Metrics)</span>
+                        </Space>
+                    </Radio.Button>
+                </Radio.Group>
 
-            {operations.isPending ? (
+                <Space size={8}>
+                    <Button
+                        size="small"
+                        icon={<ReloadOutlined />}
+                        onClick={() =>
+                            void cache.invalidateQueries({ queryKey: ['plugin-deployments'] })
+                        }
+                    >
+                        刷新
+                    </Button>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                        进行中的操作每 2.5 秒自动刷新
+                    </Text>
+                </Space>
+            </div>
+
+            {subTab === 'metrics' ? (
+                <PluginMetricsDashboard />
+            ) : operations.isPending ? (
                 <Loading tip="正在载入部署操作…" />
             ) : items.length ? (
                 <Table
@@ -522,111 +573,75 @@ export default function PluginDeployments() {
                     dataSource={items}
                     pagination={{ pageSize: 10 }}
                     size="small"
-                    scroll={{ x: 1320 }}
+                    scroll={{ x: 1350 }}
+                    expandable={{
+                        expandedRowRender: (row) => (
+                            <div style={{ padding: '8px 12px', background: '#fafafa', borderRadius: 6 }}>
+                                <PluginDeploymentStepper
+                                    operation={row}
+                                    releaseVersion={version(row.release_id)}
+                                    onViewDiagnostics={(op) => setDiagnosticOp(op)}
+                                />
+                            </div>
+                        ),
+                    }}
                 />
             ) : (
                 <Empty title="暂无热部署操作">
-                    选择节点、插件与已认证 release
-                    后发起部署，这里会显示每次操作的阶段、耗时与错误码。
+                    选择节点、插件与已认证 release 后发起部署，这里会显示每次操作的阶段、耗时与错误码。
                 </Empty>
             )}
 
+            {/* 部署详情 Modal（带 Stepper 与双槽位拓扑） */}
             {detail ? (
                 <Modal
-                    title={`部署操作详情 · ${detail.kind}`}
-                    width={720}
+                    title={`部署操作流水线全景 · ${detail.kind === 'rollback' ? '回滚' : detail.kind === 'upgrade' ? '蓝绿升级' : '首次部署'}`}
+                    width={840}
                     onClose={() => setDetail(null)}
                 >
-                    <Descriptions column={1} size="small" bordered>
-                        <Descriptions.Item label="操作 ID">
-                            <span className="mono">{detail.operation_id}</span>
-                        </Descriptions.Item>
-                        <Descriptions.Item label="阶段">
-                            <Space size={8}>
-                                <StageTag stage={detail.stage} />
-                                <Text type="secondary" style={{ fontSize: 12 }}>
-                                    第 {detail.generation} 代
-                                    {detail.rollback_of_operation_id
-                                        ? ` · 回滚自 ${detail.rollback_of_operation_id}`
-                                        : ''}
-                                </Text>
-                            </Space>
-                        </Descriptions.Item>
-                        <Descriptions.Item label="节点 / 插件">
-                            {detail.node_id} · <span className="mono">{detail.plugin_id}</span>
-                        </Descriptions.Item>
-                        <Descriptions.Item label="目标 release">
-                            {detail.release_id}（{version(detail.release_id)}）
-                        </Descriptions.Item>
-                        <Descriptions.Item label="候选实例">
-                            {detail.candidate ? (
-                                <Space direction="vertical" size={2}>
-                                    <Text style={{ fontSize: 12 }}>
-                                        <span className="mono">
-                                            {detail.candidate.runtime_instance_id}
-                                        </span>{' '}
-                                        · {detail.candidate.state}
-                                    </Text>
-                                    <Text type="secondary" style={{ fontSize: 11 }}>
-                                        端点 {detail.candidate.endpoint || '未上报'} · supervisor{' '}
-                                        {detail.candidate.supervisor_id || '未上报'}
-                                    </Text>
-                                    <Text type="secondary" style={{ fontSize: 11 }}>
-                                        验证身份 {detail.candidate.verified_plugin_id || '—'} /{' '}
-                                        {detail.candidate.verified_artifact_digest
-                                            ? detail.candidate.verified_artifact_digest.slice(
-                                                  0,
-                                                  24,
-                                              ) + '…'
-                                            : '—'}
-                                    </Text>
-                                </Space>
-                            ) : (
-                                '—'
-                            )}
-                        </Descriptions.Item>
-                        <Descriptions.Item label="当前 active">
-                            {detail.active
-                                ? `${version(detail.active.release_id)} · ${
-                                      detail.active.endpoint || '端点未上报'
-                                  }`
-                                : '—'}
-                        </Descriptions.Item>
-                        <Descriptions.Item label="本次操作替换">
-                            {detail.from_runtime_instance_id ? (
-                                <span className="mono">{detail.from_runtime_instance_id}</span>
-                            ) : (
-                                '无（首次部署）'
-                            )}
-                        </Descriptions.Item>
-                        <Descriptions.Item label="上一版本">
-                            {detail.previous
-                                ? `${version(detail.previous.release_id)} · ${detail.previous.state}`
-                                : '—'}
-                        </Descriptions.Item>
-                        <Descriptions.Item label="耗时">
-                            下载/安装 {time(detail.staging_ms)} · 启动 {time(detail.starting_ms)} ·
-                            验证 {time(detail.validating_ms)} · 排空 {time(detail.draining_ms)}
-                        </Descriptions.Item>
-                        <Descriptions.Item label="错误">
-                            {detail.error_code ? (
-                                <Space direction="vertical" size={2}>
-                                    <Tag color="red" style={{ margin: 0 }}>
-                                        {detail.error_code}
-                                    </Tag>
-                                    <Text style={{ fontSize: 12 }}>{detail.error_detail}</Text>
-                                </Space>
-                            ) : (
-                                '—'
-                            )}
-                        </Descriptions.Item>
-                        <Descriptions.Item label="时间">
-                            创建 {date(detail.created_at)}
-                            {detail.completed_at ? ` · 完成 ${date(detail.completed_at)}` : ''}
-                        </Descriptions.Item>
-                    </Descriptions>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                        <PluginDeploymentStepper
+                            operation={detail}
+                            releaseVersion={version(detail.release_id)}
+                            onViewDiagnostics={(op) => {
+                                setDiagnosticOp(op);
+                            }}
+                        />
+
+                        <Descriptions column={2} size="small" bordered>
+                            <Descriptions.Item label="操作 ID">
+                                <span className="mono">{detail.operation_id}</span>
+                            </Descriptions.Item>
+                            <Descriptions.Item label="目标代际">
+                                第 {detail.generation} 代
+                                {detail.rollback_of_operation_id
+                                    ? ` · 回滚自 ${detail.rollback_of_operation_id}`
+                                    : ''}
+                            </Descriptions.Item>
+                            <Descriptions.Item label="节点 / 插件">
+                                {detail.node_id} · <span className="mono">{detail.plugin_id}</span>
+                            </Descriptions.Item>
+                            <Descriptions.Item label="目标 Release">
+                                {version(detail.release_id)} ({detail.release_id.slice(0, 16)}…)
+                            </Descriptions.Item>
+                            <Descriptions.Item label="创建时间">
+                                {date(detail.created_at)}
+                            </Descriptions.Item>
+                            <Descriptions.Item label="完成时间">
+                                {detail.completed_at ? date(detail.completed_at) : '进行中'}
+                            </Descriptions.Item>
+                        </Descriptions>
+                    </div>
                 </Modal>
             ) : null}
+
+            {/* 独立排障抽屉 */}
+            <PluginDiagnosticsDrawer
+                open={Boolean(diagnosticOp)}
+                operation={diagnosticOp}
+                releaseVersion={diagnosticOp ? version(diagnosticOp.release_id) : ''}
+                onClose={() => setDiagnosticOp(null)}
+            />
         </div>
     );
 }

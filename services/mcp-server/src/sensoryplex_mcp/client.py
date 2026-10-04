@@ -297,11 +297,21 @@ class SensoryPlexClient:
     # ─────────────────────────────────────────────────────────────
     async def list_uploads(self, limit: int = 50, offset: int = 0) -> dict[str, Any]:
         """List uploaded media assets and their admission status."""
-        return await self.request("GET", "/v1/uploads", params={"limit": limit, "offset": offset})
+        try:
+            return await self.request(
+                "GET", "/v1/assets", params={"limit": limit, "offset": offset}
+            )
+        except SensoryPlexAPIError:
+            return await self.request(
+                "GET", "/v1/uploads", params={"limit": limit, "offset": offset}
+            )
 
     async def get_upload(self, upload_id: str) -> dict[str, Any]:
         """Get status and metadata of a specific upload."""
-        return await self.request("GET", f"/v1/uploads/{upload_id}")
+        try:
+            return await self.request("GET", f"/v1/assets/{upload_id}")
+        except SensoryPlexAPIError:
+            return await self.request("GET", f"/v1/uploads/{upload_id}")
 
     def get_playback_stream_url(self, upload_id: str) -> str:
         """Construct the direct HTTP Range streaming URL for video playback."""
@@ -360,15 +370,24 @@ class SensoryPlexClient:
     # ─────────────────────────────────────────────────────────────
     async def list_nodes(self, limit: int = 50) -> dict[str, Any]:
         """List all worker nodes in the cluster with status and accelerators."""
-        return await self.request("GET", "/v1/nodes", params={"limit": limit})
+        try:
+            return await self.request("GET", "/admin/v1/nodes", params={"limit": limit})
+        except SensoryPlexAPIError:
+            return await self.request("GET", "/v1/nodes", params={"limit": limit})
 
     async def get_node(self, node_id: str) -> dict[str, Any]:
         """Get detailed node info including hardware accelerators and instances."""
-        return await self.request("GET", f"/v1/nodes/{node_id}")
+        try:
+            return await self.request("GET", f"/admin/v1/nodes/{node_id}")
+        except SensoryPlexAPIError:
+            return await self.request("GET", f"/v1/nodes/{node_id}")
 
     async def approve_node(self, node_id: str) -> dict[str, Any]:
         """Approve an enrolling candidate node to join the cluster."""
-        return await self.request("POST", f"/v1/nodes/{node_id}:approve")
+        try:
+            return await self.request("POST", f"/admin/v1/nodes/{node_id}:accept")
+        except SensoryPlexAPIError:
+            return await self.request("POST", f"/v1/nodes/{node_id}:approve")
 
     async def get_catalog(self) -> dict[str, Any]:
         """List registered plugin catalog entries."""

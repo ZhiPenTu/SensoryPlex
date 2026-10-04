@@ -28,6 +28,7 @@ import {
 } from '@ant-design/icons';
 import { PluginFields, readConfig } from './PluginFields';
 import PluginDeployments from './PluginDeployments';
+import PluginFleetMatrix from './PluginFleetMatrix';
 import PluginTrust from './PluginTrust';
 import { api, post, RequestError } from '../api/client';
 import type {
@@ -57,7 +58,7 @@ export default function Plugins() {
     const [installingPlugin, setInstallingPlugin] = useState<PluginEntry | null>(null);
     const [targetNodeId, setTargetNodeId] = useState<string>('');
     const [selectedConfigId, setSelectedConfigId] = useState<string>('');
-    const [tab, setTab] = useState('catalog');
+    const [tab, setTab] = useState('matrix');
     const [configForm] = Form.useForm();
 
     const catalog = useQuery({
@@ -324,7 +325,25 @@ export default function Plugins() {
                     activeKey={tab}
                     onChange={setTab}
                     items={[
-                        { key: 'trust', label: '发布者与外部制品', children: <PluginTrust /> },
+                        {
+                            key: 'matrix',
+                            label: (
+                                <Space size={6}>
+                                    <ClusterOutlined />
+                                    <span>集群拓扑矩阵 (Fleet Matrix)</span>
+                                </Space>
+                            ),
+                            children: (
+                                <PluginFleetMatrix
+                                    onSelectDeploy={(nId, plugin) => {
+                                        setInstallingPlugin(plugin);
+                                        setTargetNodeId(nId);
+                                        setSelectedConfigId('');
+                                    }}
+                                    onSwitchToDeployments={() => setTab('deployments')}
+                                />
+                            ),
+                        },
                         {
                             key: 'catalog',
                             label: (
@@ -529,6 +548,11 @@ export default function Plugins() {
                                     )}
                                 </div>
                             ),
+                        },
+                        {
+                            key: 'trust',
+                            label: '发布者与外部制品',
+                            children: <PluginTrust />,
                         },
                     ]}
                 />
