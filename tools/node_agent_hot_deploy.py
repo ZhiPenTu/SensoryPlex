@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import re
 import shutil
@@ -570,6 +571,26 @@ class HotDeployExecutor:
         source.rename(payload)
         return payload, manifest
 
+    def _resolve_local_config(self, plugin_id: str, config: dict) -> dict:
+        """根据本机环境推导宿主局部配置（例如模型目录等），满足零明文数据面与本机推导原则。"""
+        resolved = dict(config)
+        if plugin_id == "org.sensoryplex.embed-bge-onnx":
+            if not resolved.get("model_dir"):
+                env_dir = os.environ.get("BGE_MODEL_DIR") or os.environ.get("SENSORYPLEX_MODEL_DIR")
+                candidates = [
+                    pathlib.Path(env_dir).expanduser() if env_dir else None,
+                    ROOT / ".data/models/bge-small-zh-v1.5",
+                    pathlib.Path.cwd() / ".data/models/bge-small-zh-v1.5",
+                ]
+                for candidate in candidates:
+                    if candidate and candidate.is_dir():
+                        resolved["model_dir"] = str(candidate.resolve())
+                        break
+            model_file = resolved.get("model_file")
+            if not model_file or model_file == "model_quantized.onnx":
+                resolved["model_file"] = "onnx/model_quantized.onnx"
+        return resolved
+
     def _validate_candidate(
         self, intent: dict, spec: RuntimeSpec, endpoint: str, *, deadline_s: float
     ) -> tuple[Any, dict]:
@@ -591,13 +612,16 @@ class HotDeployExecutor:
             description_payload = json_format.MessageToDict(
                 description, preserving_proto_field_name=True
             )
-            validation = channel.validate_config(intent.get("config") or {})
+            candidate_config = self._resolve_local_config(
+                intent["plugin_id"], intent.get("config") or {}
+            )
+            validation = channel.validate_config(candidate_config)
             if not validation.valid:
                 raise HotDeployError(
                     "candidate_config_invalid",
                     ";".join(validation.field_errors) or "validate_config rejected",
                 )
-            started = channel.start(intent.get("config") or {})
+            started = channel.start(candidate_config)
             if started.state != "ready":
                 reason = started.error.reason_code if started.error.reason_code else started.state
                 raise HotDeployError("candidate_start_failed", reason)

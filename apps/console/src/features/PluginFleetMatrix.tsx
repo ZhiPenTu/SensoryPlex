@@ -443,7 +443,31 @@ export default function PluginFleetMatrix({
                                 <span style={{ fontSize: 10, color: '#7f1d1d' }}>
                                     {inst.error_detail ? `${inst.error_detail.slice(0, 30)}…` : '安装异常'}
                                 </span>
-                                {onSelectDeploy && canManage ? (
+                                {latestRelease && canManage ? (
+                                    <Popconfirm
+                                        title={`重新向 ${node.node_id} 部署 ${plugin.name}？`}
+                                        description="将创建候选实例并走 ADR-030 蓝绿受控安装与验证。"
+                                        onConfirm={() =>
+                                            quickUpgrade.mutate({
+                                                nodeId: node.node_id,
+                                                pluginId: plugin.id,
+                                                releaseId: latestRelease.release_id,
+                                                isUpgrade: !!(inst.active_runtime_instance_id),
+                                            })
+                                        }
+                                        okText="立即部署"
+                                        cancelText="取消"
+                                    >
+                                        <Button
+                                            size="small"
+                                            danger
+                                            style={{ fontSize: 10.5, height: 20, padding: '0 6px', marginTop: 2 }}
+                                            loading={quickUpgrade.isPending}
+                                        >
+                                            重新尝试部署
+                                        </Button>
+                                    </Popconfirm>
+                                ) : onSelectDeploy && canManage ? (
                                     <Button
                                         size="small"
                                         danger

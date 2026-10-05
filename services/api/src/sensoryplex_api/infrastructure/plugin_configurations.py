@@ -48,6 +48,14 @@ MULTIMODAL_CONFIG_DEFAULTS = {
         "timeout_s": 180.0,
         "ttl_ms": 30_000,
     },
+    "org.sensoryplex.embed-bge-onnx": {
+        "model_id": "bge-small-zh-v1.5",
+        "model_file": "onnx/model_quantized.onnx",
+        "provider": "cpu",
+        "max_length": 512,
+        "timeout_s": 120.0,
+        "ttl_ms": 30_000,
+    },
 }
 
 

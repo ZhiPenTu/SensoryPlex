@@ -7,53 +7,53 @@ import { theme } from 'antd';
  * 核心准则：中性色为主（90% 灰阶层次），语义色为辅（10% 精确点缀），坚决杜绝大面积荧光或高饱和色块。
  */
 export const palette = {
-    // 品牌主色：克莱因深蓝，沉稳克制、现代科技，不刺眼
-    primary: '#1d4ed8', // Blue-700
-    primaryHover: '#2563eb', // Blue-600
-    primaryActive: '#1e40af', // Blue-800
-    primaryBg: '#eff6ff', // Blue-50 (仅用于悬浮微底或轻标签)
+    // 品牌主色：蓝调精准，沉稳克制、现代科技
+    primary: '#2563eb',          // Blue-600
+    primaryHover: '#3b82f6',     // Blue-500
+    primaryActive: '#1d4ed8',    // Blue-700
+    primaryBg: '#eff6ff',        // Blue-50
 
-    // 功能状态语义色（仅用于图标、Tag、状态点，严禁大面积铺底色）
-    success: '#059669', // Emerald-600：健康就绪、完成
+    // 功能状态语义色
+    success: '#059669',           // Emerald-600
     successBg: '#f0fdf4',
-    successBorder: '#bbf7d0',
+    successBorder: '#a7f3d0',
 
-    warning: '#d97706', // Amber-600：候选审批、待准入
+    warning: '#d97706',           // Amber-600
     warningBg: '#fffbeb',
     warningBorder: '#fde68a',
 
-    error: '#dc2626', // Red-600：离线、错误、失败
+    error: '#dc2626',             // Red-600
     errorBg: '#fef2f2',
     errorBorder: '#fecaca',
 
-    info: '#0284c7', // Sky-600：处理中、信息提示
+    info: '#0284c7',              // Sky-600
     infoBg: '#f0f9ff',
     infoBorder: '#bae6fd',
 
-    // 中性灰阶表面体系（全站基底）
-    bgLayout: '#f8fafc', // 主工作区浅冷灰底 (Slate-50)
-    bgContainer: '#ffffff', // 卡片纯白容器，保持视线清爽
-    bgElevated: '#ffffff', // 弹窗与悬浮层
-    border: '#e2e8f0', // 统一标准极细分割线 (Slate-200)
-    borderLight: '#f1f5f9', // 极淡分割线 (Slate-100)
+    // 中性灰阶表面体系
+    bgLayout: '#f1f5f9',          // Slate-100（主工作区，比纯白更有层次感）
+    bgContainer: '#ffffff',
+    bgElevated: '#ffffff',
+    border: '#e2e8f0',            // Slate-200
+    borderLight: '#f1f5f9',       // Slate-100
 
     // 字体灰阶阶梯
-    textPrimary: '#0f172a', // 主标题正文深炭黑 (Slate-900)
-    textSecondary: '#475569', // 次要说明与副标题 (Slate-600)
-    textMuted: '#94a3b8', // 占位符与辅助信息 (Slate-400)
+    textPrimary: '#0f172a',       // Slate-900
+    textSecondary: '#475569',     // Slate-600
+    textMuted: '#94a3b8',         // Slate-400
 
-    // 侧边栏专属石板深灰科技调（极致优雅深色，告别纯黑死板）
-    sidebarBg: '#0b0f19', // 深石板黑 (Slate-950)
-    sidebarCard: '#131b2a', // 侧栏卡片底色
-    sidebarBorder: '#1e293b', // 侧栏极细边框 (Slate-800)
-    sidebarText: '#94a3b8', // 默认菜单字色
-    sidebarTextHover: '#f8fafc',
-    sidebarTextActive: '#ffffff',
-    sidebarActiveBg: 'rgba(255, 255, 255, 0.07)', // 克制半透明微光，告别刺眼大色块
+    // 侧边栏专属星空深色
+    sidebarBg: '#0c111d',
+    sidebarCard: '#161d2e',
+    sidebarBorder: '#1e2d40',
+    sidebarText: '#7d95ae',
+    sidebarTextHover: '#c8d9e8',
+    sidebarTextActive: '#93c5fd',
+    sidebarActiveBg: 'linear-gradient(90deg, rgba(59, 130, 246, 0.14) 0%, rgba(59, 130, 246, 0.06) 100%)',
 };
 
 /**
- * Ant Design 全局主题 Token 统筹
+ * Ant Design 全局主题 Token
  */
 export const antdTheme: ThemeConfig = {
     algorithm: theme.defaultAlgorithm,
@@ -72,105 +72,137 @@ export const antdTheme: ThemeConfig = {
         colorTextTertiary: palette.textMuted,
         fontFamily: `-apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif`,
         fontFamilyCode: `"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace`,
-        borderRadius: 5,
-        borderRadiusLG: 6,
-        borderRadiusSM: 3,
-        boxShadowSecondary:
-            '0 1px 2px 0 rgba(15, 23, 42, 0.05), 0 1px 2px -1px rgba(15, 23, 42, 0.05)',
-        controlHeight: 30,
-        controlHeightLG: 36,
+        borderRadius: 6,
+        borderRadiusLG: 8,
+        borderRadiusSM: 4,
+        boxShadow: '0 1px 3px 0 rgba(15, 23, 42, 0.08), 0 1px 2px -1px rgba(15, 23, 42, 0.06)',
+        boxShadowSecondary: '0 4px 16px -4px rgba(15, 23, 42, 0.12), 0 2px 8px -4px rgba(15, 23, 42, 0.08)',
+        controlHeight: 32,
+        controlHeightLG: 38,
         controlHeightSM: 24,
-        fontSize: 12.5,
-        fontSizeSM: 11.5,
+        fontSize: 13,
+        fontSizeSM: 12,
         fontSizeLG: 14,
-        lineHeight: 1.45,
+        lineHeight: 1.5,
         padding: 10,
-        paddingLG: 14,
-        paddingSM: 6,
+        paddingLG: 16,
+        paddingSM: 8,
         paddingXS: 4,
         margin: 10,
-        marginLG: 14,
-        marginSM: 6,
-        marginXS: 3,
+        marginLG: 16,
+        marginSM: 8,
+        marginXS: 4,
+        motionDurationMid: '0.15s',
+        motionDurationSlow: '0.2s',
     },
     components: {
         Button: {
-            controlHeight: 30,
-            controlHeightSM: 22,
-            borderRadius: 4,
+            controlHeight: 32,
+            controlHeightSM: 24,
+            borderRadius: 6,
             fontWeight: 500,
-            paddingInline: 10,
-            paddingInlineSM: 6,
+            paddingInline: 14,
+            paddingInlineSM: 8,
             primaryColor: '#ffffff',
-            primaryShadow: '0 1px 2px 0 rgba(29, 78, 216, 0.15)',
+            primaryShadow: '0 1px 3px 0 rgba(37, 99, 235, 0.25)',
+            defaultShadow: '0 1px 2px 0 rgba(15, 23, 42, 0.06)',
         },
         Card: {
-            borderRadiusLG: 6,
+            borderRadiusLG: 8,
             colorBorderSecondary: palette.border,
-            boxShadowTertiary: '0 1px 2px 0 rgba(15, 23, 42, 0.02)',
-            headerPadding: 8,
-            headerPaddingSM: 6,
-            bodyPadding: 10,
-            bodyPaddingSM: 8,
+            boxShadowTertiary: '0 1px 3px 0 rgba(15, 23, 42, 0.04)',
+            headerPadding: 10,
+            headerPaddingSM: 8,
+            bodyPadding: 14,
+            bodyPaddingSM: 10,
+            headerFontSize: 13,
+            headerFontSizeSM: 12,
         },
         Table: {
             headerBg: '#f8fafc',
-            headerColor: palette.textSecondary,
-            headerSplitColor: 'transparent',
+            headerColor: '#64748b',
+            headerSplitColor: '#f1f5f9',
             rowHoverBg: '#f8fafc',
             borderColor: '#f1f5f9',
-            cellPaddingBlock: 6,
-            cellPaddingInline: 8,
-            cellPaddingBlockSM: 4,
-            cellPaddingInlineSM: 6,
-            fontSize: 12,
-            borderRadiusLG: 6,
+            cellPaddingBlock: 8,
+            cellPaddingInline: 12,
+            cellPaddingBlockSM: 5,
+            cellPaddingInlineSM: 8,
+            fontSize: 12.5,
+            borderRadiusLG: 8,
         },
         Modal: {
-            borderRadiusLG: 8,
+            borderRadiusLG: 10,
             headerBg: '#ffffff',
             titleFontSize: 15,
+            footerBg: '#fafbfc',
         },
         Tag: {
-            borderRadiusSM: 3,
-            fontSize: 11,
-            lineHeight: 1.45,
+            borderRadiusSM: 4,
+            fontSize: 11.5,
+            lineHeight: 1.4,
         },
         Input: {
-            controlHeight: 30,
-            borderRadius: 4,
-            paddingInline: 8,
+            controlHeight: 32,
+            borderRadius: 6,
+            paddingInline: 10,
             colorBorder: palette.border,
+            hoverBorderColor: '#93c5fd',
+            activeBorderColor: palette.primary,
         },
         Select: {
-            controlHeight: 30,
-            borderRadius: 4,
+            controlHeight: 32,
+            borderRadius: 6,
         },
         Tabs: {
             itemSelectedColor: palette.primary,
             inkBarColor: palette.primary,
-            horizontalItemPadding: '6px 10px',
-            horizontalMargin: '0 0 8px 0',
+            horizontalItemPadding: '7px 12px',
+            horizontalMargin: '0 0 12px 0',
+            itemHoverColor: '#3b82f6',
+            titleFontSize: 13,
         },
         Statistic: {
-            titleFontSize: 11.5,
-            contentFontSize: 19,
+            titleFontSize: 12,
+            contentFontSize: 20,
         },
         Alert: {
-            defaultPadding: '6px 10px',
-            withDescriptionPadding: '8px 12px',
+            defaultPadding: '8px 12px',
+            withDescriptionPadding: '10px 14px',
+            borderRadiusLG: 7,
         },
         Descriptions: {
             itemPaddingBottom: 6,
             itemPaddingEnd: 8,
             titleMarginBottom: 6,
+            labelBg: '#f8fafc',
         },
         Form: {
-            itemMarginBottom: 10,
+            itemMarginBottom: 14,
+            labelFontSize: 13,
         },
         Pagination: {
-            itemSize: 26,
+            itemSize: 28,
             itemSizeSM: 22,
+        },
+        Badge: {
+            fontSize: 11,
+        },
+        Tooltip: {
+            borderRadius: 6,
+            fontSize: 12,
+        },
+        Popconfirm: {
+            fontSize: 13,
+        },
+        Drawer: {
+            borderRadiusLG: 0,
+            footerPaddingBlock: 12,
+            footerPaddingInline: 16,
+        },
+        Dropdown: {
+            borderRadiusLG: 8,
+            controlItemBgHover: '#f0f5ff',
         },
     },
 };

@@ -36,6 +36,7 @@ import type {
     PluginConfigList,
     PluginEntry,
     PluginList,
+    PluginReleaseList,
     PreflightResponse,
     BatchDeployPluginsResponse,
 } from '../api/contracts';
@@ -78,6 +79,12 @@ export default function Plugins() {
         refetchInterval: 2500,
     });
 
+    const releases = useQuery({
+        queryKey: ['plugin-releases'],
+        queryFn: ({ signal }) =>
+            api<PluginReleaseList>('/admin/v1/plugin-releases?limit=100', { signal }),
+    });
+
     const preflight = useQuery({
         queryKey: ['preflight', targetNodeId, installingPlugin?.id, selectedConfigId],
         queryFn: () =>
@@ -91,20 +98,42 @@ export default function Plugins() {
     });
 
     const deploy = useMutation({
-        mutationFn: () =>
-            post(
-                `/admin/v1/nodes/${targetNodeId}/plugins/${installingPlugin!.id}:${installingPlugin!.release_id ? (nodes.data?.items.find((n) => n.node_id === targetNodeId)?.instances.some((i) => i.plugin_id === installingPlugin!.id && i.active_runtime_instance_id) ? 'upgrade' : 'provision') : 'deploy'}`,
+        mutationFn: () => {
+            const targetNode = nodes.data?.items?.find((n) => n.node_id === targetNodeId);
+            const inst = targetNode?.instances?.find((i) => i.plugin_id === installingPlugin!.id);
+            const isUpgrade = !!(inst && inst.active_runtime_instance_id);
+
+            let releaseId: string | undefined = installingPlugin!.release_id;
+            if (!releaseId && targetNode) {
+                const nodePlatform = targetNode.capabilities?.platform || 'macos';
+                const nodeArch = targetNode.capabilities?.arch || 'aarch64';
+                const matched = (releases.data?.items || []).find(
+                    (r) =>
+                        r.plugin_id === installingPlugin!.id &&
+                        r.platform === nodePlatform &&
+                        r.arch === nodeArch &&
+                        r.authenticated,
+                );
+                releaseId = matched?.release_id;
+            }
+
+            const action = isUpgrade ? 'upgrade' : 'provision';
+            return post(
+                `/admin/v1/nodes/${targetNodeId}/plugins/${installingPlugin!.id}:${action}`,
                 {
                     config_id: selectedConfigId || undefined,
-                    release_id: installingPlugin!.release_id || undefined,
+                    release_id: releaseId || undefined,
                 },
-            ),
+            );
+        },
         onSuccess: () => {
             message.success('已成功下发插件部署指令至计算节点');
             void cache.invalidateQueries({ queryKey: ['nodes'] });
+            void cache.invalidateQueries({ queryKey: ['plugin-deployments'] });
             setInstallingPlugin(null);
             setTargetNodeId('');
             setSelectedConfigId('');
+            setTab('deployments');
         },
     });
 
