@@ -39,6 +39,7 @@ import { usePermission } from '../session';
 import PluginDeploymentStepper from './PluginDeploymentStepper';
 import PluginDiagnosticsDrawer from './PluginDiagnosticsDrawer';
 import PluginMetricsDashboard from './PluginMetricsDashboard';
+import { compareSemver } from './PluginFleetMatrix';
 
 const { Text, Paragraph } = Typography;
 
@@ -144,6 +145,12 @@ export default function PluginDeployments() {
         () =>
             nodeReleases
                 .filter((item) => item.plugin_id === pluginId)
+                .slice()
+                .sort((a, b) => {
+                    const cmp = compareSemver(b.plugin_version, a.plugin_version);
+                    if (cmp !== 0) return cmp;
+                    return new Date(b.published_at).getTime() - new Date(a.published_at).getTime();
+                })
                 .map((item) => ({
                     value: item.release_id,
                     label: `${item.plugin_version} · ${item.platform}-${item.arch} · ${bytes(

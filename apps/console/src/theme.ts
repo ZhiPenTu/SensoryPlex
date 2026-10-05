@@ -8,39 +8,39 @@ import { theme } from 'antd';
  */
 export const palette = {
     // 品牌主色：蓝调精准，沉稳克制、现代科技
-    primary: '#2563eb',          // Blue-600
-    primaryHover: '#3b82f6',     // Blue-500
-    primaryActive: '#1d4ed8',    // Blue-700
-    primaryBg: '#eff6ff',        // Blue-50
+    primary: '#2563eb', // Blue-600
+    primaryHover: '#3b82f6', // Blue-500
+    primaryActive: '#1d4ed8', // Blue-700
+    primaryBg: '#eff6ff', // Blue-50
 
     // 功能状态语义色
-    success: '#059669',           // Emerald-600
+    success: '#059669', // Emerald-600
     successBg: '#f0fdf4',
     successBorder: '#a7f3d0',
 
-    warning: '#d97706',           // Amber-600
+    warning: '#d97706', // Amber-600
     warningBg: '#fffbeb',
     warningBorder: '#fde68a',
 
-    error: '#dc2626',             // Red-600
+    error: '#dc2626', // Red-600
     errorBg: '#fef2f2',
     errorBorder: '#fecaca',
 
-    info: '#0284c7',              // Sky-600
+    info: '#0284c7', // Sky-600
     infoBg: '#f0f9ff',
     infoBorder: '#bae6fd',
 
     // 中性灰阶表面体系
-    bgLayout: '#f1f5f9',          // Slate-100（主工作区，比纯白更有层次感）
+    bgLayout: '#f1f5f9', // Slate-100（主工作区，比纯白更有层次感）
     bgContainer: '#ffffff',
     bgElevated: '#ffffff',
-    border: '#e2e8f0',            // Slate-200
-    borderLight: '#f1f5f9',       // Slate-100
+    border: '#e2e8f0', // Slate-200
+    borderLight: '#f1f5f9', // Slate-100
 
     // 字体灰阶阶梯
-    textPrimary: '#0f172a',       // Slate-900
-    textSecondary: '#475569',     // Slate-600
-    textMuted: '#94a3b8',         // Slate-400
+    textPrimary: '#0f172a', // Slate-900
+    textSecondary: '#475569', // Slate-600
+    textMuted: '#94a3b8', // Slate-400
 
     // 侧边栏专属星空深色
     sidebarBg: '#0c111d',
@@ -49,7 +49,8 @@ export const palette = {
     sidebarText: '#7d95ae',
     sidebarTextHover: '#c8d9e8',
     sidebarTextActive: '#93c5fd',
-    sidebarActiveBg: 'linear-gradient(90deg, rgba(59, 130, 246, 0.14) 0%, rgba(59, 130, 246, 0.06) 100%)',
+    sidebarActiveBg:
+        'linear-gradient(90deg, rgba(59, 130, 246, 0.14) 0%, rgba(59, 130, 246, 0.06) 100%)',
 };
 
 /**
@@ -76,7 +77,8 @@ export const antdTheme: ThemeConfig = {
         borderRadiusLG: 8,
         borderRadiusSM: 4,
         boxShadow: '0 1px 3px 0 rgba(15, 23, 42, 0.08), 0 1px 2px -1px rgba(15, 23, 42, 0.06)',
-        boxShadowSecondary: '0 4px 16px -4px rgba(15, 23, 42, 0.12), 0 2px 8px -4px rgba(15, 23, 42, 0.08)',
+        boxShadowSecondary:
+            '0 4px 16px -4px rgba(15, 23, 42, 0.12), 0 2px 8px -4px rgba(15, 23, 42, 0.08)',
         controlHeight: 32,
         controlHeightLG: 38,
         controlHeightSM: 24,

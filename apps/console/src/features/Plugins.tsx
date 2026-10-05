@@ -28,7 +28,7 @@ import {
 } from '@ant-design/icons';
 import { PluginFields, readConfig } from './PluginFields';
 import PluginDeployments from './PluginDeployments';
-import PluginFleetMatrix from './PluginFleetMatrix';
+import PluginFleetMatrix, { compareSemver } from './PluginFleetMatrix';
 import PluginTrust from './PluginTrust';
 import { api, post, RequestError } from '../api/client';
 import type {
@@ -107,14 +107,20 @@ export default function Plugins() {
             if (!releaseId && targetNode) {
                 const nodePlatform = targetNode.capabilities?.platform || 'macos';
                 const nodeArch = targetNode.capabilities?.arch || 'aarch64';
-                const matched = (releases.data?.items || []).find(
+                const candidateReleases = (releases.data?.items || []).filter(
                     (r) =>
                         r.plugin_id === installingPlugin!.id &&
                         r.platform === nodePlatform &&
                         r.arch === nodeArch &&
-                        r.authenticated,
+                        r.authenticated &&
+                        r.trust === 'first_party',
                 );
-                releaseId = matched?.release_id;
+                candidateReleases.sort((a, b) => {
+                    const cmp = compareSemver(b.plugin_version, a.plugin_version);
+                    if (cmp !== 0) return cmp;
+                    return new Date(b.published_at).getTime() - new Date(a.published_at).getTime();
+                });
+                releaseId = candidateReleases[0]?.release_id;
             }
 
             const action = isUpgrade ? 'upgrade' : 'provision';

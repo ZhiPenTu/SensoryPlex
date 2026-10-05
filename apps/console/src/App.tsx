@@ -162,7 +162,7 @@ function Login({ onLogin }: { onLogin: (identity: Identity) => void }) {
                     </span>
                     SensoryPlex
                 </Link>
-                <div style={{ margin: 'auto 0' }}>
+                <div className="login-story-content">
                     <div style={{ marginBottom: 16 }}>
                         <span
                             style={{
@@ -182,7 +182,7 @@ function Login({ onLogin }: { onLogin: (identity: Identity) => void }) {
                         都有据可循。
                     </h1>
                     <p>
-                        连接边缘节点、大模型推理与微秒时间轴，
+                        连接边缘节点、多模态感知与毫秒时间轴，
                         <br />
                         将非结构化连续视频沉淀为可精确索引的素材单元。
                     </p>
@@ -193,18 +193,38 @@ function Login({ onLogin }: { onLogin: (identity: Identity) => void }) {
                         <RightOutlined style={{ fontSize: 11, color: '#64748b' }} />
                         <span>结构化素材</span>
                     </div>
+                    <div className="login-features">
+                        <div>
+                            <strong>OCR</strong>
+                            <span>画面文字</span>
+                        </div>
+                        <div>
+                            <strong>ASR</strong>
+                            <span>语音转写</span>
+                        </div>
+                        <div>
+                            <strong>VLM</strong>
+                            <span>场景理解</span>
+                        </div>
+                    </div>
                 </div>
-                <div style={{ fontSize: 12, color: '#64748b' }}>
+                <div className="login-story-footer">
                     端侧就地处理 · 历史全量追溯 · 契约数据自主掌握
                 </div>
             </section>
 
             <section className="login-panel">
                 <div className="login-panel-inner">
+                    <Link className="brand login-mobile-brand" to="/">
+                        <span className="brand-mark">
+                            <ApartmentOutlined />
+                        </span>
+                        SensoryPlex
+                    </Link>
                     <div style={{ marginBottom: 28 }}>
                         <span
                             style={{
-                                color: '#1668dc',
+                                color: 'var(--sp-primary)',
                                 fontSize: 11,
                                 fontWeight: 700,
                                 letterSpacing: '1.5px',
@@ -233,7 +253,7 @@ function Login({ onLogin }: { onLogin: (identity: Identity) => void }) {
                     >
                         <Form.Item
                             name="username"
-                            label={<span style={{ fontWeight: 500, fontSize: 13 }}>用户名</span>}
+                            label={<span style={{ fontWeight: 600, fontSize: 13 }}>用户名</span>}
                             rules={[{ required: true, message: '请输入用户名' }]}
                         >
                             <Input
@@ -247,7 +267,7 @@ function Login({ onLogin }: { onLogin: (identity: Identity) => void }) {
 
                         <Form.Item
                             name="password"
-                            label={<span style={{ fontWeight: 500, fontSize: 13 }}>密码</span>}
+                            label={<span style={{ fontWeight: 600, fontSize: 13 }}>密码</span>}
                             rules={[{ required: true, message: '请输入密码' }]}
                         >
                             <Input.Password
@@ -268,7 +288,9 @@ function Login({ onLogin }: { onLogin: (identity: Identity) => void }) {
                                     style={{ height: 42, fontSize: 15 }}
                                     icon={<UserOutlined />}
                                 >
-                                    {mutation.isPending ? '正在快速登录…' : `Demo 快速登录 (${demo.data.username})`}
+                                    {mutation.isPending
+                                        ? '正在快速登录…'
+                                        : `Demo 快速登录 (${demo.data.username})`}
                                 </Button>
                             ) : (
                                 <Button
@@ -311,14 +333,7 @@ function Login({ onLogin }: { onLogin: (identity: Identity) => void }) {
                         }
                     />
 
-                    <div
-                        style={{
-                            marginTop: 40,
-                            textAlign: 'center',
-                            fontSize: 12,
-                            color: '#94a3b8',
-                        }}
-                    >
+                    <div className="login-copyright">
                         SensoryPlex Multimodal Console · 工业预览版
                     </div>
                 </div>
@@ -357,7 +372,18 @@ function Layout() {
         setMobile(false);
     }, [location.pathname]);
 
+    useEffect(() => {
+        if (!mobile) return;
+        const closeOnEscape = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') setMobile(false);
+        };
+        window.addEventListener('keydown', closeOnEscape);
+        return () => window.removeEventListener('keydown', closeOnEscape);
+    }, [mobile]);
+
     const current = navigation.find((x) => location.pathname.startsWith(x.path));
+    const userInitial =
+        Array.from(session.display_name || session.principal)[0]?.toUpperCase() || 'S';
     const visible = navigation.filter((x) => !x.scope || session.permissions.includes(x.scope));
     const groups = Array.from(new Set(visible.map((x) => x.group)));
 
@@ -386,7 +412,14 @@ function Layout() {
 
     return (
         <div className="app-shell">
-            <aside className={`sidebar ${mobile ? 'mobile-open' : ''}`}>
+            {mobile ? (
+                <button
+                    className="sidebar-backdrop"
+                    aria-label="关闭导航"
+                    onClick={() => setMobile(false)}
+                />
+            ) : null}
+            <aside id="console-navigation" className={`sidebar ${mobile ? 'mobile-open' : ''}`}>
                 <Link to="/" className="brand">
                     <span className="brand-mark">
                         <ApartmentOutlined style={{ fontSize: 20 }} />
@@ -396,8 +429,8 @@ function Layout() {
 
                 <div className="workspace-pill">
                     <div style={{ flex: 1 }}>
-                        <strong>本地主计算节点</strong>
-                        <small>Edge Cluster · 127.0.0.1</small>
+                        <strong>本地工作空间</strong>
+                        <small>SensoryPlex Console</small>
                     </div>
                     <span
                         style={{
@@ -420,12 +453,12 @@ function Layout() {
                             }}
                         />
                         <span style={{ color: '#6ee7b7', fontSize: 10, fontWeight: 600 }}>
-                            在线
+                            已登录
                         </span>
                     </span>
                 </div>
 
-                <nav>
+                <nav aria-label="主导航">
                     {groups.map((group) => (
                         <div key={group} className="nav-group">
                             <span>{group}</span>
@@ -450,9 +483,7 @@ function Layout() {
                 </nav>
 
                 <div className="sidebar-footer">
-                    <div className="user-avatar">
-                        <UserOutlined />
-                    </div>
+                    <div className="user-avatar">{userInitial}</div>
                     <div style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
                         <div
                             style={{
@@ -472,6 +503,7 @@ function Layout() {
                     </div>
                     <Tooltip title="退出登录">
                         <Button
+                            aria-label="退出登录"
                             type="text"
                             size="small"
                             icon={<LogoutOutlined style={{ color: '#94a3b8' }} />}
@@ -487,6 +519,8 @@ function Layout() {
                         <button
                             className="mobile-toggle"
                             aria-label="切换导航"
+                            aria-expanded={mobile}
+                            aria-controls="console-navigation"
                             onClick={() => setMobile(!mobile)}
                         >
                             {mobile ? (
@@ -498,7 +532,7 @@ function Layout() {
                         <Text type="secondary" style={{ fontSize: 13 }}>
                             SensoryPlex
                         </Text>
-                        <span className="breadcrumb-divider">/</span>
+                        <RightOutlined className="breadcrumb-divider" aria-hidden="true" />
                         <Text strong style={{ fontSize: 13 }}>
                             {current?.label || '控制台'}
                         </Text>
@@ -507,22 +541,19 @@ function Layout() {
                     <Space size={10}>
                         <div className="environment">
                             <span className="status-dot" />
-                            <span>边缘推理就绪</span>
+                            <span>本地控制台</span>
                             <span style={{ color: '#cbd5e1' }}>|</span>
-                            <span>v0.1.0-alpha</span>
+                            <span style={{ color: '#64748b' }}>v0.1.0-alpha</span>
                         </div>
 
-                        <Dropdown menu={{ items: userMenuItems }} placement="bottomRight">
-                            <Avatar
-                                size={26}
-                                style={{
-                                    backgroundColor: '#1e293b',
-                                    color: '#94a3b8',
-                                    border: '1px solid #cbd5e1',
-                                    cursor: 'pointer',
-                                }}
-                                icon={<UserOutlined />}
-                            />
+                        <Dropdown
+                            menu={{ items: userMenuItems }}
+                            placement="bottomRight"
+                            trigger={['click']}
+                        >
+                            <button className="profile-button" aria-label="打开账户菜单">
+                                <Avatar size={28}>{userInitial}</Avatar>
+                            </button>
                         </Dropdown>
                     </Space>
                 </header>

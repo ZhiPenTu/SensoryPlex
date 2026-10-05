@@ -17,6 +17,7 @@ import {
     SyncOutlined,
 } from '@ant-design/icons';
 import { RequestError } from './api/client';
+import { palette } from './theme';
 
 const { Title, Paragraph, Text } = Typography;
 
@@ -35,57 +36,13 @@ export function Heading({
     action?: ReactNode;
 }) {
     return (
-        <div style={{ marginBottom: 10 }}>
-            <div
-                style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'flex-start',
-                    flexWrap: 'wrap',
-                    gap: 8,
-                }}
-            >
-                <div>
-                    {eyebrow ? (
-                        <div style={{ marginBottom: 4 }}>
-                            <span
-                                style={{
-                                    fontSize: 10,
-                                    fontWeight: 650,
-                                    letterSpacing: '0.8px',
-                                    color: '#64748b',
-                                    textTransform: 'uppercase',
-                                    display: 'inline-block',
-                                }}
-                            >
-                                {eyebrow}
-                            </span>
-                        </div>
-                    ) : null}
-                    <Title
-                        level={2}
-                        style={{
-                            margin: 0,
-                            fontWeight: 700,
-                            letterSpacing: '-0.4px',
-                            color: '#0f172a',
-                            fontSize: 17,
-                            lineHeight: 1.3,
-                        }}
-                    >
-                        {title}
-                    </Title>
-                    <Paragraph
-                        type="secondary"
-                        style={{ margin: '2px 0 0', fontSize: 12, color: '#475569' }}
-                    >
-                        {description}
-                    </Paragraph>
-                </div>
-                {action ? (
-                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>{action}</div>
-                ) : null}
+        <div className="page-heading">
+            <div className="page-heading-copy">
+                {eyebrow ? <span className="page-eyebrow">{eyebrow}</span> : null}
+                <Title level={2}>{title}</Title>
+                <Paragraph type="secondary">{description}</Paragraph>
             </div>
+            {action ? <div className="page-heading-actions">{action}</div> : null}
         </div>
     );
 }
@@ -95,8 +52,9 @@ export function Heading({
  */
 export function Loading({ tip = '正在读取…' }: { tip?: string }) {
     return (
-        <div style={{ padding: '48px 0', textAlign: 'center' }}>
-            <Spin tip={tip} size="large" />
+        <div className="loading-state" role="status" aria-live="polite">
+            <Spin size="large" />
+            <span>{tip}</span>
         </div>
     );
 }
@@ -172,6 +130,7 @@ export function Notice({ children }: { children: ReactNode }) {
 export function Empty({ title, children }: { title: string; children?: ReactNode }) {
     return (
         <AntEmpty
+            className="empty-state"
             image={AntEmpty.PRESENTED_IMAGE_SIMPLE}
             description={
                 <div>
@@ -456,19 +415,11 @@ export function Badge({ state }: { state: string }) {
     };
     return (
         <span
+            className="status-badge"
             style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 5,
                 background: conf.bg,
                 color: conf.text,
                 border: `1px solid ${conf.border}`,
-                padding: '2px 8px',
-                borderRadius: 4,
-                fontSize: 12,
-                fontWeight: 500,
-                lineHeight: '18px',
-                whiteSpace: 'nowrap',
             }}
         >
             {conf.icon ? (
@@ -524,15 +475,16 @@ export function Modal({
 }) {
     return (
         <AntModal
+            className="console-modal"
             title={<span style={{ fontWeight: 650, color: '#0f172a' }}>{title}</span>}
             open
             footer={null}
             onCancel={onClose}
             width={width}
-            destroyOnClose
+            destroyOnHidden
             centered
         >
-            <div style={{ paddingTop: 8 }}>{children}</div>
+            <div style={{ paddingTop: 14 }}>{children}</div>
         </AntModal>
     );
 }
@@ -545,6 +497,7 @@ export function StatSummary({
     value,
     prefix,
     tag,
+    color = palette.primary,
 }: {
     title: string;
     value: number | string;
@@ -554,61 +507,33 @@ export function StatSummary({
 }) {
     return (
         <Card
+            className="stat-summary"
             size="small"
-            style={{
-                borderRadius: 6,
-                border: '1px solid #e2e8f0',
-                background: '#ffffff',
-                boxShadow: '0 1px 2px 0 rgba(15, 23, 42, 0.03)',
-            }}
-            bodyStyle={{ padding: '8px 12px' }}
+            style={{ '--stat-accent': color } as React.CSSProperties}
+            styles={{ body: { padding: '12px 14px' } }}
         >
-            <div
-                style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    marginBottom: 3,
-                }}
-            >
-                <span style={{ fontSize: 11.5, fontWeight: 500, color: '#64748b' }}>{title}</span>
+            <div className="stat-summary-header">
+                <span className="stat-summary-title">{title}</span>
                 {prefix ? (
-                    <div
-                        style={{
-                            width: 20,
-                            height: 20,
-                            borderRadius: 4,
-                            background: '#f8fafc',
-                            border: '1px solid #e2e8f0',
-                            color: '#475569',
-                            display: 'grid',
-                            placeItems: 'center',
-                            fontSize: 11,
-                        }}
-                    >
+                    <div className="stat-summary-icon" aria-hidden="true">
                         {prefix}
                     </div>
                 ) : null}
             </div>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+            <div className="stat-summary-content">
                 <span
+                    className="stat-summary-value"
                     style={{
-                        color: '#0f172a',
-                        fontWeight: 700,
-                        fontSize: typeof value === 'number' || String(value).length <= 4 ? 19 : 15,
-                        letterSpacing: '-0.4px',
+                        fontSize: typeof value === 'number' || String(value).length <= 4 ? 24 : 17,
                         fontFamily:
                             typeof value === 'string' && value.includes('_')
                                 ? 'monospace'
                                 : 'inherit',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
                     }}
                 >
                     {value}
                 </span>
-                {tag ? <span style={{ marginLeft: 'auto' }}>{tag}</span> : null}
+                {tag ? <span className="stat-summary-tag">{tag}</span> : null}
             </div>
         </Card>
     );

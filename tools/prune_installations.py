@@ -286,6 +286,14 @@ def prune_task_executions(
     return total_freed, actions
 
 
+def _parse_semver_key(version_str: str) -> tuple[int, ...]:
+    clean = version_str.lstrip("v")
+    try:
+        return tuple(int(part) for part in clean.split("."))
+    except ValueError:
+        return (0,)
+
+
 def prune_releases_bundle_cache(
     releases_cache_dir: Path, active_releases: set[str], dry_run: bool = False
 ) -> tuple[int, list[str]]:
@@ -300,7 +308,8 @@ def prune_releases_bundle_cache(
         if not plugin_dir.is_dir():
             continue
         versions = [v for v in plugin_dir.iterdir() if v.is_dir()]
-        versions.sort(key=lambda d: d.stat().st_mtime, reverse=True)
+        # 按语义版本优先倒序排列，确保永远保留最高版本
+        versions.sort(key=lambda d: (_parse_semver_key(d.name), d.stat().st_mtime), reverse=True)
 
         # 保留最新的 1 个构建版本，清理更旧的
         for old_ver in versions[1:]:

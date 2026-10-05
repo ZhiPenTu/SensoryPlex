@@ -51,6 +51,22 @@ interface PluginFleetMatrixProps {
     onSwitchToDeployments?: () => void;
 }
 
+/** 语义化版本比较：v1 > v2 返回 1，v1 < v2 返回 -1，相等返回 0 */
+export function compareSemver(v1?: string, v2?: string): number {
+    if (!v1 && !v2) return 0;
+    if (!v1) return -1;
+    if (!v2) return 1;
+    const p1 = v1.replace(/^v/, '').split('.').map((x) => parseInt(x, 10) || 0);
+    const p2 = v2.replace(/^v/, '').split('.').map((x) => parseInt(x, 10) || 0);
+    for (let i = 0; i < Math.max(p1.length, p2.length); i++) {
+        const num1 = p1[i] ?? 0;
+        const num2 = p2[i] ?? 0;
+        if (num1 > num2) return 1;
+        if (num1 < num2) return -1;
+    }
+    return 0;
+}
+
 export default function PluginFleetMatrix({
     onSelectDeploy,
     onViewDeployment,
@@ -166,15 +182,24 @@ export default function PluginFleetMatrix({
         return map;
     }, [opsItems]);
 
-    // 计算每个 (platform, arch, plugin_id) 下最新已认证的 release
+    // 计算每个 (platform, arch, plugin_id) 下最新已认证且可用的 release
     const latestReleaseMap = useMemo(() => {
         const map = new Map<string, PluginRelease>();
         for (const rel of releaseItems) {
             if (!rel.authenticated || rel.trust !== 'first_party') continue;
             const key = `${rel.platform}:${rel.arch}:${rel.plugin_id}`;
             const existing = map.get(key);
-            if (!existing || new Date(rel.published_at) > new Date(existing.published_at)) {
+            if (!existing) {
                 map.set(key, rel);
+            } else {
+                const cmp = compareSemver(rel.plugin_version, existing.plugin_version);
+                if (cmp > 0) {
+                    map.set(key, rel);
+                } else if (cmp === 0) {
+                    if (new Date(rel.published_at).getTime() > new Date(existing.published_at).getTime()) {
+                        map.set(key, rel);
+                    }
+                }
             }
         }
         return map;
@@ -186,14 +211,19 @@ export default function PluginFleetMatrix({
     let driftCount = 0;
 
     activeNodes.forEach((node) => {
-        const nodePlatform = node.capabilities?.platform || 'darwin';
-        const nodeArch = node.capabilities?.arch || 'arm64';
+        const nodePlatform = node.capabilities?.platform || 'macos';
+        const nodeArch = node.capabilities?.arch || 'aarch64';
         catalogItems.forEach((plugin) => {
             const inst = node.instances?.find((i) => i.plugin_id === plugin.id);
             if (inst && inst.active_runtime_instance_id && inst.actual_state === 'ready') {
                 installedSlotsCount++;
                 const latest = latestReleaseMap.get(`${nodePlatform}:${nodeArch}:${plugin.id}`);
-                if (latest && inst.active_release_id && inst.active_release_id !== latest.release_id) {
+                if (
+                    latest &&
+                    inst.active_release_id &&
+                    inst.active_release_id !== latest.release_id &&
+                    compareSemver(latest.plugin_version, inst.plugin_version) > 0
+                ) {
                     driftCount++;
                 }
             }
@@ -206,8 +236,8 @@ export default function PluginFleetMatrix({
         let triggered = 0;
         try {
             for (const node of activeNodes) {
-                const nodePlatform = node.capabilities?.platform || 'darwin';
-                const nodeArch = node.capabilities?.arch || 'arm64';
+                const nodePlatform = node.capabilities?.platform || 'macos';
+                const nodeArch = node.capabilities?.arch || 'aarch64';
                 for (const plugin of catalogItems) {
                     const inst = node.instances?.find((i) => i.plugin_id === plugin.id);
                     if (inst && inst.active_runtime_instance_id && inst.actual_state === 'ready') {
@@ -216,6 +246,7 @@ export default function PluginFleetMatrix({
                             latest &&
                             inst.active_release_id &&
                             inst.active_release_id !== latest.release_id &&
+                            compareSemver(latest.plugin_version, inst.plugin_version) > 0 &&
                             !activeOpMap.has(`${node.node_id}:${plugin.id}`)
                         ) {
                             await post(
@@ -298,8 +329,8 @@ export default function PluginFleetMatrix({
             key: plugin.id,
             width: 200,
             render: (_: unknown, node: NodeInfo) => {
-                const nodePlatform = node.capabilities?.platform || 'darwin';
-                const nodeArch = node.capabilities?.arch || 'arm64';
+                const nodePlatform = node.capabilities?.platform || 'macos';
+                const nodeArch = node.capabilities?.arch || 'aarch64';
                 const inst = node.instances?.find((i) => i.plugin_id === plugin.id);
                 const activeOp = activeOpMap.get(`${node.node_id}:${plugin.id}`);
                 const latestRelease = latestReleaseMap.get(`${nodePlatform}:${nodeArch}:${plugin.id}`);
@@ -349,7 +380,8 @@ export default function PluginFleetMatrix({
                     const isDrifted =
                         latestRelease &&
                         inst.active_release_id &&
-                        inst.active_release_id !== latestRelease.release_id;
+                        inst.active_release_id !== latestRelease.release_id &&
+                        compareSemver(latestRelease.plugin_version, inst.plugin_version) > 0;
 
                     return (
                         <Card

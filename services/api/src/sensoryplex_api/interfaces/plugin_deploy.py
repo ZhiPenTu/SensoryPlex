@@ -489,18 +489,27 @@ def register(app, pool, auth, settings):
             clauses.append("arch=%s")
             params.append(arch)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        repository = settings.release_repository.resolve()
         with pool.connection() as conn:
             items = rows(
                 conn,
-                f"SELECT * FROM plugin_release {where} ORDER BY published_at DESC "
+                f"SELECT * FROM plugin_release {where} "
+                "ORDER BY published_at DESC, plugin_version DESC, release_id DESC "
                 "LIMIT %s OFFSET %s",
                 (*params, limit, offset),
             )
             total = conn.execute(
                 f"SELECT count(*) FROM plugin_release {where}", tuple(params)
             ).fetchone()[0]
+            release_items = []
+            for row in items:
+                proto_item = release_proto(row)
+                bundle_path = (repository / row["bundle_path"]).resolve()
+                if not (bundle_path.is_relative_to(repository) and bundle_path.is_file()):
+                    proto_item["authenticated"] = False
+                release_items.append(proto_item)
         return out(
-            {"items": [release_proto(row) for row in items], "total": total},
+            {"items": release_items, "total": total},
             pb.PluginReleaseList,
         )
 
@@ -621,6 +630,19 @@ def register(app, pool, auth, settings):
                     f"{descriptor['release_id']}:{descriptor['bundle_digest']}",
                 )
                 imported.append(descriptor["release_id"])
+
+            if not dry_run:
+                # 对库中所有已记录的 release 进行落盘核验：盘上缺失或非法的制品置为未认证
+                for db_rel in rows(
+                    conn, "SELECT release_id, bundle_path, authenticated FROM plugin_release"
+                ):
+                    b_path = (repository / db_rel["bundle_path"]).resolve()
+                    is_valid = b_path.is_relative_to(repository) and b_path.is_file()
+                    if db_rel["authenticated"] != is_valid:
+                        conn.execute(
+                            "UPDATE plugin_release SET authenticated=%s WHERE release_id=%s",
+                            (is_valid, db_rel["release_id"]),
+                        )
 
         return out(
             {
