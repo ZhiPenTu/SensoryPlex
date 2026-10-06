@@ -322,3 +322,65 @@ def ensure_model_release(
     ).fetchone()
     if row != (name, version, artifact_hash, backend, config_hash):
         raise IdentityConflict("model_release_identity_conflict")
+
+
+# ── 向量垃圾回收与墓碑标记 (Vector GC & Tombstone) ──────────────────────────
+
+
+def mark_tombstone(conn, embedding_ids: list[str]) -> int:
+    """将指定的 embedding_record 置为 tombstoned 状态，记录墓碑时间并清空 vector_ref。"""
+    if not embedding_ids:
+        return 0
+    rows = conn.execute(
+        "UPDATE embedding_record SET state='tombstoned', tombstoned_at=now(), "
+        "vector_ref=NULL, updated_at=now() WHERE embedding_id = ANY(%s) "
+        "AND state <> 'tombstoned' RETURNING embedding_id",
+        (embedding_ids,),
+    ).fetchall()
+    return len(rows)
+
+
+def find_reconciliation_candidates(conn, vector_index_key: str, limit: int = 100) -> list[dict]:
+    """查找需要对账补偿与清理的向量记录候选。
+
+    涵盖以下废弃事实：
+    1. 孤立记录 (orphaned)：material_unit 已被物理清理或不存在；
+    2. 失败记录 (material_failed)：对应素材 revision 的 status='failed'；
+    3. 废弃旧版本 (superseded)：同一 material_unit 存在更高 revision；
+    4. 待清理墓碑 (pending_vector_purge)：已被标记为 tombstoned 但仍持有 vector_ref。
+    """
+    query = f"""
+    SELECT e.embedding_id, e.material_unit_id, e.material_revision, e.vector_ref,
+           CASE
+               WHEN m.material_unit_id IS NULL THEN 'orphaned'
+               WHEN m.status = 'failed' THEN 'material_failed'
+               WHEN ({LATEST}) IS FALSE THEN 'superseded'
+               WHEN e.state = 'tombstoned' THEN 'pending_vector_purge'
+               ELSE 'stale'
+           END AS reason
+    FROM embedding_record e
+    LEFT JOIN material_unit m
+      ON m.material_unit_id = e.material_unit_id AND m.revision = e.material_revision
+    WHERE e.vector_index_key = %s
+      AND (
+          (e.state = 'ready' AND (
+              m.material_unit_id IS NULL
+              OR m.status = 'failed'
+              OR ({LATEST}) IS FALSE
+          ))
+          OR (e.state = 'tombstoned' AND e.vector_ref IS NOT NULL)
+      )
+    ORDER BY e.updated_at ASC
+    LIMIT %s
+    """
+    rows = conn.execute(query, (vector_index_key, limit)).fetchall()
+    return [
+        {
+            "embedding_id": row[0],
+            "material_unit_id": row[1],
+            "material_revision": row[2],
+            "vector_ref": row[3],
+            "reason": row[4],
+        }
+        for row in rows
+    ]

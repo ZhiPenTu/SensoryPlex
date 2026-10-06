@@ -200,3 +200,73 @@ def test_migration_0003_invariants_are_enforced_by_the_database(database):
                 with conn.transaction():
                     conn.execute(statement, (embedding_id,))
             assert failure.value.diag.constraint_name == constraint
+
+
+def test_reconciliation_identifies_superseded_and_tombstones(database):
+    with psycopg.connect(database) as conn:
+        embedding_id = stage_ready(conn, revision=1)
+        insert_material(conn, revision=2)
+
+        candidates = records.find_reconciliation_candidates(conn, KEY)
+        assert len(candidates) == 1
+        assert candidates[0]["embedding_id"] == embedding_id
+        assert candidates[0]["reason"] == "superseded"
+
+        tombstoned = records.mark_tombstone(conn, [embedding_id])
+        assert tombstoned == 1
+
+        state = records.record_state(conn, embedding_id)
+        assert state["state"] == "tombstoned"
+        assert state["vector_ref"] is None
+
+
+def test_pgvector_adapter_and_reconcile_cycle(database):
+    from sensoryplex_index_worker.milvus_store import VectorIndex
+    from sensoryplex_index_worker.reconciliation import reconcile_cycle
+
+    with psycopg.connect(database) as conn:
+        index = VectorIndex(database, KEY, engine="pgvector")
+        index.ensure_collection()
+        assert index.is_shared is True
+        assert index.engine_name == "pgvector"
+
+        embedding_id = stage_ready(conn, revision=1)
+        vector = [0.1] * 512
+        inserted = index.upsert(
+            [
+                {
+                    "embedding_id": embedding_id,
+                    "material_unit_id": MATERIAL,
+                    "material_revision": 1,
+                    "stream_id": STREAM,
+                    "start_ms": 0,
+                    "end_ms": 1000,
+                    "modality": "text_embedding",
+                    "model_release_id": "model_integration",
+                    "observation_id": "obs_index_integration",
+                    "content_hash": DIGEST,
+                    "created_at_unix_ms": 1700000000000,
+                    "vector": vector,
+                }
+            ]
+        )
+        assert inserted == 1
+        assert index.count() == 1
+
+        search_hits = index.search(vector, limit=5)
+        assert len(search_hits) == 1
+        assert search_hits[0]["embedding_id"] == embedding_id
+
+        # 推进新版本，触发废弃
+        insert_material(conn, revision=2)
+
+        # 执行对账与物理 GC
+        outcome = reconcile_cycle(conn, index, batch=10, dry_run=False)
+        assert outcome["candidates_found"] == 1
+        assert outcome["vectors_deleted"] == 1
+        assert outcome["tombstoned_count"] == 1
+        assert index.count() == 0
+
+        state = records.record_state(conn, embedding_id)
+        assert state["state"] == "tombstoned"
+        index.close()

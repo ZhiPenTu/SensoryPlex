@@ -327,3 +327,18 @@ def test_package_exposes_no_publish_entry_point_by_accident():
     """relay 只做"发布"这一跳：包名与对外符号必须一致，不能顺手长出消费循环。"""
     assert sensoryplex_relay.__file__.endswith("sensoryplex_relay/__init__.py")
     assert not hasattr(sensoryplex_relay, "consume")
+
+
+def test_cli_archive_options_and_safety_window():
+    parser = cli.build_parser()
+    args = parser.parse_args(["--archive", "--safety-window-days", "14"])
+    assert args.archive is True
+    assert args.safety_window_days == 14
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["--safety-window-days", "0"])
+    assert exc.value.code == "invalid_safety_window_days"
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["--archive", "--database-url", ""])
+    assert exc.value.code == "database_url_required"

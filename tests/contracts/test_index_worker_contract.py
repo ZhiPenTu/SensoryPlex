@@ -249,3 +249,47 @@ def test_run_failure_document_has_one_stable_reason_code(capsys):
     assert document["error_code"] == "vector_store_locked"
     assert document["indexed"] == []
     assert document["failed"] == [{"observation_id": None, "reason_code": "vector_store_locked"}]
+
+
+# ── 存储引擎适配层与扩展形态契约 ──────────────────────────────────────────
+
+
+def test_vector_ref_supports_pgvector_scheme():
+    reference = vector_ref(KEY, EMBEDDING_ID, scheme="pgvector")
+    assert reference == f"pgvector://{KEY}/{EMBEDDING_ID}"
+    assert parse_vector_ref(reference) == (KEY, EMBEDDING_ID)
+
+
+def test_storage_engine_adapter_classification(monkeypatch):
+    # 服务端形态：不持有本地文件锁，支持共享与多进程水平扩展
+    monkeypatch.setattr("sensoryplex_index_worker.milvus_store.MilvusClient", lambda **kwargs: None)
+    remote_index = VectorIndex("http://127.0.0.1:19530", KEY)
+    assert remote_index.is_shared is True
+    assert remote_index.engine_name == "milvus_server"
+
+    # 本地文件形态：Lite 模式，持有本地 flock 排他锁
+    tmp = tempfile.NamedTemporaryFile(suffix=".db")
+    lite_index = VectorIndex(tmp.name, KEY)
+    assert lite_index.is_shared is False
+    assert lite_index.engine_name == "milvus_lite"
+    tmp.close()
+
+
+def test_cli_subparsers_include_reconcile_and_consume():
+    parser = cli.build_parser()
+    # 验证 consume 命令参数解析
+    consume_args = parser.parse_args(
+        ["consume", "--vector-index-key", KEY, "--consume-batch", "64"]
+    )
+    assert consume_args.command == "consume"
+    assert consume_args.vector_index_key == KEY
+    assert consume_args.consume_batch == 64
+
+    # 验证 reconcile 命令参数解析
+    reconcile_args = parser.parse_args(
+        ["reconcile", "--vector-index-key", KEY, "--once", "--dry-run"]
+    )
+    assert reconcile_args.command == "reconcile"
+    assert reconcile_args.vector_index_key == KEY
+    assert reconcile_args.once is True
+    assert reconcile_args.dry_run is True

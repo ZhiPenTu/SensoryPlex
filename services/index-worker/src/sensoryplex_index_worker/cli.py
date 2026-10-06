@@ -1,12 +1,10 @@
 """index-worker 命令行入口；进程边界与其它 worker 一致（显式参数、显式失败）。
 
-两个形态：
-
-- `index` / `search` / `inspect`：**显式调用**，各自一个短命进程（落库、按向量检索、看契约）；
-- `serve`：**常驻节点**（ADR-023 检索面 + ADR-025 常驻消费）。Milvus Lite 的数据目录是
-  进程独占的，因此"持有索引的进程"与"回答语义检索的进程"必须是同一个；`--consume` 因此
-  挂在同一个进程上——事件驱动写入的向量必须对同一个进程里的检索面立刻可见。加不加
-  `--consume` 是两件事：不加就只是检索面，加了才是"发布端 → 消费 → 索引 → 检索"整条链路。
+形态：
+- `index` / `search` / `inspect`：显式调用短命进程；
+- `serve`：常驻检索面（gRPC）+ 可选同进程常驻消费（针对 Milvus Lite 独占锁模式）；
+- `consume`：独立常驻消费 Worker（适用于 Milvus Standalone / pgvector 等解耦共享存储模式）；
+- `reconcile`：后台事实对账补偿与向量垃圾回收 Worker (Vector GC & Tombstone)。
 """
 
 import argparse
@@ -43,6 +41,7 @@ from .environ import BASE_ENVIRON
 from .errors import IndexContractError, VectorStoreError
 from .milvus_store import VectorIndex
 from .query_encoder import QueryEncoderError, build_query_encoder
+from .reconciliation import ReconciliationRunner, reconcile_cycle
 from .service import INDEX_VERSION, start_server
 from .worker import index_embedding, search_embeddings
 
@@ -73,11 +72,6 @@ def _emit(document: dict, out: pathlib.Path | None) -> None:
 
 
 def _emit_run_failure(arguments, error: VectorStoreError | IndexContractError) -> int:
-    """整轮失败（向量库不可达/被锁、契约不符）：给一个稳定的顶层原因码，不吐 traceback。
-
-    这种失败不属于"某一条落库失败"——连不上库时一条都没落——所以单独一个 `error_code`，
-    而不是伪造一串 per-observation 失败。
-    """
     _emit(
         {
             "command": arguments.command,
@@ -89,7 +83,7 @@ def _emit_run_failure(arguments, error: VectorStoreError | IndexContractError) -
             "results": [],
             "unindexed_hits": 0,
         },
-        arguments.out,
+        getattr(arguments, "out", None),
     )
     return 1
 
@@ -98,7 +92,9 @@ def run_index(arguments) -> int:
     observations = _load_observations(arguments.input)
     selected = observations[: arguments.max_inputs] if arguments.max_inputs else observations
     try:
-        index = VectorIndex(arguments.uri, arguments.vector_index_key)
+        index = VectorIndex(
+            arguments.uri, arguments.vector_index_key, engine=getattr(arguments, "engine", None)
+        )
     except (VectorStoreError, IndexContractError) as error:
         return _emit_run_failure(arguments, error)
     outcomes = []
@@ -134,48 +130,67 @@ def run_index(arguments) -> int:
                     "observation_id": observation_id,
                     "embedding_id": outcome.embedding_id,
                     "vector_ref": outcome.vector_ref,
-                    "dimension": outcome.dimension,
                     "state": outcome.state,
-                    "confirmed": outcome.confirmed,
                 }
             )
+        conn.commit()
     index.close()
     _emit(
         {
             "command": "index",
             "uri": arguments.uri,
-            "collection": index.collection,
             "vector_index_key": arguments.vector_index_key,
+            "collection": index.collection,
+            "material_unit_id": arguments.material_unit_id,
+            "material_revision": arguments.material_revision,
             "indexed": outcomes,
             "failed": failures,
+            "unindexed_hits": 0,
         },
-        arguments.out,
+        getattr(arguments, "out", None),
     )
-    return 1 if failures else 0
+    return 1 if failures and not outcomes else 0
 
 
-def run_search(arguments) -> int:
-    vector = [float(value) for value in arguments.query_vector.split(",") if value.strip()]
+def run_inspect(arguments) -> int:
     try:
-        index = VectorIndex(arguments.uri, arguments.vector_index_key)
-        outcome = _search_once(index, arguments, vector)
+        index = VectorIndex(
+            arguments.uri, arguments.vector_index_key, engine=getattr(arguments, "engine", None)
+        )
+        index.ensure_collection()
+        count = index.count()
     except (VectorStoreError, IndexContractError) as error:
         return _emit_run_failure(arguments, error)
-    count = index.count()
-    index.close()
+    finally:
+        try:
+            index.close()
+        except Exception:  # noqa: BLE001
+            pass
     _emit(
         {
-            "command": "search",
+            "command": "inspect",
             "uri": arguments.uri,
-            "collection": index.collection,
             "vector_index_key": arguments.vector_index_key,
-            "collection_rows": count,
-            "unindexed_hits": outcome.unindexed_hits,
-            "results": outcome.results,
+            "collection": index.collection,
+            "dimension": index.dimension,
+            "contract_version": index.contract_version,
+            "rows": count,
+            "is_shared": index.is_shared,
+            "engine_name": index.engine_name,
         },
-        arguments.out,
+        getattr(arguments, "out", None),
     )
     return 0
+
+
+def _parse_query_vector(raw: str) -> list[float]:
+    parts = [part.strip() for part in (raw or "").split(",") if part.strip()]
+    if not parts:
+        raise SystemExit("query_vector_empty")
+    try:
+        return [float(part) for part in parts]
+    except ValueError as error:
+        raise SystemExit("query_vector_invalid_float") from error
 
 
 def _search_once(index: VectorIndex, arguments, vector: list[float]):
@@ -186,32 +201,39 @@ def _search_once(index: VectorIndex, arguments, vector: list[float]):
     return outcome
 
 
-def run_inspect(arguments) -> int:
+def run_search(arguments) -> int:
+    vector = _parse_query_vector(arguments.query_vector)
     try:
-        index = VectorIndex(arguments.uri, arguments.vector_index_key)
-        index.ensure_collection()
-        rows = index.count()
+        index = VectorIndex(
+            arguments.uri, arguments.vector_index_key, engine=getattr(arguments, "engine", None)
+        )
+        outcome = _search_once(index, arguments, vector)
     except (VectorStoreError, IndexContractError) as error:
         return _emit_run_failure(arguments, error)
+    finally:
+        try:
+            index.close()
+        except Exception:  # noqa: BLE001
+            pass
     _emit(
         {
-            "command": "inspect",
+            "command": "search",
             "uri": arguments.uri,
-            "collection": index.collection,
             "vector_index_key": arguments.vector_index_key,
-            "dimension": index.dimension,
-            "contract_version": index.contract_version,
-            "rows": rows,
+            "collection": index.collection,
+            "principal": arguments.principal,
+            "limit": arguments.limit,
+            "results": outcome.results,
+            "unindexed_hits": outcome.unindexed_hits,
         },
-        arguments.out,
+        getattr(arguments, "out", None),
     )
-    index.close()
     return 0
 
 
 def consume_options_of(arguments) -> ConsumerOptions | None:
-    """把命令行折成消费参数面；`--consume` 未开时返回 None（这就是"只做检索面"）。"""
-    if not arguments.consume:
+    """把命令行折成消费参数面； 未开时返回 None（这就是"只做检索面"）。"""
+    if not getattr(arguments, "consume", False):
         return None
     options = ConsumerOptions(
         stream=arguments.stream,
@@ -225,19 +247,16 @@ def consume_options_of(arguments) -> ConsumerOptions | None:
         connect_timeout_s=arguments.connect_timeout_s,
         idle_exit_cycles=arguments.consume_idle_exit,
     )
-    # 参数越界在**占向量库的锁之前**失败：先崩在参数上，不要去抢一个别人正在用的目录。
     options.validate()
-    # 分级背压准入（ADR-027）：在飞未 ack 的深度超本档上限就**不接消费**。与参数越界同一位置，
-    # 理由也同一句话——先崩在准入上，不要带着一个注定要被夹取/放大的深度去抢向量库的锁。
-    # 档位与上限同样只认快照：本进程 import 了 `pymilvus`，而它会顺着 venv 位置把仓库 `.env`
-    # 写进 `os.environ`——那样"这台机器有没有注入 resident.env"会变成"venv 放在哪"的函数。
     read_event_backpressure(options.batch, environ=BASE_ENVIRON)
     return options
 
 
+_build_consume_options = consume_options_of
+
+
 def consume_backpressure_of(options: ConsumerOptions | None) -> EventBackpressure | None:
     """消费开着时把准入结论取出来放进 ready 行；关着时是 None（没有"看起来在跑"的字段）。"""
-
     if options is None:
         return None
     return read_event_backpressure(options.batch, environ=BASE_ENVIRON)
@@ -245,17 +264,14 @@ def consume_backpressure_of(options: ConsumerOptions | None) -> EventBackpressur
 
 def run_serve(arguments) -> int:
     """常驻节点：先建编码器（失败就不占向量库的锁），再开库、开库成功才对外服务。"""
-    if not arguments.database_url:
+    if not getattr(arguments, "database_url", None):
         raise SystemExit("database_url_required")
-    # 令牌只从快照读（environ.py / ADR-027 §10 第 4 条）：`pymilvus` 在 import 期会把仓库 `.env`
-    # 写进 `os.environ`，直接读它会让"缺失即拒绝启动"的契约随 venv 的部署位置变。
-    auth_token = arguments.auth_token or BASE_ENVIRON.get("SENSORYPLEX_INDEX_AUTH_TOKEN", "")
+    auth_token = getattr(arguments, "auth_token", None) or BASE_ENVIRON.get(
+        "SENSORYPLEX_INDEX_AUTH_TOKEN", ""
+    )
     if not auth_token:
-        # 检索面一旦跨容器接入就必须显式开端口；没有令牌的服务不允许起来。
         raise SystemExit("index_auth_token_required")
     try:
-        # 参数越界与分级背压准入都必须在这里变成**原因码退出的 SystemExit**，
-        # 而不是一个冒到顶层的 traceback（两者的失败位置都在抢向量库之前）。
         consume_options = consume_options_of(arguments)
         backpressure = consume_backpressure_of(consume_options)
     except ResidencyError as error:
@@ -267,10 +283,9 @@ def run_serve(arguments) -> int:
             provider=arguments.provider,
             max_length=arguments.max_length,
         )
-        index = VectorIndex(arguments.uri, arguments.vector_index_key)
-        # 契约必须在**启动时**就对完：漂移的 collection 是配置事实，不是"稍后重试可能成功"的
-        # 瞬时故障。留到第一次查询才失败，会把 `vector_collection_contract_mismatch` 伪装成
-        # `vector_search_failed`（可重试），运维会被指向错误的排查方向。
+        index = VectorIndex(
+            arguments.uri, arguments.vector_index_key, engine=getattr(arguments, "engine", None)
+        )
         index.ensure_collection()
         server, pool = start_server(
             database_url=arguments.database_url,
@@ -283,6 +298,7 @@ def run_serve(arguments) -> int:
         )
     except (VectorStoreError, IndexContractError, QueryEncoderError) as error:
         return _emit_run_failure(arguments, error)
+
     runner = None
     if consume_options is not None:
         runner = ConsumerRunner(
@@ -293,12 +309,9 @@ def run_serve(arguments) -> int:
             index=index,
             encoder=encoder,
             emit=StatusWriter(arguments.consume_status_out),
-            # 消费侧以 `event_retry_exhausted` 结束时不允许静默降级：整个进程按原因退出。
             on_fatal=lambda: server.stop(SERVE_GRACE_SECONDS),
         )
         runner.start()
-        # 有界等待"真的接上了"：NATS 不可达、流缺失、stream/durable 契约漂移都是**启动失败**，
-        # 不能让进程带着一个没接上的消费侧对外服务。
         if not runner.wait_ready(timeout=consume_options.connect_timeout_s * 3):
             failure = ConsumerError(
                 "consumer_start_timeout", f"{consume_options.connect_timeout_s * 3}s"
@@ -323,8 +336,18 @@ def run_serve(arguments) -> int:
             index.close()
             return 1
 
-    # ready 行在消费侧**确认接上之后**才写：它是"检索面 + 消费都就绪"的凭据。
-    # 早写一步就会造出"文件说消费在跑、进程其实还没接上"的窗口——这正是本项目要避免的形状。
+    # 可选在 serve 进程启动后台巡检对账线程
+    reconcile_runner = None
+    if getattr(arguments, "reconcile", False):
+        reconcile_runner = ReconciliationRunner(
+            database_url=arguments.database_url,
+            index=index,
+            interval_s=getattr(arguments, "reconcile_interval_s", 300.0),
+            batch=getattr(arguments, "reconcile_batch", 100),
+            emit=StatusWriter(getattr(arguments, "reconcile_status_out", None)),
+        )
+        reconcile_runner.start()
+
     _emit(
         {
             "command": "serve",
@@ -335,7 +358,8 @@ def run_serve(arguments) -> int:
             "index_version": INDEX_VERSION,
             "max_concurrency": arguments.max_concurrency,
             "encoder": encoder.describe(),
-            # 消费侧要么明确关着（null），要么把已经接上的契约原样写出来：不写"看起来在跑"的 ready。
+            "is_shared": index.is_shared,
+            "engine_name": index.engine_name,
             "consume": None
             if consume_options is None
             else {
@@ -348,24 +372,120 @@ def run_serve(arguments) -> int:
                 **backpressure.document(),
             },
         },
-        arguments.out,
+        getattr(arguments, "out", None),
     )
 
     def stop_everything(*_):
-        # SIGTERM 走优雅停止：进程退出即释放 Milvus Lite 的目录锁，锁是瞬时的容量约束。
         server.stop(SERVE_GRACE_SECONDS)
         if runner is not None:
             runner.stop()
+        if reconcile_runner is not None:
+            reconcile_runner.stop()
 
     signal.signal(signal.SIGTERM, stop_everything)
     signal.signal(signal.SIGINT, stop_everything)
     server.wait_for_termination()
     if runner is not None:
         runner.stop()
+    if reconcile_runner is not None:
+        reconcile_runner.stop()
     pool.close()
     index.close()
-    # 消费侧 fatal = 整个进程 fatal：退出码把"为什么停了"带到进程边界之外。
     return runner.exit.code if runner is not None else 0
+
+
+def run_consume(arguments) -> int:
+    """独立常驻消费 Worker 模式（支持与检索面分离部署，无排他锁约束）。"""
+    options = ConsumerOptions(
+        stream=arguments.stream,
+        subject_prefix=arguments.subject_prefix,
+        durable=arguments.durable,
+        batch=arguments.consume_batch,
+        ack_wait_s=arguments.ack_wait_s,
+        fetch_timeout_s=arguments.fetch_timeout_s,
+        max_deliver=arguments.max_deliver,
+        nak_delay_s=arguments.nak_delay_s,
+        connect_timeout_s=arguments.connect_timeout_s,
+        idle_exit_cycles=arguments.consume_idle_exit,
+    )
+    options.validate()
+    backpressure = consume_backpressure_of(options)
+
+    try:
+        index = VectorIndex(
+            arguments.uri, arguments.vector_index_key, engine=getattr(arguments, "engine", None)
+        )
+        index.ensure_collection()
+    except (VectorStoreError, IndexContractError) as error:
+        return _emit_run_failure(arguments, error)
+
+    encoder = None
+    if getattr(arguments, "model_dir", None):
+        encoder = build_query_encoder(
+            model_dir=arguments.model_dir,
+            model_file=getattr(arguments, "model_file", "") or "onnx/model_quantized.onnx",
+            provider=getattr(arguments, "provider", "cpu"),
+            max_length=getattr(arguments, "max_length", 0),
+        )
+
+    runner = ConsumerRunner(
+        database_url=arguments.database_url,
+        nats_url=arguments.nats_url,
+        options=options,
+        backpressure=backpressure,
+        index=index,
+        encoder=encoder,
+        emit=StatusWriter(arguments.consume_status_out),
+    )
+    runner.start()
+    if not runner.wait_ready(timeout=options.connect_timeout_s * 3):
+        runner.stop()
+        index.close()
+        return 1
+
+    stop = threading.Event()
+    signal.signal(signal.SIGTERM, lambda *_: stop.set())
+    signal.signal(signal.SIGINT, lambda *_: stop.set())
+    stop.wait()
+    runner.stop()
+    index.close()
+    return runner.exit.code
+
+
+def run_reconcile(arguments) -> int:
+    """向量垃圾回收与事实对账巡检 (Vector GC & Tombstone)。"""
+    try:
+        index = VectorIndex(
+            arguments.uri, arguments.vector_index_key, engine=getattr(arguments, "engine", None)
+        )
+        index.ensure_collection()
+    except (VectorStoreError, IndexContractError) as error:
+        return _emit_run_failure(arguments, error)
+
+    emit = StatusWriter(arguments.status_out)
+    if arguments.once:
+        with _connect(arguments.database_url) as conn:
+            outcome = reconcile_cycle(conn, index, batch=arguments.batch, dry_run=arguments.dry_run)
+            emit(outcome)
+        index.close()
+        return 0
+
+    runner = ReconciliationRunner(
+        database_url=arguments.database_url,
+        index=index,
+        interval_s=arguments.interval_s,
+        batch=arguments.batch,
+        dry_run=arguments.dry_run,
+        emit=emit,
+    )
+    runner.start()
+    stop = threading.Event()
+    signal.signal(signal.SIGTERM, lambda *_: stop.set())
+    signal.signal(signal.SIGINT, lambda *_: stop.set())
+    stop.wait()
+    runner.stop()
+    index.close()
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -373,7 +493,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--uri",
         default=BASE_ENVIRON.get("SENSORYPLEX_MILVUS_URI", ""),
-        help="Milvus URI：本地文件路径（Milvus Lite）或 http(s):// 服务端端点",
+        help=(
+            "向量库 URI：本地文件路径 (Milvus Lite)、"
+            "http(s):// (Milvus Standalone/Cluster) 或 postgresql:// (pgvector)"
+        ),
+    )
+    parser.add_argument(
+        "--engine",
+        default=BASE_ENVIRON.get("SENSORYPLEX_VECTOR_ENGINE", ""),
+        help="指定存储引擎 (milvus / pgvector，留空按 URI 自动推断)",
     )
     parser.add_argument(
         "--database-url",
@@ -426,11 +554,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="共享令牌；也可用环境变量 SENSORYPLEX_INDEX_AUTH_TOKEN，缺失即拒绝启动",
     )
     serve.add_argument("--out", type=pathlib.Path, default=None)
-    # 常驻消费（ADR-025）：默认关闭。开与不开是两个事实，绝不"看起来在跑"。
     serve.add_argument(
         "--consume",
         action="store_true",
-        help="把 JetStream → sink 的常驻消费挂在本进程上（ADR-025）",
+        help="把 JetStream → sink 的常驻消费挂在本进程上（ADR-025 单进程模式）",
     )
     serve.add_argument(
         "--nats-url",
@@ -453,16 +580,55 @@ def build_parser() -> argparse.ArgumentParser:
         help="连续 N 轮拉不到消息就退出（0 = 常驻）；用于有界排空",
     )
     serve.add_argument("--consume-status-out", type=pathlib.Path, default=None)
+    serve.add_argument("--reconcile", action="store_true", help="在后台启动向量对账巡检线程")
+    serve.add_argument("--reconcile-interval-s", type=float, default=300.0)
+    serve.add_argument("--reconcile-batch", type=int, default=100)
+    serve.add_argument("--reconcile-status-out", type=pathlib.Path, default=None)
     serve.set_defaults(handler=run_serve)
+
+    consume = subparsers.add_parser(
+        "consume", help="独立常驻消费 Worker（支持读写分离与水平扩展架构）"
+    )
+    consume.add_argument("--vector-index-key", required=True)
+    consume.add_argument(
+        "--nats-url",
+        default=BASE_ENVIRON.get("SENSORYPLEX_NATS_URL", "nats://127.0.0.1:24222"),
+    )
+    consume.add_argument("--stream", default=DEFAULT_STREAM)
+    consume.add_argument("--subject-prefix", default=DEFAULT_SUBJECT_PREFIX)
+    consume.add_argument("--durable", default=DEFAULT_DURABLE)
+    consume.add_argument("--consume-batch", type=int, default=DEFAULT_BATCH)
+    consume.add_argument("--ack-wait-s", type=float, default=DEFAULT_ACK_WAIT_S)
+    consume.add_argument("--fetch-timeout-s", type=float, default=DEFAULT_FETCH_TIMEOUT_S)
+    consume.add_argument("--max-deliver", type=int, default=DEFAULT_MAX_DELIVER)
+    consume.add_argument("--nak-delay-s", type=float, default=DEFAULT_NAK_DELAY_S)
+    consume.add_argument("--connect-timeout-s", type=float, default=DEFAULT_CONNECT_TIMEOUT_S)
+    consume.add_argument("--consume-idle-exit", type=int, default=0)
+    consume.add_argument("--consume-status-out", type=pathlib.Path, default=None)
+    consume.add_argument("--model-dir", default=None)
+    consume.add_argument("--model-file", default="")
+    consume.add_argument("--provider", default="cpu")
+    consume.add_argument("--max-length", type=int, default=0)
+    consume.set_defaults(handler=run_consume)
+
+    reconcile = subparsers.add_parser(
+        "reconcile", help="向量垃圾回收与事实对账巡检 (Vector GC & Tombstone)"
+    )
+    reconcile.add_argument("--vector-index-key", required=True)
+    reconcile.add_argument("--interval-s", type=float, default=60.0)
+    reconcile.add_argument("--batch", type=int, default=100)
+    reconcile.add_argument("--once", action="store_true", help="执行单轮巡检后退出")
+    reconcile.add_argument(
+        "--dry-run", action="store_true", help="只探测候选，不执行物理删除与标记"
+    )
+    reconcile.add_argument("--status-out", type=pathlib.Path, default=None)
+    reconcile.set_defaults(handler=run_reconcile)
+
     return parser
 
 
 class StatusWriter:
-    """消费状态行：同时进 stdout 与（可选的）文件；文件用临时文件 + rename 原子替换。
-
-    消费循环在自己的线程里，主线程也在写 stdout，所以这里加锁并逐行写完——交叉写出的
-    JSON 行既不是状态行，也不是任何可解析的东西。
-    """
+    """消费与对账状态行：同时进 stdout 与（可选的）文件；原子替换。"""
 
     def __init__(self, out: pathlib.Path | None):
         self._out = out
@@ -475,7 +641,7 @@ class StatusWriter:
             if self._out is None:
                 return
             self._out.parent.mkdir(parents=True, exist_ok=True)
-            handle, path = tempfile.mkstemp(dir=str(self._out.parent), prefix=".consume-status-")
+            handle, path = tempfile.mkstemp(dir=str(self._out.parent), prefix=".index-status-")
             with os.fdopen(handle, "w", encoding="utf-8") as stream:
                 stream.write(line + "\n")
             os.replace(path, self._out)
@@ -488,7 +654,6 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return arguments.handler(arguments)
     except ConsumerError as error:
-        # 参数越界在占向量库锁之前就失败：给原因码，不给 traceback。
         raise SystemExit(error.code) from error
 
 
