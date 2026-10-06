@@ -254,3 +254,75 @@ def test_recording_a_consumption_does_not_require_the_event_to_be_published(data
         assert outbox_row(conn, event_id)[0] is True
         assert records.record_consumed(conn, event_id=event_id, consumer_name=CONSUMER) is True
         assert records.is_consumed(conn, event_id=event_id, consumer_name=CONSUMER) is True
+
+
+def test_outbox_archival_and_purge_lifecycle(database):
+    """已确认发布且超过安全窗口的事件与任务被移至归档表，未发布与近期事件保留。"""
+    from sensoryplex_relay.archival import archive_and_purge_outbox
+
+    with psycopg.connect(database) as conn:
+        # 1. 插入 event_outbox:
+        # - evt_old: 10 天前已发布 (应该被归档)
+        # - evt_recent: 2 天前已发布 (应该保留)
+        # - evt_pending: 10 天前未发布 (应该保留)
+        conn.execute(
+            """
+            INSERT INTO event_outbox
+                (event_id, event_type, contract_bytes, published_at, created_at)
+            VALUES
+                ('evt_old', 'test.event', %s,
+                 now() - interval '10 days', now() - interval '10 days'),
+                ('evt_recent', 'test.event', %s,
+                 now() - interval '2 days', now() - interval '2 days'),
+                ('evt_pending', 'test.event', %s,
+                 NULL, now() - interval '10 days')
+            """,
+            (b"bytes1", b"bytes2", b"bytes3"),
+        )
+
+        # 2. 插入 enrichment_task_outbox:
+        # - task_old: 10 天前已发布
+        # - task_recent: 2 天前已发布
+        conn.execute(
+            """
+            INSERT INTO enrichment_task_outbox
+                (event_id, task_id, contract_bytes, published_at, created_at)
+            VALUES
+                ('task_old', 't1', %s,
+                 now() - interval '10 days', now() - interval '10 days'),
+                ('task_recent', 't2', %s,
+                 now() - interval '2 days', now() - interval '2 days')
+            """,
+            (b"bytes4", b"bytes5"),
+        )
+
+        # 执行 7 天安全窗口归档
+        result = archive_and_purge_outbox(conn, safety_window_days=7)
+        assert result["status"] == "ok"
+        assert result["archived_events"] == 1
+        assert result["archived_enrichments"] == 1
+
+        # 检查主表残留
+        remaining_events = {
+            row[0] for row in conn.execute("SELECT event_id FROM event_outbox").fetchall()
+        }
+        assert remaining_events == {"evt_recent", "evt_pending"}
+
+        remaining_tasks = {
+            row[0] for row in conn.execute("SELECT event_id FROM enrichment_task_outbox").fetchall()
+        }
+        assert remaining_tasks == {"task_recent"}
+
+        # 检查归档表记录
+        archived_events = {
+            row[0] for row in conn.execute("SELECT event_id FROM event_outbox_archive").fetchall()
+        }
+        assert archived_events == {"evt_old"}
+
+        archived_tasks = {
+            row[0]
+            for row in conn.execute(
+                "SELECT event_id FROM enrichment_task_outbox_archive"
+            ).fetchall()
+        }
+        assert archived_tasks == {"task_old"}

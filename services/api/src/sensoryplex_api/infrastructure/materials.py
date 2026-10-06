@@ -230,13 +230,18 @@ def append_material(conn, material: MaterialUnit, *, trace_id: str, execution_id
             created_at_unix_ms=material.created_at_unix_ms,
             schema_version=1,
         )
-        conn.execute(
+        updated = conn.execute(
             (
-                "INSERT INTO event_outbox(event_id,event_type,contract_bytes) VALUES (%s,%s,%s) "
-                "ON CONFLICT (event_id) DO UPDATE SET contract_bytes=EXCLUDED.contract_bytes"
+                "UPDATE event_outbox SET contract_bytes=%s, event_type=%s "
+                "WHERE event_id=%s RETURNING event_id"
             ),
-            (event_id, event.event_type, event.SerializeToString(deterministic=True)),
-        )
+            (event.SerializeToString(deterministic=True), event.event_type, event_id),
+        ).fetchone()
+        if not updated:
+            conn.execute(
+                "INSERT INTO event_outbox(event_id,event_type,contract_bytes) VALUES (%s,%s,%s)",
+                (event_id, event.event_type, event.SerializeToString(deterministic=True)),
+            )
         return True
 
 

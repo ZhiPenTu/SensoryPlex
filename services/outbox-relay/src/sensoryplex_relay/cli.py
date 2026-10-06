@@ -6,6 +6,7 @@
   结束（exit 1），不留下"连上了但什么都不做"的半启动状态；
 - stream 契约漂移、NATS 元数据不可用：打印一条 JSON 错误行并以 exit 1 结束；
 - 常驻形态收到 SIGTERM/SIGINT：优雅收尾（当前一轮结束后退出，exit 0），不吞掉未发布的事件。
+- 支持 `--archive` 执行已发布历史事件的生命周期归档与定点清理。
 """
 
 import argparse
@@ -17,8 +18,10 @@ import sys
 import tempfile
 import threading
 
+import psycopg
 from edge_material_sdk import get_logger
 
+from .archival import archive_and_purge_outbox
 from .relay import (
     DEFAULT_BATCH,
     DEFAULT_STREAM,
@@ -63,6 +66,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--describe", action="store_true", help="只打印目标（凭据已抹除）与参数，然后退出"
     )
+    parser.add_argument(
+        "--archive", action="store_true", help="执行已确认发布的历史事件归档与清理 (TTL 策略)"
+    )
+    parser.add_argument(
+        "--safety-window-days", type=int, default=7, help="归档安全窗口天数 (默认 7 天)"
+    )
     return parser
 
 
@@ -86,6 +95,17 @@ class StatusWriter:
 
 def main(argv: list[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
+    if arguments.safety_window_days < 1:
+        raise SystemExit("invalid_safety_window_days")
+
+    if arguments.archive:
+        if not arguments.database_url:
+            raise SystemExit("database_url_required")
+        with psycopg.connect(arguments.database_url) as conn:
+            result = archive_and_purge_outbox(conn, arguments.safety_window_days)
+            print(json_line({"event": "outbox.archived", **result}))
+        return 0
+
     options = RelayOptions(
         stream=arguments.stream,
         subject_prefix=arguments.subject_prefix,
