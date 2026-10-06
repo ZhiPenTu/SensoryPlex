@@ -35,3 +35,7 @@ video/
 .agents/
 .vscode/
 .mcp.json
+
+# 会话与内存临时文件
+:memory:.ses
+*.ses
