@@ -34,41 +34,34 @@ SensoryPlex/
 ├── config/             # 预置流水线 DAG 配置
 ├── skills/             # AI 智能体技能定义 (Claude/Codex Skill)
 ├── tests/              # 自动化测试套件 (契约测试 tests/contracts + 集成测试 tests/integration)
-└── tools/              # 宿主原生 Worker、构建生成、运维工具与验收测试脚本 (68个文件)
+└── tools/              # 辅助工具与执行器分类目录 (含透明兼容 Shim)
+    ├── codegen/        # 契约编译与数据库迁移 (4 文件)
+    ├── workers/        # 宿主守护与任务执行器 (12 文件)
+    ├── ops/            # 插件部署、运维与常驻管理 (7 文件)
+    ├── media/          # 媒体探测与时序辅助 (5 文件)
+    ├── verify/         # 端到端 ADR 验收测试套件 (37 文件)
+    └── <shims>.py      # 根目录保留 65 个透明兼容 Shim，保障 Makefile/CI/导入无感
 ```
 
 ---
 
-## 2. 存在的问题与代码坏味道 (Issues & Smells)
+## 2. 治理成果与实施设计 (Implementation & Hygiene)
 
-1. **临时与会话文件误提交**：
-   - 根目录下曾存在 `:memory:.ses` 临时会话文件，需清理并完善 `.gitignore` 规则。
-2. **`tools/` 目录扁平膨胀**：
-   - 包含 68 个工具文件，涵盖了从一次性测试、代码生成、运维工具到生产级常驻守护进程（如 `task_executor.py`、`vlm_task_worker.py`）。
-   - 新贡献者难以区分脚本的使用场景与执行边界。
-3. **根目录文档归纳**：
-   - 根目录下的历史规范文档（如 `开放式插件开发文档.md`、`技术选型ADR与V1实施蓝图.md`）承载了大量历史 ADR 与规范引用，未来应平滑纳入 `docs/` 或保持明确索引，避免根目录混乱。
-4. **服务与插件的依赖隔离**：
-   - 绝大多数服务位于同一个 `uv` 工作区，但 `mcp-server` 是独立工作区，需保持边界清晰，防止产生跨模块非法依赖。
+### 2.1 根目录卫生治理
+- [x] 物理清除根目录下误提交的 `:memory:.ses` 临时会话文件；
+- [x] 在 `.gitignore` 中完善 `:memory:.ses` 与 `*.ses` 规则。
+
+### 2.2 `tools/` 物理子目录化归整
+- [x] 将原 65 个工具脚本全量归档至 5 个职责单一的子目录（`codegen/`、`workers/`、`ops/`、`media/`、`verify/`）；
+- [x] 调整各子目录脚本中的相对根路径计算（`.parents[1]` -> `.parents[2]`），支持子目录下直接执行；
+- [x] 在原 `tools/` 路径部署透明兼容 Shim：
+  - 基于 Python `sys.modules[__name__] = _target_module` 别名技术，实现外部符号静态导入、私有方法访问与 monkeypatch 的 100% 状态透传；
+  - 命令行入口支持 `main()` 转发与 `runpy.run_path` 兼容回退。
 
 ---
 
-## 3. 整理与重构方案 (Refactoring Roadmap)
+## 3. 验证情况 (Verification)
 
-### 阶段一：即时治理与清晰索引 (Phase 1: Immediate Hygiene)
-- [x] 删除根目录历史提交的 `:memory:.ses` 文件；
-- [x] 在 `.gitignore` 中加入 `:memory:.ses` 与 `*.ses` 规则；
-- [x] 新增 `tools/README.md`，对 `tools/` 下 68 个工具建立职责分类与执行上下文矩阵（构建生成、宿主工作器、节点Agent、运维脚本、37项验证套件）；
-- [x] 确立代码评审体系与功能模块规范。
-
-### 阶段二：`tools/` 子目录化与 Shim 兼容 (Phase 2: Gradual Subdirectory Restructuring)
-- 将脚本渐进拆分到子目录中：
-  - `tools/codegen/`: `generate_proto.py`, `generate_console_types.py`, `migrate.py`, `configure.py`
-  - `tools/workers/`: `task_executor.py`, `task_worker.py`, `vlm_task_worker.py`, `node_agent*.py`
-  - `tools/verify/`: `verify_*.py`, `smoke_*.py`
-  - `tools/ops/`: `setup_mcp.py`, `macos_resident.py`, `prune_installations.py`
-- 为避免破坏现有 `Makefile` 和自动化脚本，在原路径保留轻量级转发入口（Shim），实现无缝平滑迁移。
-
-### 阶段三：长远模块化收敛 (Phase 3: Module Packaging)
-- 将 `node_agent.py` 与 `task_executor.py` 等核心生产级 Worker 进一步打包为结构化的 Python Package（如 `services/node-agent`）；
-- 将 `verify_*.py` 逐步对接到统一的测试运行器（如 pytest 插件或定制 test runner）。
+- **静态检查**：容器内 `make lint-ruff` 100% 通过（405 files clean，零违规）；
+- **契约测试**：容器内 `make test-contracts` 100% 通过（492 项契约测试全部 passed）；
+- **文档构建**：容器内 `make docs-check` 100% 通过。

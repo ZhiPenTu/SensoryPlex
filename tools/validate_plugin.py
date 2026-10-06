@@ -1,31 +1,22 @@
-"""仅做结构化预检，绝不导入或执行插件代码。"""
+"""Compatibility shim forwarding to tools.ops.validate_plugin."""
 
-import argparse
-import json
+from __future__ import annotations
+
+import runpy
+import sys
 from pathlib import Path
 
-import yaml
-from jsonschema import Draft202012Validator
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
-ROOT = Path(__file__).resolve().parents[1]
+import tools.ops.validate_plugin as _target_module  # noqa: E402
 
-
-def validate(path: Path):
-    schema = json.loads((ROOT / "docs/contracts/plugin.schema.json").read_text())
-    Draft202012Validator.check_schema(schema)
-    errors = list(Draft202012Validator(schema).iter_errors(yaml.safe_load(path.read_text())))
-    for error in errors:
-        # ValidationError.message 可能包含传入的密钥；只打印字段与规则。
-        print(f"invalid field: {'.'.join(map(str, error.absolute_path))}; rule: {error.validator}")
-    return not errors
-
+sys.modules[__name__] = _target_module
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("manifest", type=Path)
-    arguments = parser.parse_args()
-    if not validate(arguments.manifest):
-        raise SystemExit(1)
-    print(
-        "Manifest structure valid; signature, digest, runtime compatibility and policy not verified"
-    )
+    if hasattr(_target_module, "main"):
+        sys.exit(_target_module.main())
+    else:
+        target_path = str(Path(__file__).parent / "ops" / "validate_plugin.py")
+        runpy.run_path(target_path, run_name="__main__")

@@ -1,24 +1,22 @@
-"""生成本地凭据，不会覆盖已有设置，也不会把密钥写入日志。"""
+"""Compatibility shim forwarding to tools.codegen.configure."""
 
-import os
-import secrets
+from __future__ import annotations
+
+import runpy
+import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-path = ROOT / ".env"
-if path.exists():
-    print("Existing .env preserved")
-else:
-    password, token = secrets.token_urlsafe(32), secrets.token_urlsafe(48)
-    template = (ROOT / ".env.example").read_text()
-    content = template.replace("REPLACE_WITH_RANDOM_URL_SAFE_SECRET", password).replace(
-        "REPLACE_WITH_RANDOM_API_TOKEN", token
-    )
-    content = content.replace("REPLACE_WITH_RANDOM_MINIO_SECRET", secrets.token_urlsafe(32))
-    # 检索面的令牌在 .env 里有两个名字（检索面读 AUTH_TOKEN，api 读 SEARCH_TOKEN）：
-    # 一次 replace 把同一个随机值写进这两处，避免出现"两个名字两把锁"。
-    content = content.replace("REPLACE_WITH_RANDOM_INDEX_TOKEN", secrets.token_urlsafe(48))
-    descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    with os.fdopen(descriptor, "w") as file:
-        file.write(content)
-    print("Created .env with private permissions and random local credentials")
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+import tools.codegen.configure as _target_module  # noqa: E402
+
+sys.modules[__name__] = _target_module
+
+if __name__ == "__main__":
+    if hasattr(_target_module, "main"):
+        sys.exit(_target_module.main())
+    else:
+        target_path = str(Path(__file__).parent / "codegen" / "configure.py")
+        runpy.run_path(target_path, run_name="__main__")

@@ -1,20 +1,22 @@
-"""终止旧的 LaunchAgent 插件进程，让 launchd 以更新后的代码重新拉起。"""
+"""Compatibility shim forwarding to tools.ops.restart_plugins."""
 
-import os
-import signal
-import time
+from __future__ import annotations
 
-for pid in [85425, 18194]:
-    try:
-        os.kill(pid, signal.SIGTERM)
-        print(f"Terminated {pid}")
-    except OSError as e:
-        print(f"Error {pid}: {e}")
+import runpy
+import sys
+from pathlib import Path
 
-time.sleep(2)
-for pid in [85425, 18194]:
-    try:
-        os.kill(pid, 0)
-        print(f"Warning: {pid} still alive")
-    except OSError:
-        print(f"Confirmed: {pid} exited")
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+import tools.ops.restart_plugins as _target_module  # noqa: E402
+
+sys.modules[__name__] = _target_module
+
+if __name__ == "__main__":
+    if hasattr(_target_module, "main"):
+        sys.exit(_target_module.main())
+    else:
+        target_path = str(Path(__file__).parent / "ops" / "restart_plugins.py")
+        runpy.run_path(target_path, run_name="__main__")
