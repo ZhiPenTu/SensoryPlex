@@ -1,9 +1,12 @@
 import { useMemo } from 'react';
 import { Card, Col, Progress, Row, Space, Tag, Typography } from 'antd';
 import {
-    CheckCircleFilled,
-    CloseCircleFilled,
+    AppstoreOutlined,
+    ClusterOutlined,
     DashboardOutlined,
+    HddOutlined,
+    InfoCircleOutlined,
+    ThunderboltOutlined,
 } from '@ant-design/icons';
 import type { NodeInfo } from '../api/contracts';
 
@@ -13,20 +16,32 @@ interface NodeResourceHologramProps {
     nodes: NodeInfo[];
 }
 
-function formatBytes(bytes?: string | number): string {
+export function formatBytes(bytes?: string | number): string {
     const n = Number(bytes || 0);
     if (!n) return '0 GB';
-    return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+    const gb = n / (1024 * 1024 * 1024);
+    if (gb >= 1) return `${gb.toFixed(1)} GB`;
+    const mb = n / (1024 * 1024);
+    return `${mb.toFixed(0)} MB`;
 }
 
 export default function NodeResourceHologram({ nodes }: NodeResourceHologramProps) {
-    const { totalCores, totalMemoryBytes, readyCount, coLocatedCount, totalSlots, activeSlots } = useMemo(() => {
+    const {
+        totalCores,
+        totalMemoryBytes,
+        readyCount,
+        coLocatedCount,
+        totalSlots,
+        activeSlots,
+        instanceCount,
+    } = useMemo(() => {
         let cores = 0;
         let mem = 0;
         let ready = 0;
         let coLocated = 0;
         let slots = 0;
         let active = 0;
+        let instances = 0;
 
         for (const node of nodes) {
             if (node.status === 'NODE_STATUS_READY') ready++;
@@ -34,9 +49,10 @@ export default function NodeResourceHologram({ nodes }: NodeResourceHologramProp
             const c = Number(node.capabilities?.cpu_cores || 0);
             cores += c;
             mem += Number(node.capabilities?.memory_bytes || 0);
-            // 每个 CPU 核心默认承载 2 个并发任务槽位
+            // 每个 CPU 核心默认承载 2 个并发任务槽位（最低保证 2 槽位）
             slots += Math.max(2, c * 2);
-            active += (node.instances?.length || 0);
+            active += node.instances?.length || 0;
+            instances += node.instances?.length || 0;
         }
 
         return {
@@ -46,151 +62,250 @@ export default function NodeResourceHologram({ nodes }: NodeResourceHologramProp
             coLocatedCount: coLocated,
             totalSlots: slots,
             activeSlots: active,
+            instanceCount: instances,
         };
     }, [nodes]);
 
+    const loadPercent = totalSlots > 0 ? Math.round((activeSlots / totalSlots) * 100) : 0;
+    const healthPercent = nodes.length > 0 ? Math.round((readyCount / nodes.length) * 100) : 100;
+
     return (
         <Card
-            size="small"
+            className="node-overview-card"
             style={{
-                marginBottom: 20,
-                background: 'linear-gradient(135deg, #0f172a 0%, #1e293b 100%)',
-                borderColor: '#334155',
-                color: '#f8fafc',
-                boxShadow: '0 4px 12px rgba(15, 23, 42, 0.15)',
+                marginBottom: 16,
+                borderRadius: 10,
+                border: '1px solid var(--sp-border, #e2e8f0)',
+                background: '#ffffff',
+                boxShadow: '0 1px 3px rgba(15, 23, 42, 0.04)',
             }}
-            bodyStyle={{ padding: '16px 20px' }}
+            styles={{ body: { padding: '16px 20px' } }}
         >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-                <Space size={8}>
-                    <DashboardOutlined style={{ color: '#38bdf8', fontSize: 18 }} />
-                    <span style={{ fontSize: 15, fontWeight: 700, color: '#f8fafc', letterSpacing: '0.5px' }}>
-                        集群算力全息负载实时看板
-                    </span>
-                    <Tag color="cyan" style={{ border: 'none', background: '#0369a1', color: '#e0f2fe' }}>
-                        ADR-029 P3 拓扑观测面
-                    </Tag>
+            <div
+                style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    marginBottom: 16,
+                    flexWrap: 'wrap',
+                    gap: 10,
+                }}
+            >
+                <Space size={10} align="center">
+                    <div
+                        style={{
+                            width: 32,
+                            height: 32,
+                            borderRadius: 8,
+                            background: '#eff6ff',
+                            border: '1px solid #dbeafe',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            color: '#2563eb',
+                            fontSize: 16,
+                        }}
+                    >
+                        <DashboardOutlined />
+                    </div>
+                    <div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <span style={{ fontSize: 15, fontWeight: 700, color: '#0f172a' }}>
+                                集群算力全息负载看板
+                            </span>
+                            <Tag
+                                color="blue"
+                                bordered={false}
+                                style={{
+                                    fontSize: 11,
+                                    padding: '1px 8px',
+                                    borderRadius: 4,
+                                    background: '#eff6ff',
+                                    color: '#1d4ed8',
+                                    fontWeight: 500,
+                                }}
+                            >
+                                ADR-029 P3 拓扑观测面
+                            </Tag>
+                        </div>
+                    </div>
                 </Space>
-                <div style={{ fontSize: 12, color: '#94a3b8' }}>
-                    集群节点: <Text strong style={{ color: '#38bdf8' }}>{readyCount}</Text> / {nodes.length} 在线
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, fontSize: 12 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span
+                            style={{
+                                width: 8,
+                                height: 8,
+                                borderRadius: '50%',
+                                background: healthPercent === 100 ? '#10b981' : '#f59e0b',
+                                display: 'inline-block',
+                            }}
+                        />
+                        <span style={{ color: '#64748b' }}>集群在线率:</span>
+                        <Text
+                            strong
+                            style={{ color: healthPercent === 100 ? '#059669' : '#d97706' }}
+                        >
+                            {healthPercent}%
+                        </Text>
+                        <span style={{ color: '#94a3b8' }}>
+                            ({readyCount} / {nodes.length} 在线)
+                        </span>
+                    </div>
+                    <span style={{ color: '#cbd5e1' }}>|</span>
+                    <span style={{ color: '#94a3b8' }}>心跳每 4 秒实时同步</span>
                 </div>
             </div>
 
-            {/* 顶部四联关键指标条 */}
-            <Row gutter={[16, 12]} style={{ marginBottom: 16 }}>
-                <Col xs={12} sm={6}>
-                    <div style={{ background: '#1e293b', padding: '10px 14px', borderRadius: 8, border: '1px solid #334155' }}>
-                        <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 2 }}>健康拓扑节点</div>
-                        <div style={{ fontSize: 20, fontWeight: 700, color: '#38bdf8' }}>
-                            {readyCount} <span style={{ fontSize: 12, color: '#64748b', fontWeight: 400 }}>/ {nodes.length}</span>
-                        </div>
-                        <div style={{ fontSize: 10, color: '#10b981', marginTop: 2 }}>
-                            {coLocatedCount} 个同机数据面
-                        </div>
-                    </div>
-                </Col>
-
-                <Col xs={12} sm={6}>
-                    <div style={{ background: '#1e293b', padding: '10px 14px', borderRadius: 8, border: '1px solid #334155' }}>
-                        <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 2 }}>总算力核心 (CPU)</div>
-                        <div style={{ fontSize: 20, fontWeight: 700, color: '#f1f5f9' }}>
-                            {totalCores} <span style={{ fontSize: 12, color: '#64748b', fontWeight: 400 }}>Cores</span>
-                        </div>
-                        <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 2 }}>
-                            支持 Metal / CUDA 硬件加速
-                        </div>
-                    </div>
-                </Col>
-
-                <Col xs={12} sm={6}>
-                    <div style={{ background: '#1e293b', padding: '10px 14px', borderRadius: 8, border: '1px solid #334155' }}>
-                        <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 2 }}>统一/物理内存池</div>
-                        <div style={{ fontSize: 20, fontWeight: 700, color: '#f1f5f9' }}>
-                            {formatBytes(totalMemoryBytes)}
-                        </div>
-                        <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 2 }}>
-                            动态门禁与水位保护
-                        </div>
-                    </div>
-                </Col>
-
-                <Col xs={12} sm={6}>
-                    <div style={{ background: '#1e293b', padding: '10px 14px', borderRadius: 8, border: '1px solid #334155' }}>
-                        <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 2 }}>当前在飞任务槽位</div>
-                        <div style={{ fontSize: 20, fontWeight: 700, color: activeSlots > 0 ? '#38bdf8' : '#f1f5f9' }}>
-                            {activeSlots} <span style={{ fontSize: 12, color: '#64748b', fontWeight: 400 }}>/ {totalSlots}</span>
-                        </div>
-                        <Progress
-                            percent={totalSlots > 0 ? Math.round((activeSlots / totalSlots) * 100) : 0}
-                            size="small"
-                            showInfo={false}
-                            strokeColor="#0284c7"
-                            trailColor="#334155"
-                            style={{ margin: 0 }}
-                        />
-                    </div>
-                </Col>
-            </Row>
-
-            {/* 算力节点全息网格 */}
+            {/* 核心指标 4 联卡片 */}
             <Row gutter={[12, 12]}>
-                {nodes.map((node) => {
-                    const isReady = node.status === 'NODE_STATUS_READY';
-                    const isCoLocated = node.is_co_located;
-                    const accelerators = node.capabilities?.accelerators || [];
-                    const accelText = accelerators.length
-                        ? accelerators.map((a) => a.accelerator).join(', ')
-                        : 'CPU Host';
+                <Col xs={24} sm={12} lg={6}>
+                    <div className="node-metric-box">
+                        <div className="node-metric-top">
+                            <span className="node-metric-label">健康拓扑节点</span>
+                            <div
+                                className="node-metric-icon"
+                                style={{ color: '#2563eb', background: '#eff6ff' }}
+                            >
+                                <ClusterOutlined />
+                            </div>
+                        </div>
+                        <div className="node-metric-value">
+                            <span className="node-metric-number" style={{ color: '#2563eb' }}>
+                                {readyCount}
+                            </span>
+                            <span className="node-metric-total">/ {nodes.length} 台</span>
+                        </div>
+                        <div className="node-metric-footer">
+                            <span style={{ color: '#059669', fontWeight: 500 }}>
+                                {coLocatedCount} 个同机数据面
+                            </span>
+                            <span style={{ color: '#94a3b8' }}>·</span>
+                            <span style={{ color: '#64748b' }}>
+                                {Math.max(0, nodes.length - coLocatedCount)} 远程节点
+                            </span>
+                        </div>
+                    </div>
+                </Col>
 
-                    return (
-                        <Col key={node.node_id} xs={24} sm={12} md={8}>
+                <Col xs={24} sm={12} lg={6}>
+                    <div className="node-metric-box">
+                        <div className="node-metric-top">
+                            <span className="node-metric-label">总算力核心 (CPU)</span>
+                            <div
+                                className="node-metric-icon"
+                                style={{ color: '#0284c7', background: '#f0f9ff' }}
+                            >
+                                <ThunderboltOutlined />
+                            </div>
+                        </div>
+                        <div className="node-metric-value">
+                            <span className="node-metric-number">{totalCores}</span>
+                            <span className="node-metric-total">Cores</span>
+                        </div>
+                        <div className="node-metric-footer">
+                            <span style={{ color: '#64748b' }}>
+                                支持 Metal / CUDA / CoreML 加速
+                            </span>
+                        </div>
+                    </div>
+                </Col>
+
+                <Col xs={24} sm={12} lg={6}>
+                    <div className="node-metric-box">
+                        <div className="node-metric-top">
+                            <span className="node-metric-label">统一/物理内存池</span>
+                            <div
+                                className="node-metric-icon"
+                                style={{ color: '#059669', background: '#f0fdf4' }}
+                            >
+                                <HddOutlined />
+                            </div>
+                        </div>
+                        <div className="node-metric-value">
+                            <span className="node-metric-number">
+                                {formatBytes(totalMemoryBytes)}
+                            </span>
+                        </div>
+                        <div className="node-metric-footer">
+                            <span style={{ color: '#059669' }}>动态门禁与水位保护已启用</span>
+                        </div>
+                    </div>
+                </Col>
+
+                <Col xs={24} sm={12} lg={6}>
+                    <div className="node-metric-box">
+                        <div className="node-metric-top">
+                            <span className="node-metric-label">在飞任务槽位与负载</span>
+                            <div
+                                className="node-metric-icon"
+                                style={{ color: '#d97706', background: '#fffbeb' }}
+                            >
+                                <AppstoreOutlined />
+                            </div>
+                        </div>
+                        <div className="node-metric-value">
+                            <span
+                                className="node-metric-number"
+                                style={{ color: activeSlots > 0 ? '#2563eb' : '#0f172a' }}
+                            >
+                                {activeSlots}
+                            </span>
+                            <span className="node-metric-total">/ {totalSlots} 槽位</span>
+                        </div>
+                        <div style={{ marginTop: 6 }}>
+                            <Progress
+                                percent={loadPercent}
+                                size="small"
+                                showInfo={false}
+                                strokeColor={
+                                    loadPercent > 80
+                                        ? '#dc2626'
+                                        : loadPercent > 50
+                                          ? '#d97706'
+                                          : '#2563eb'
+                                }
+                                trailColor="#e2e8f0"
+                                style={{ margin: 0 }}
+                            />
                             <div
                                 style={{
-                                    background: '#1e293b',
-                                    border: isReady ? '1px solid #0284c7' : '1px solid #334155',
-                                    borderRadius: 6,
-                                    padding: '10px 12px',
-                                    boxShadow: isReady ? '0 0 10px rgba(2, 132, 199, 0.15)' : 'none',
+                                    display: 'flex',
+                                    justifyContent: 'space-between',
+                                    fontSize: 11,
+                                    color: '#64748b',
+                                    marginTop: 3,
                                 }}
                             >
-                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                    <Space size={6}>
-                                        {isReady ? (
-                                            <CheckCircleFilled style={{ color: '#10b981' }} />
-                                        ) : (
-                                            <CloseCircleFilled style={{ color: '#94a3b8' }} />
-                                        )}
-                                        <Text strong style={{ color: '#f8fafc', fontSize: 13 }}>
-                                            {node.node_id}
-                                        </Text>
-                                    </Space>
-                                    <Tag
-                                        color={isCoLocated ? 'cyan' : 'blue'}
-                                        style={{ marginInlineEnd: 0, fontSize: 10 }}
-                                    >
-                                        {isCoLocated ? '同机数据面' : '远端节点'}
-                                    </Tag>
-                                </div>
-
-                                <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6, display: 'flex', justifyContent: 'space-between' }}>
-                                    <span>平台: {node.capabilities?.platform || 'macOS'} ({node.capabilities?.arch || 'arm64'})</span>
-                                    <span>核心: {node.capabilities?.cpu_cores || 8} 核</span>
-                                </div>
-
-                                <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4, display: 'flex', justifyContent: 'space-between' }}>
-                                    <span>内存: {formatBytes(node.capabilities?.memory_bytes)}</span>
-                                    <span style={{ color: '#38bdf8' }}>{accelText}</span>
-                                </div>
-
-                                <div style={{ marginTop: 8, paddingTop: 6, borderTop: '1px solid #334155', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 10, color: '#64748b' }}>
-                                    <span>状态: {node.status.replace('NODE_STATUS_', '')}</span>
-                                    <span style={{ color: '#10b981' }}>心跳正常 · 租约受控</span>
-                                </div>
+                                <span>{loadPercent}% 槽位占用</span>
+                                <span>{instanceCount} 个模型实例</span>
                             </div>
-                        </Col>
-                    );
-                })}
+                        </div>
+                    </div>
+                </Col>
             </Row>
+
+            <div
+                style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    padding: '8px 12px',
+                    background: '#f8fafc',
+                    borderRadius: 6,
+                    border: '1px solid #f1f5f9',
+                    fontSize: 12,
+                    color: '#475569',
+                    marginTop: 14,
+                }}
+            >
+                <InfoCircleOutlined style={{ color: '#2563eb', flexShrink: 0 }} />
+                <span>
+                    <strong>架构隔离与调度原则：</strong>管理面 (Control Plane) 与执行面 (Worker)
+                    物理隔离；通过双向心跳与动态准入，任务仅下发至可调度的同机或受控局域网节点。
+                </span>
+            </div>
         </Card>
     );
 }
