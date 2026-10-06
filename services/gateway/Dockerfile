@@ -1,7 +1,24 @@
+FROM python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9 AS wheelhouse
+WORKDIR /wheelhouse
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip wheel --wheel-dir=/wheelhouse \
+        "grpcio>=1.71,<1.72" \
+        "protobuf>=5.29,<6" \
+        numpy \
+        "scipy>=1.11" \
+        "onnxruntime>=1.23,<2" \
+        "tokenizers>=0.22,<1" \
+        "rapidocr>=3.9,<4" \
+        "pymilvus>=2.6,<3" \
+        "milvus-lite>=2.4" \
+        "nats-py>=2.9,<3"
+
 FROM python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 UV_LINK_MODE=copy
 WORKDIR /app
 COPY --from=ghcr.io/astral-sh/uv@sha256:73d2665b478d8fa2de1cf105c6841f8e9cb6b09e568fc7700440c09f8fcd7ac4 /uv /usr/local/bin/uv
+COPY --from=wheelhouse /wheelhouse /wheelhouse
+ENV UV_FIND_LINKS=/wheelhouse
 COPY pyproject.toml uv.lock ./
 COPY plugins/python plugins/python
 COPY services/api services/api
