@@ -73,7 +73,8 @@ SRT 实时接入（M4）同样可用：`ingest` 在有限窗口内拉流、解�
 
 ## 快速开始
 
-需要 Rust 1.96、Python 3.12、uv 和 Docker Compose v2。目标平台为 `macos-aarch64`
+底座开发需要 Docker Compose v2，Rust 1.96、Python 3.12 等底座工具链在容器内执行；
+宿主原生 Worker 的 uv、Python 与本平台构建工具按对应验收链路准备。目标平台为 `macos-aarch64`
 （Apple Silicon，含 Mac mini 端侧部署）与 `linux-x86_64`（NVIDIA 性能主线）；macOS 侧
 加速进程需原生运行，容器无法访问 Metal/CoreML。
 
@@ -84,7 +85,8 @@ SRT 实时接入（M4）同样可用：`ingest` 在有限窗口内拉流、解�
 集成测试只由带数据库的 job 覆盖。
 
 GitHub Actions 仅保留手动触发，不会因 `push` 或 PR 自动消耗托管 runner 额度。日常门禁在本机完成：
-底座 Python/Node 验证仍通过容器执行，Rust 与 macOS 硬件验证按工程约束使用宿主工具链。需要独立的
+底座 Python/Node 验证通过容器执行，Rust 底座构建与验证默认使用专用 `rust` 容器；macOS 硬件验证与
+宿主原生执行器所需构建按 `AGENTS.md` 的边界使用宿主工具链。需要独立的
 远端复核时，在 Actions 的 **Run workflow** 手动运行；只有勾选 `run_apple_silicon` 才会启动计费较高的
 macOS 作业。未执行的远端 macOS 作业不能表述为已通过。
 

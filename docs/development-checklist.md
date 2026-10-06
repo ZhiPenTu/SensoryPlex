@@ -8,7 +8,7 @@
 
 - 状态只使用：`未开始`、`进行中`、`验证中`、`已完成`、`受阻`。只有真实执行完验收并把证据补入 `docs/verification.md` 后，才能勾选完成。
 - 任何跨进程字段先改 `proto/`，再运行 `make proto`；数据库变更只能追加迁移。不得以健康检查、跳过测试、合成业务成功数据或页面可打开替代验收。
-- Python、前端、集成和事件链路验证在 Compose 容器内执行；Rust/Cargo 与依赖宿主硬件的媒体/模型验收仅按 `AGENTS.md` 的既定例外在主机运行。
+- Python、前端、集成和事件链路验证在 Compose 容器内执行；Rust 底座构建与验证默认在 `rust` 容器执行，依赖宿主硬件的媒体/模型验收与原生执行器所需构建按 `AGENTS.md` 的既定边界在主机运行。
 - 完成条目时同步更新本文件、`implementation-status.md` 与 `verification.md`。未实现能力必须继续暴露明确的 unavailable/blocker/error 语义。
 
 ## 当前基线（已核对）

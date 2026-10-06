@@ -30,19 +30,21 @@ SensoryPlex treats video analysis as an immutable multimodal timeline:
 
 When the user asks about something inside a video (e.g. "What did the speaker say about architecture?", "Find the slide showing the benchmark chart"):
 
-1. **Check System Readiness**:
-   - If not yet checked in this session, call `get_system_status` to see if vector semantic search is available (`semantic_search: true`).
+Reuse authenticated material evidence already available for the same source, execution, and question scope; query only facts or references that are missing.
+
+1. **Check Capabilities When Needed**:
+   - Call `get_system_status` when capability information is needed to choose a search mode or diagnose a failure. `semantic_search: true` reports configuration; the search response establishes whether the requested search works.
 2. **Search Materials**:
    - Call `search_materials`:
      - If the user asks for exact terms, names, or code snippets, use `mode='keyword'`.
-     - If the user asks conceptual or descriptive questions, use `mode='semantic'` (fallback to `keyword` if semantic search reports unavailable).
-     - Specify time boundaries `start_ms` / `end_ms` if the user provided an approximate window.
+     - If the user asks conceptual or descriptive questions, use `mode='semantic'`. Report failures with their reason and retryability; change to keyword only when the user's intent or existing authorization permits it, and explicitly label the changed mode.
+     - Keyword mode supports `start_ms` / `end_ms`; semantic mode currently accepts only `query` and `limit`. Do not silently drop requested filters or change an explicitly requested mode. If filtering retrieved semantic candidates satisfies the request, disclose that filtering happens after retrieval and does not establish exhaustive coverage of the requested window; otherwise report the limitation.
 3. **Inspect Detailed Observations**:
    - If bounding boxes or high-confidence verification is needed, call `get_material_detail` using the returned `material_unit_id`.
 4. **Present Findings with Timestamp Grounding**:
    - Always quote the exact time range (e.g., `00:03:14 - 00:03:22`).
    - Mention the modality source (e.g., `[ASR 语音转写]` or `[OCR 屏幕文字]`).
-   - Provide a playable stream link via `get_playback_info` so the user can verify the moment in one click.
+   - Follow the playback-link guidance below when clip review helps verify the answer.
 
 ### 2. Video Playback & Clip Verification
 
@@ -54,21 +56,26 @@ When the user wants to watch a video clip or confirm a search result:
 
 ### 3. Video Processing & Job Ingestion
 
-When the user wants to process a new video or check job progress:
+For a new video processing request:
 
-1. **List Assets**: Call `list_media_assets` to locate the target `asset_id`.
-2. **List Pipelines**: Call `list_pipelines` to choose a suitable pipeline (such as the default `OCR+Timeline` pipeline).
-3. **Submit Job Run**: Call `submit_job_run(asset_id=..., pipeline_id=...)`.
-4. **Track Progress**: Call `get_job_run_status(run_id=...)`.
-   - `ready_for_review`: Fast-path OCR/ASR completed; materials are immediately searchable and reviewable!
-   - `succeeded`: Full execution complete, including background VLM enrichments if applicable.
-5. **Inspect Coverage**: Call `get_timeline_coverage(execution_id=...)` to inspect the 1-second grid completion status.
+1. **Resolve Assets and Pipelines**: Reuse known `asset_id` and `pipeline_id`; call `list_media_assets` or `list_pipelines` only for missing identifiers or a needed pipeline choice.
+2. **Submit Job Run**: Call `submit_job_run(asset_id=..., pipeline_id=...)` within the user's requested processing scope.
+
+Retain the returned identifiers and inspect execution status after submission. An accepted submission is not completed processing; continue to the requested review or execution outcome under the monitoring rule below, and label pending work explicitly if that outcome has not been reached.
+
+For an existing job progress request, call `get_job_run_status` with its known identifier; do not submit a new job merely to inspect progress.
+
+- Prefer `execution_id` to include fast-path and delayed-enrichment status. `run_id` alone reports the orchestration Run and its tasks; its success does not establish delayed-enrichment completion.
+- `ready_for_review`: Fast-path facts are available for review; delayed enrichment may remain pending. This state does not establish semantic index readiness, which requires separate index or search evidence.
+- `succeeded` / `succeeded_with_partial_enrichment`: Execution reached a terminal outcome; report partial-enrichment failures explicitly. Report `failed` or `cancelled` as those outcomes, without treating them as success.
+- For a progress request, return the current snapshot. For fast-path review, use available facts without waiting for VLM. Track full completion only when the requested outcome requires it, using a bounded monitoring period; report unresolved work when that period ends and stop on failure or cancellation.
+- Call `get_timeline_coverage(execution_id=...)` when coverage is requested or needed to verify a completeness claim.
 
 ### 4. Cluster Health & Diagnostic Inspection
 
 When troubleshooting performance or checking worker nodes:
 1. Call `list_nodes` to inspect active compute nodes, platform architectures, and hardware accelerators (e.g. Apple Silicon Metal, NVIDIA CUDA, CoreML).
-2. If an edge node is pending approval, call `approve_candidate_node(node_id=...)`.
+2. Report pending candidate nodes during inspection. Call `approve_candidate_node(node_id=...)` only when the user's request or existing session authorization includes accepting that node, subject to the API's `plugins:manage` permission requirement. Existing authorization does not require another confirmation.
 
 ---
 
@@ -76,4 +83,4 @@ When troubleshooting performance or checking worker nodes:
 
 - **Strict Temporal Integrity**: Never guess timestamps or synthesize observations. If an event or word is not found, report that clearly.
 - **Bilingual Support**: Present summaries and explanations in the user's preferred language (Chinese or English), while preserving technical IDs, field names, and time formats.
-- **Verifiable Links**: Include the stream URL from `get_playback_info` whenever citing specific video intervals.
+- **Verifiable Links**: Reuse an existing playback reference or call `get_playback_info` when playback is requested or helps verify the answer. Keep source IDs, modality, and exact time ranges for cited facts. A generated URL alone does not prove playback succeeded; identify local-only links as such.
