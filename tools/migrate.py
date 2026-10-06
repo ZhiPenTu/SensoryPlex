@@ -1,45 +1,22 @@
-"""显式 PostgreSQL 迁移，采用事务锁与校验和检查。"""
+"""Compatibility shim forwarding to tools.codegen.migrate."""
 
-import hashlib
-import os
+from __future__ import annotations
+
+import runpy
+import sys
 from pathlib import Path
 
-import psycopg
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
-ROOT = Path(__file__).resolve().parents[1]
+import tools.codegen.migrate as _target_module  # noqa: E402
 
-
-def migrate(database_url: str):
-    with psycopg.connect(database_url) as conn:
-        conn.execute("SELECT pg_advisory_xact_lock(826504120)")
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS schema_migration (
-                version text PRIMARY KEY, checksum text NOT NULL,
-                applied_at timestamptz NOT NULL DEFAULT now()
-            )
-        """)
-        applied = dict(conn.execute("SELECT version, checksum FROM schema_migration").fetchall())
-        migrations = sorted((ROOT / "db/migrations").glob("[0-9]*.sql"))
-        if set(applied) - {path.stem for path in migrations}:
-            raise RuntimeError("database_has_unknown_migrations")
-        for path in migrations:
-            checksum = hashlib.sha256(path.read_bytes()).hexdigest()
-            if path.stem in applied:
-                if applied[path.stem] != checksum:
-                    raise RuntimeError(f"migration_checksum_mismatch: {path.stem}")
-                continue
-            conn.execute(path.read_text())
-            conn.execute(
-                "INSERT INTO schema_migration(version, checksum) VALUES (%s, %s)",
-                (path.stem, checksum),
-            )
-            print(f"Applied {path.stem}")
-
+sys.modules[__name__] = _target_module
 
 if __name__ == "__main__":
-    from sensoryplex_gateway.settings import Settings
-
-    url = os.environ.get("SENSORYPLEX_DATABASE_URL")
-    if not url:
-        url = Settings().database_url.get_secret_value()
-    migrate(url)
+    if hasattr(_target_module, "main"):
+        sys.exit(_target_module.main())
+    else:
+        target_path = str(Path(__file__).parent / "codegen" / "migrate.py")
+        runpy.run_path(target_path, run_name="__main__")

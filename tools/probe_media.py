@@ -1,37 +1,22 @@
-"""检视已授权的本地媒体，绝不输出合成观测。"""
+"""Compatibility shim forwarding to tools.media.probe_media."""
 
-import argparse
-import hashlib
-import json
-import subprocess
+from __future__ import annotations
+
+import runpy
+import sys
 from pathlib import Path
 
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
-def probe(path: Path):
-    with path.open("rb") as file:
-        digest = hashlib.file_digest(file, "sha256").hexdigest()
-    result = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration,format_name:stream=index,codec_type,codec_name,width,height,sample_rate",
-            "-of",
-            "json",
-            str(path.resolve()),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    if result.returncode:
-        raise RuntimeError("media_probe_failed")
-    return {"content_hash": "sha256:" + digest, "probe": json.loads(result.stdout)}
+import tools.media.probe_media as _target_module  # noqa: E402
 
+sys.modules[__name__] = _target_module
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("path", type=Path)
-    args = parser.parse_args()
-    print(json.dumps(probe(args.path), ensure_ascii=False, indent=2))
+    if hasattr(_target_module, "main"):
+        sys.exit(_target_module.main())
+    else:
+        target_path = str(Path(__file__).parent / "media" / "probe_media.py")
+        runpy.run_path(target_path, run_name="__main__")

@@ -1,51 +1,22 @@
-"""启动隔离栈的宿主原生 Node Agent 与通用补全 Worker。"""
+"""Compatibility shim forwarding to tools.workers.run_native_workers."""
 
-import os
-import subprocess
+from __future__ import annotations
 
+import runpy
+import sys
+from pathlib import Path
 
-def main():
-    root = str(Path(__file__).resolve().parents[1])
-    env = dict(
-        os.environ,
-        PYTHONPATH=f"{root}:{root}/plugins/python/common/src",
-        SENSORYPLEX_RUNTIME_BIN="/Users/tuzhipeng/Documents/SensoryPlex/target/release/sensoryplex-runtime",
-        PYTHONUNBUFFERED="1",
-        SENSORYPLEX_NO_GL="1",
-    )
-    py = "/Users/tuzhipeng/Documents/SensoryPlex-plugin-examples/.venv/bin/python"
-    state = ".data/plugin-v2-acceptance/agent/local-host.json"
-    log1 = open("/tmp/agent-final.log", "w")
-    log2 = open("/tmp/enrichment-worker.log", "w")
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
-    p1 = subprocess.Popen(
-        [py, "-m", "tools.node_agent", "run", "--node-id", "local-host", "--state-file", state],
-        env=env,
-        stdout=log1,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
+import tools.workers.run_native_workers as _target_module  # noqa: E402
 
-    p2 = subprocess.Popen(
-        [
-            py,
-            "-m",
-            "tools.enrichment_worker",
-            "--state-file",
-            state,
-            "--nats-url",
-            "nats://127.0.0.1:34222",
-        ],
-        env=env,
-        stdout=log2,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
-
-    print(f"Started native Agent PID: {p1.pid}, Worker PID: {p2.pid}")
-
+sys.modules[__name__] = _target_module
 
 if __name__ == "__main__":
-    from pathlib import Path
-
-    main()
+    if hasattr(_target_module, "main"):
+        sys.exit(_target_module.main())
+    else:
+        target_path = str(Path(__file__).parent / "workers" / "run_native_workers.py")
+        runpy.run_path(target_path, run_name="__main__")
