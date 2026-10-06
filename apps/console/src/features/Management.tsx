@@ -53,6 +53,7 @@ import type {
 import { Badge, date, Empty, ErrorNotice, Heading, Loading, Modal, Notice } from '../components';
 import { usePermission, useSession } from '../session';
 import PluginGraph from './PluginGraph';
+import ScenarioPackages from './ScenarioPackages';
 
 const { Text } = Typography;
 
@@ -861,7 +862,7 @@ function PipelineDetailModal({ pipeline, onClose }: { pipeline: Pipeline; onClos
     );
 }
 
-export function Pipelines() {
+function PipelineTemplatesView() {
     const cache = useQueryClient();
     const [offset, setOffset] = useState(0);
     const [open, setOpen] = useState(false);
@@ -1396,6 +1397,34 @@ export function Pipelines() {
                 </Modal>
             ) : null}
         </div>
+    );
+}
+
+export function Pipelines() {
+    return (
+        <Tabs
+            defaultActiveKey="packages"
+            items={[
+                {
+                    key: 'packages',
+                    label: (
+                        <span style={{ fontWeight: 600 }}>
+                            <ApartmentOutlined /> 场景化产品包 (ADR-029 P3)
+                        </span>
+                    ),
+                    children: <ScenarioPackages />,
+                },
+                {
+                    key: 'templates',
+                    label: (
+                        <span style={{ fontWeight: 600 }}>
+                            <BranchesOutlined /> 编排方案模板 (DAG Pipelines)
+                        </span>
+                    ),
+                    children: <PipelineTemplatesView />,
+                },
+            ]}
+        />
     );
 }
 

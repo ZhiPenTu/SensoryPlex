@@ -45,6 +45,7 @@ import {
     StatSummary,
 } from '../components';
 import PluginPruneModal from './PluginPruneModal';
+import NodeResourceHologram from './NodeResourceHologram';
 
 const { Text } = Typography;
 
@@ -237,6 +238,9 @@ export default function Nodes() {
                     purgeMutation.error
                 }
             />
+
+            {/* 集群算力全息负载实时看板 (ADR-029 P3) */}
+            <NodeResourceHologram nodes={activeNodes} />
 
             {/* 候选待接纳节点专区 */}
             {candidates.length > 0 ? (

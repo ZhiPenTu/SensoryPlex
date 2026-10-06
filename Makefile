@@ -17,7 +17,7 @@ EXEC_MODE     ?= container
 
 ifeq ($(EXEC_MODE),container)
 # 容器入口固定使用同一 compose 文件与 .env；执行时一律 -T 去除 TTY 染色。
-COMPOSE       = docker compose --env-file .env -f deploy/compose/docker-compose.poc.yml
+COMPOSE       = docker compose --project-directory . --env-file .env -f deploy/compose/docker-compose.poc.yml
 EXEC_API      = $(COMPOSE) exec -T api
 EXEC_GATEWAY  = $(COMPOSE) exec -T gateway
 EXEC_CONSOLE  = $(COMPOSE) exec -T console
@@ -68,7 +68,7 @@ OUTBOX_NATS   ?= $(if $(filter container,$(EXEC_MODE)),nats://nats:4222,nats://1
 # 集成测试（EXEC_TEST）连的 NATS：与 OUTBOX_NATS 同一套推导。
 TEST_NATS_URL ?= $(if $(filter container,$(EXEC_MODE)),nats://nats:4222,nats://127.0.0.1:24222)
 
-.PHONY: setup configure proto check test integration format infra up down migrate gateway runtime pipeline-check orchestration-check orchestration-p1-check orchestration-p2-check runtime-smoke gateway-smoke media-replay media-check handoff-check backpressure-check
+.PHONY: setup configure proto check test integration format infra up down migrate gateway runtime pipeline-check orchestration-check orchestration-p1-check orchestration-p2-check orchestration-p3-check runtime-smoke gateway-smoke media-replay media-check handoff-check backpressure-check
 .PHONY: stream-up stream-down stream-status stream-logs live-check model-check asr-check ocr-check embed-check index-check semantic-check parallelism-check plugin-artifact capability-check accelerator-check
 .PHONY: outbox-check outbox-run
 .PHONY: node-check golden-path-check task-worker task-worker-daemon task-worker-stop task-worker-status
@@ -193,6 +193,9 @@ orchestration-p1-check:
 
 orchestration-p2-check:
 	$(EXEC_API) $(PY_API) tools/verify_orchestration_multinode.py
+
+orchestration-p3-check:
+	$(EXEC_API) $(PY_API) tools/verify_orchestration_p3.py
 
 runtime-smoke:
 	$(CARGO_HOST) build --locked -p sensoryplex-runtime

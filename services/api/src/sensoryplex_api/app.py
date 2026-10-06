@@ -26,6 +26,7 @@ from .interfaces import (
     orchestration,
     plugin_deploy,
     plugin_registry,
+    scenario_packages,
 )
 from .settings import Settings
 
@@ -323,6 +324,7 @@ def create_app(settings: Settings | None = None):
     plugin_deploy.register(app, pool, auth, settings)
     plugin_registry.register(app, pool, auth, settings)
     orchestration.register(app, pool, auth, settings)
+    scenario_packages.register(app, pool, auth, settings)
     dist = settings.console_dist.resolve()
     if (dist / "static").is_dir():
         app.mount("/static", StaticFiles(directory=dist / "static"), name="console-assets")

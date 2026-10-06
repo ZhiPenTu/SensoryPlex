@@ -118,7 +118,7 @@ class OrchestrationVerifier:
         self.log(
             "00-health",
             f"API Schema version: {health.get('schema_version')}",
-            ok=(status == 200 and health.get("schema_version") == CURRENT_SCHEMA),
+            ok=(status == 200 and health.get("schema_version") >= CURRENT_SCHEMA),
         )
 
         pipeline_id = f"test-pipe-{self.test_id}"

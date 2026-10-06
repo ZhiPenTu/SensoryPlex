@@ -11,6 +11,7 @@ import {
     Select,
     Space,
     Table,
+    Tabs,
     Tag,
     Typography,
 } from 'antd';
@@ -23,7 +24,12 @@ import {
     CheckCircleOutlined,
     SyncOutlined,
     CloseCircleOutlined,
+    ClusterOutlined,
+    FieldTimeOutlined,
+    TableOutlined,
 } from '@ant-design/icons';
+import ExecutionGanttChart from './ExecutionGanttChart';
+import ExecutionTopologySwimlane from './ExecutionTopologySwimlane';
 import { Link } from 'react-router-dom';
 import { api, post } from '../api/client';
 import type { JobDraft, JobDraftList, JsonObject, PipelineList, UploadList } from '../api/contracts';
@@ -105,7 +111,7 @@ function ExecutionDetails({ job, onClose }: { job: JobDraft; onClose: () => void
 
     const data = detail.data;
     return (
-        <Modal title="编排执行详情" onClose={onClose} width={920}>
+        <Modal title="编排执行详情" onClose={onClose} width={1020}>
             <ErrorNotice error={detail.error} />
             {detail.isPending ? (
                 <Loading tip="正在读取不可变 Revision、任务和执行回执…" />
@@ -153,89 +159,135 @@ function ExecutionDetails({ job, onClose }: { job: JobDraft; onClose: () => void
                         </Notice>
                     ) : null}
 
-                    <Card
-                        size="small"
-                        title={`任务事实（${data.tasks.length}）`}
-                        extra={<Space size={[2, 2]} wrap>{taskCountTags(data.execution.modality_summary)}</Space>}
-                        bodyStyle={{ padding: 0 }}
-                    >
-                        <Table
-                            size="small"
-                            rowKey={(task) => `${task.task_id}:${task.attempt}`}
-                            pagination={false}
-                            dataSource={data.tasks}
-                            columns={[
-                                { title: '节点', dataIndex: 'node_id', key: 'node_id' },
-                                {
-                                    title: '要求',
-                                    dataIndex: 'required',
-                                    key: 'required',
-                                    width: 90,
-                                    render: (required: boolean) => (
-                                        <Tag color={required ? 'blue' : 'default'}>
-                                            {required ? '必需' : '慢路径'}
-                                        </Tag>
-                                    ),
-                                },
-                                {
-                                    title: '尝试',
-                                    key: 'attempt',
-                                    width: 100,
-                                    render: (_: unknown, task: ExecutionTask) =>
-                                        `${task.attempt}/${task.max_attempts}`,
-                                },
-                                {
-                                    title: '状态',
-                                    dataIndex: 'state',
-                                    key: 'state',
-                                    render: (state: string) => (
-                                        <Badge state={state === 'pending' ? 'task_pending' : state} />
-                                    ),
-                                },
-                                {
-                                    title: '原因',
-                                    dataIndex: 'reason_code',
-                                    key: 'reason_code',
-                                    render: (reason?: string) => reason || '—',
-                                },
-                            ]}
-                        />
-                    </Card>
+                    <Tabs
+                        defaultActiveKey="gantt"
+                        items={[
+                            {
+                                key: 'gantt',
+                                label: (
+                                    <span style={{ fontWeight: 600 }}>
+                                        <FieldTimeOutlined /> 执行甘特图 (ADR-029 P3)
+                                    </span>
+                                ),
+                                children: (
+                                    <ExecutionGanttChart
+                                        execution={data.execution}
+                                        tasks={data.tasks}
+                                        receipts={data.receipts}
+                                    />
+                                ),
+                            },
+                            {
+                                key: 'swimlane',
+                                label: (
+                                    <span style={{ fontWeight: 600 }}>
+                                        <ClusterOutlined /> 阶段拓扑泳道
+                                    </span>
+                                ),
+                                children: (
+                                    <ExecutionTopologySwimlane
+                                        tasks={data.tasks}
+                                        receipts={data.receipts}
+                                    />
+                                ),
+                            },
+                            {
+                                key: 'details',
+                                label: (
+                                    <span style={{ fontWeight: 600 }}>
+                                        <TableOutlined /> 任务事实与回执明细
+                                    </span>
+                                ),
+                                children: (
+                                    <Space direction="vertical" size={14} style={{ width: '100%' }}>
+                                        <Card
+                                            size="small"
+                                            title={`任务事实（${data.tasks.length}）`}
+                                            extra={<Space size={[2, 2]} wrap>{taskCountTags(data.execution.modality_summary)}</Space>}
+                                            bodyStyle={{ padding: 0 }}
+                                        >
+                                            <Table
+                                                size="small"
+                                                rowKey={(task) => `${task.task_id}:${task.attempt}`}
+                                                pagination={false}
+                                                dataSource={data.tasks}
+                                                columns={[
+                                                    { title: '节点', dataIndex: 'node_id', key: 'node_id' },
+                                                    {
+                                                        title: '要求',
+                                                        dataIndex: 'required',
+                                                        key: 'required',
+                                                        width: 90,
+                                                        render: (required: boolean) => (
+                                                            <Tag color={required ? 'blue' : 'default'}>
+                                                                {required ? '必需' : '慢路径'}
+                                                            </Tag>
+                                                        ),
+                                                    },
+                                                    {
+                                                        title: '尝试',
+                                                        key: 'attempt',
+                                                        width: 100,
+                                                        render: (_: unknown, task: ExecutionTask) =>
+                                                            `${task.attempt}/${task.max_attempts}`,
+                                                    },
+                                                    {
+                                                        title: '状态',
+                                                        dataIndex: 'state',
+                                                        key: 'state',
+                                                        render: (state: string) => (
+                                                            <Badge state={state === 'pending' ? 'task_pending' : state} />
+                                                        ),
+                                                    },
+                                                    {
+                                                        title: '原因',
+                                                        dataIndex: 'reason_code',
+                                                        key: 'reason_code',
+                                                        render: (reason?: string) => reason || '—',
+                                                    },
+                                                ]}
+                                            />
+                                        </Card>
 
-                    <Card size="small" title={`不可变执行回执（${data.receipts.length}）`} bodyStyle={{ padding: 0 }}>
-                        <Table
-                            size="small"
-                            rowKey={(receipt) => `${receipt.task_id}:${receipt.attempt}`}
-                            pagination={false}
-                            dataSource={data.receipts}
-                            columns={[
-                                { title: '插件', dataIndex: 'plugin_id', key: 'plugin_id' },
-                                {
-                                    title: '输入 / 输出',
-                                    key: 'io',
-                                    width: 120,
-                                    render: (_: unknown, receipt: ExecutionReceipt) =>
-                                        `${receipt.input_count} / ${receipt.output_count}`,
-                                },
-                                {
-                                    title: '结果',
-                                    dataIndex: 'reason_code',
-                                    key: 'reason_code',
-                                    render: (reason?: string) => reason || '成功',
-                                },
-                                {
-                                    title: '摘要',
-                                    dataIndex: 'receipt_digest',
-                                    key: 'receipt_digest',
-                                    render: (digest: string) => (
-                                        <span className="mono" style={{ fontSize: 11 }}>
-                                            {digest.slice(0, 22)}…
-                                        </span>
-                                    ),
-                                },
-                            ]}
-                        />
-                    </Card>
+                                        <Card size="small" title={`不可变执行回执（${data.receipts.length}）`} bodyStyle={{ padding: 0 }}>
+                                            <Table
+                                                size="small"
+                                                rowKey={(receipt) => `${receipt.task_id}:${receipt.attempt}`}
+                                                pagination={false}
+                                                dataSource={data.receipts}
+                                                columns={[
+                                                    { title: '插件', dataIndex: 'plugin_id', key: 'plugin_id' },
+                                                    {
+                                                        title: '输入 / 输出',
+                                                        key: 'io',
+                                                        width: 120,
+                                                        render: (_: unknown, receipt: ExecutionReceipt) =>
+                                                            `${receipt.input_count} / ${receipt.output_count}`,
+                                                    },
+                                                    {
+                                                        title: '结果',
+                                                        dataIndex: 'reason_code',
+                                                        key: 'reason_code',
+                                                        render: (reason?: string) => reason || '成功',
+                                                    },
+                                                    {
+                                                        title: '摘要',
+                                                        dataIndex: 'receipt_digest',
+                                                        key: 'receipt_digest',
+                                                        render: (digest: string) => (
+                                                            <span className="mono" style={{ fontSize: 11 }}>
+                                                                {digest.slice(0, 22)}…
+                                                            </span>
+                                                        ),
+                                                    },
+                                                ]}
+                                            />
+                                        </Card>
+                                    </Space>
+                                ),
+                            },
+                        ]}
+                    />
                 </Space>
             ) : null}
         </Modal>

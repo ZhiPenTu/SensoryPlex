@@ -26,6 +26,29 @@ VALID_JOINS = {"same_item", "same_stream_window", "window_contains"}
 TERMINAL_TASK_STATES = {"succeeded", "failed", "cancelled", "blocked"}
 
 
+def _emit_tasks_ready_event(conn, run_id: str, task_ids: list[str]) -> str | None:
+    """向事务性 event_outbox 追加 tasks.ready 广播事件，由 relay 发布至 JetStream 唤醒 Worker。"""
+    if not task_ids:
+        return None
+    from edge_material_sdk.generated.common.v1.common_pb2 import EventEnvelope
+
+    event_id = identifier("evt")
+    envelope = EventEnvelope(
+        event_id=event_id,
+        event_type="tasks.ready",
+        stream_id=run_id,
+        trace_id="",
+        payload_ref=f"{run_id}:{','.join(task_ids)}",
+        created_at_unix_ms=int(time.time() * 1000),
+        schema_version=1,
+    )
+    conn.execute(
+        "INSERT INTO event_outbox(event_id,event_type,contract_bytes) VALUES (%s,%s,%s)",
+        (event_id, "tasks.ready", envelope.SerializeToString(deterministic=True)),
+    )
+    return event_id
+
+
 def validate_and_normalize_graph(
     nodes: list[dict[str, Any]], edges: list[dict[str, Any]]
 ) -> tuple[bool, list[str], str, list[str], dict[str, Any]]:
@@ -479,6 +502,10 @@ def submit_pipeline_run(
                 e.get("required", True),
             ),
         )
+
+    ready_task_ids = [t["task_id"] for t in created_tasks if t["state"] == "ready"]
+    if ready_task_ids:
+        _emit_tasks_ready_event(conn, run_id, ready_task_ids)
 
     audit(conn, owner, "pipeline.run.submit", run_id)
 
@@ -1173,6 +1200,9 @@ def report_task_result(
                 if unlocked:
                     unlocked_task_ids.append(unlocked["task_id"])
 
+        if unlocked_task_ids:
+            _emit_tasks_ready_event(conn, run_id, unlocked_task_ids)
+
         execution_state = _sync_console_execution(conn, run_id)
         remaining = conn.execute(
             "SELECT count(*) FROM pipeline_task WHERE run_id=%s "
@@ -1293,7 +1323,10 @@ def release_retry_wait_tasks(conn) -> list[str]:
         RETURNING task_id
         """,
     )
-    return [r["task_id"] for r in released]
+    task_ids = [r["task_id"] for r in released]
+    if task_ids:
+        _emit_tasks_ready_event(conn, "retry_batch", task_ids)
+    return task_ids
 
 
 def reconcile_and_recover_leases(conn) -> dict[str, Any]:
@@ -1390,6 +1423,9 @@ def reconcile_and_recover_leases(conn) -> dict[str, Any]:
                 )
                 failed.append(item["task_id"])
                 audit(conn, "scheduler", "task.lease_recovery_exhausted", item["task_id"])
+
+    if recovered:
+        _emit_tasks_ready_event(conn, "recovery_batch", recovered)
 
     return {
         "expired_assignments_count": len(expired_assignments),

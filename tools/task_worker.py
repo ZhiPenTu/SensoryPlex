@@ -16,6 +16,7 @@ import os
 import pathlib
 import signal
 import sys
+import threading
 import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -47,6 +48,42 @@ signal.signal(signal.SIGINT, _signal_handler)
 signal.signal(signal.SIGTERM, _signal_handler)
 
 LOGGER = logging.getLogger("task_worker")
+
+
+def start_nats_wake_listener(nats_url: str, wake_event: threading.Event) -> threading.Thread | None:
+    """启动轻量 NATS 广播监听线程，在收到 tasks.ready 唤醒信号时触发 wake_event。"""
+    try:
+        import asyncio
+
+        import nats
+    except ImportError:
+        LOGGER.info("未导入 nats-py 库，工作器沿用定时心跳对账模式")
+        return None
+
+    def _listen():
+        async def _nats_sub():
+            try:
+                nc = await nats.connect(nats_url, connect_timeout=3.0, reconnect_time_wait=2.0)
+                LOGGER.info("已建立 NATS 就绪任务事件唤醒通道: %s", nats_url)
+
+                async def _on_msg(msg):
+                    LOGGER.info("收到任务就绪唤醒广播 (%s)，立即触发认领", msg.subject)
+                    wake_event.set()
+
+                await nc.subscribe("sensoryplex.events.tasks.ready", cb=_on_msg)
+                await nc.subscribe("sensoryplex.tasks.ready", cb=_on_msg)
+
+                while RUNNING:
+                    await asyncio.sleep(1.0)
+                await nc.drain()
+            except Exception as e:
+                LOGGER.warning("NATS 事件唤醒监听未就绪 (%s)，工作器使用周期心跳对账", e)
+
+        asyncio.run(_nats_sub())
+
+    t = threading.Thread(target=_listen, daemon=True, name="nats-wake-listener")
+    t.start()
+    return t
 
 
 def ensure_node_ready(conn) -> None:
@@ -221,12 +258,16 @@ def process_pending_task(conn) -> bool:
     return True
 
 
-def run_worker_loop(poll_interval_s: float = 2.0):
+def run_worker_loop(poll_interval_s: float = 30.0, nats_url: str | None = None):
     settings = Settings()
     db_url = settings.database_url.get_secret_value()
+    nats_url = nats_url or os.getenv("SENSORYPLEX_NATS_URL", "nats://127.0.0.1:24222")
 
     LOGGER.info("正在启动 SensoryPlex 宿主任务工作器 (Host Task Worker)...")
     LOGGER.info("监听节点: %s | 数据库: %s", NODE_ID, db_url.split("@")[-1])
+
+    wake_event = threading.Event()
+    start_nats_wake_listener(nats_url, wake_event)
 
     while RUNNING:
         try:
@@ -234,17 +275,19 @@ def run_worker_loop(poll_interval_s: float = 2.0):
                 ensure_node_ready(conn)
                 conn.commit()
 
-                # 循环处理所有待办任务
+                # 循环处理所有待办任务，直到当前批次全部完成
                 processed_any = False
                 while RUNNING and process_pending_task(conn):
                     processed_any = True
 
                 if not processed_any:
-                    time.sleep(poll_interval_s)
+                    # 空载时挂起等待 NATS 事件唤醒；若无事件则按 poll_interval_s 兜底心跳
+                    wake_event.wait(timeout=poll_interval_s)
+                    wake_event.clear()
         except Exception as e:
             if not RUNNING:
                 break
-            LOGGER.error("工作器轮询异常: %s，将在 3 秒后重试", e)
+            LOGGER.error("工作器循环异常: %s，将在 3 秒后重试", e)
             time.sleep(3.0)
 
     LOGGER.info("SensoryPlex 宿主任务工作器已安全停止。")
@@ -316,7 +359,9 @@ def main():
     parser.add_argument("--daemon", action="store_true", help="以独立后台守护进程方式运行")
     parser.add_argument("--stop", action="store_true", help="停止已运行的后台守护进程")
     parser.add_argument("--status", action="store_true", help="查看后台守护进程运行状态")
-    parser.add_argument("--interval", type=float, default=2.0, help="轮询与心跳间隔（秒）")
+    parser.add_argument(
+        "--interval", type=float, default=30.0, help="事件兜底轮询与心跳间隔（秒，默认 30.0）"
+    )
     args = parser.parse_args()
 
     if args.stop:

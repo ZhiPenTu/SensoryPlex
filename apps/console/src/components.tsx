@@ -178,6 +178,13 @@ const statusConfig: Record<string, StatusStyle> = {
         border: '#a7f3d0',
         icon: <CheckCircleFilled />,
     },
+    active: {
+        label: '已激活',
+        bg: '#f0fdf4',
+        text: '#15803d',
+        border: '#86efac',
+        icon: <CheckCircleFilled />,
+    },
     completed: {
         label: '已完成',
         bg: '#ecfdf5',
