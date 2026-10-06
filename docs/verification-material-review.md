@@ -59,9 +59,7 @@ Chromium 136.0.7103.113 / agent-browser 0.27.0，均在 ARM64 console 容器内�
 收尾在新工作区重新构建前端、执行 9 项前端测试和 13 项素材集成测试，全部通过；格式检查与
 部署脚本 `sh -n` 通过。上表全量 Rust / Python 数量对应首轮验证，没有把它描述为新主线全量复验。
 
-截图：[查询](images/material-review/search.png) · [回看](images/material-review/playback.png) ·
-[窄屏](images/material-review/mobile.png)。截图中的视频画面沿用上述 CC BY-SA 4.0 原片署名与许可，
-测试文字仍为契约输入。
+截图：最新控制台界面详见 [素材检索与HUD](images/console/04-materials-search.png) · [原片回看](images/console/04-materials-playback.png)（早期历史专项截图已统一清理归档，视频画面沿用上述 CC BY-SA 4.0 原片署名与许可，测试文字仍为契约输入）。
 
 浏览器环境已保存在本机镜像 `sensoryplex-browser-tools:chromium136-agent0.27.0`，
 关闭浏览器并清理会话目录后保存，未包含挂载的代码、数据库凭据或原片。

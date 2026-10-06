@@ -43,6 +43,71 @@ SRT 实时接入（M4）同样可用：`ingest` 在有限窗口内拉流、解�
 `(material_unit_id, revision)` 水合事实），服务端 Milvus 拓扑在本机 Docker Hub 不可达的情况下
 未经验收。相关 API 明确报告能力不可用。
 
+## 📸 项目界面与核心功能全景 (Web Console Showcase)
+
+SensoryPlex 交付了工业级现代前端控制台（Web Console），直观呈现从多模态模型感知、可编排流水线调度、毫秒时间轴事实融合到跨视频语义检索与原片回看的全闭环：
+
+### 1. 登录与工业级控制台底座 (Login & Studio Base)
+> 现代高质感工业设计，“让每一段画面，都有据可循”，支持开发期一键免密体验（Demo 快速登录），集成边缘节点本地认证与会话管理。
+
+<p align="center">
+  <img src="docs/images/console/01-login.png" alt="SensoryPlex 登录与控制台底座" width="100%" />
+</p>
+
+### 2. 多模态时间轴检索与 SENSORYPLEX HUD 仪表盘 (Timeline & HUD Monitor)
+> **毫秒级全模态协同与流式回放**：左侧 Timecode 与覆盖范围监控，中间集成 HTTP Range 原片视频播放器（支持游标精准步进与定位同步），右侧与底部联动展示 OCR 画面文字提取、ASR 语音转写对齐以及 VLM 场景画面描述事实；最下方呈现具备毫秒精度的多轨时间轴总线（Timeline Bus）。
+
+<p align="center">
+  <img src="docs/images/console/04-materials-search.png" alt="多模态素材检索与 SENSORYPLEX HUD 仪表盘" width="100%" />
+</p>
+
+### 3. 跨视频多模态向量语义检索 (Semantic Vector Search)
+> **自然语言意图搜索与秒级片段定位**：基于常驻 BGE 文本嵌入与 Milvus Lite 向量引擎，支持直接输入自然语言描述（如“红长矢器”、“中文模块”）在全量素材中秒级检索，返回向量距离与相似度排序，并支持一键定位回看指定毫秒片段的原片画面。
+
+<p align="center">
+  <img src="docs/images/console/04-materials-semantic.png" alt="跨视频多模态向量语义检索" width="100%" />
+</p>
+
+### 4. 1秒网格全覆盖连续时间轴切片 (Timeline Slices & Facts)
+> **严格不可变事实追溯**：严格落实 ADR-028/031，时间轴依据原片可信时长建立全覆盖的 1 秒来源切片网格；清晰呈现每一秒内的模型版本、观测事实及回放锚点，无识别结果时明确记录待补充/无文字状态，杜绝任何数据虚构。
+
+<p align="center">
+  <img src="docs/images/console/04-materials-slices-modal.png" alt="1秒网格连续时间轴切片清单" width="100%" />
+</p>
+
+### 5. 可编排多模态流水线与全景甘特执行时序 (DAG Pipeline & Execution Gantt)
+> **声明式 DAG 调度与毫秒级时序跟踪**：将多模态处理解耦为阶段拓扑泳道流（数据面输入 ➔ L1 判别快路径 ➔ 时间轴融合 ➔ L2 延迟补全慢路径），配合全景甘特时序图精确反映各算子的在飞状态与执行耗时；支持灵活配置 PP-OCR、MLX-Whisper、Moondream 等模型算子参数与超时重试策略。
+
+<p align="center">
+  <img src="docs/images/console/03-job-detail-topo.png" alt="DAG 执行阶段拓扑泳道" width="49%" />
+  <img src="docs/images/console/03-job-detail-modal.png" alt="全景甘特执行时序图" width="49%" />
+</p>
+<p align="center">
+  <img src="docs/images/console/05-pipelines-detail-modal.png" alt="多模态流水线方案详细配置" width="100%" />
+</p>
+
+### 6. 边缘算力集群拓扑与版本化蓝绿热部署 (Fleet Topology & Hot-Deploy)
+> **异构算力感知与零停机平滑演进**：
+> - **节点拓扑看板**：实时探查同机与局域网分布式节点的 CPU/统一内存负载、硬件加速引擎（Apple Silicon Metal / CoreML / NVIDIA CUDA）及共享内存（LeaseBuffer）零拷贝数据交互模式；
+> - **插件热部署 (ADR-030)**：实现首方自研 Python 原生插件的独立进程版本化双槽位蓝绿热部署，通过身份/摘要核对、参数校验及连续健康度门禁保障无感平滑切换与失败零影响。
+
+<p align="center">
+  <img src="docs/images/console/07-nodes.png" alt="边缘算力集群拓扑看板与加速引擎" width="100%" />
+</p>
+<p align="center">
+  <img src="docs/images/console/06-plugins-hotdeploy.png" alt="端侧 AI 插件版本化蓝绿热部署" width="100%" />
+</p>
+
+### 7. 原始视频资产库与全链路操作审计 (Media Assets & Audit Trail)
+> **资产入库准入与严格合规审计**：支持原始音视频母带存储、媒体格式准入与时长探测；所有会话登录、节点预检、流水线发布与插件热部署操作全量留痕，敏感凭据与业务介质严格脱敏。
+
+<p align="center">
+  <img src="docs/images/console/02-assets.png" alt="原始视频资产库管理" width="49%" />
+  <img src="docs/images/console/08-audit.png" alt="全量安全操作审计日志" width="49%" />
+</p>
+
+---
+
 ## 🌟 开源社区共建与核心工程红线 (Community & Guidelines)
 
 > **致社区开发者**：SensoryPlex 是一个面向边缘异构硬件的高性能底层基础设施。我们宣布全面开源，并热忱欢迎音视频流处理（GStreamer/FFmpeg）、端侧 AI 加速（Metal/MLX/CUDA/NPU）、分布式事件流（NATS/PostgreSQL）及全栈前端领域的优秀工程师加入维护团队，共同推动项目的长期演进！
@@ -247,20 +312,24 @@ make accelerator-check   # 四路对账：宿主直读 / LANG=zh_CN / PATH=/none
 `srtsink` 把授权样本直推 SRT（不经 RTMP 转封装、不占用 OBS 会话），再跑四个场景
 （稳定窗口、断流恢复、无源失败、实时数据面交接）。
 
-## 素材工作台
+## 素材工作台 (Web Console)
 
-已提供独立前端 `apps/console` 和模块化后端 `services/api`，可登录、上传与预览视频、
-保存插件配置和处理方案、创建任务草稿、查询真实素材、管理业务凭据和查看审计。
-安装执行器、媒体准入与任务执行仍待接入，界面明确显示不可用；不会生成演示模型结果。
+SensoryPlex 提供工业级前端 `apps/console`（React + TypeScript + Vite + Nginx）与模块化核心控制面 `services/api`（FastAPI），支持全流程可视化操作：
+- **视频库管理**：上传本地母带，执行媒体准入与参数探查；
+- **任务与编排**：基于不可变 DAG 流水线发布方案，派发处理任务并实时追踪甘特时序与阶段泳道状态；
+- **素材与时间轴**：毫秒级 SENSORYPLEX HUD 仪表盘，1秒连续网格全覆盖切片，OCR/ASR/VLM 事实协同与原片流式回放；
+- **向量语义检索**：集成常驻 BGE 向量索引与 Milvus Lite，支持自然语言跨视频秒级检索；
+- **算力与插件**：实时监控异构计算节点拓扑（Metal/CUDA/CoreML 加速引擎感知）与自研插件版本化双槽位蓝绿热部署。
 
 ```sh
-make console-build
-make console-prepare
-make console-api
+# 启动完整开发栈与常驻事件检索链路
+./deploy/up.sh && ./deploy/up-events.sh
+
+# 一键生成/重置演示账号（登录页自动激活快速登录按钮）
+make demo-seed
 ```
 
-访问 <http://127.0.0.1:8091>；账户 `admin`，随机密码位于 `.data/console-preview/admin-password`。
-预览使用独立 schema，不修改旧 Gateway 数据。开发与部署细节见 [Console 运行手册](docs/runbooks/console.md)。
+本地浏览器访问 <http://127.0.0.1:5173> 即可进入工作台（开发期已提供 Demo 快速登录，无需手动输入凭据）。完整功能界面截图与详细解读请参阅上文 [📸 项目界面与核心功能全景 (Web Console Showcase)](#-项目界面与核心功能全景-web-console-showcase)。
 
 ## 工程结构
 
