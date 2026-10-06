@@ -35,6 +35,7 @@ document; ADR-009 onwards live in `docs/adr/`. The full texts are currently writ
 | ADR-029 | Orchestratable plugin execution core | Immutable revisions, durable runs, multi-node scheduling |
 | ADR-030 | Plugin hot-deploy executor | Versioned blue-green local-native plugin processes |
 | ADR-031 | VLM deferred-enrichment WorkQueue | Base publish, plugin pull and incremental fusion |
+| ADR-032 | Generic plugin platform integration and capability contracts | Manifest v2, Ed25519 signatures, sandboxing boundaries, and runtime capability contracts |
 
 ::: tip Numbering
 There is no ADR-018 file in the repository; the numbering is deliberately left with a gap rather than
@@ -44,7 +45,7 @@ renumbered, because ADR identifiers are referenced from code and migrations.
 ## Where to read them
 
 - ADR-001 … ADR-008 — `技术选型ADR与V1实施蓝图.md` in the repository root
-- ADR-009 … ADR-031 — [`docs/adr/`](https://github.com/ZhiPenTu/SensoryPlex/tree/master/docs/adr)
+- ADR-009 … ADR-032 — [`docs/adr/`](https://github.com/ZhiPenTu/SensoryPlex/tree/master/docs/adr)
 
 Related design documents worth reading alongside them:
 
