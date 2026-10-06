@@ -17,7 +17,7 @@ from edge_material_sdk.generated.node.v1 import node_pb2 as pb
 from edge_material_sdk.generated.orchestration.v1 import orchestration_pb2 as orchestration_pb
 from edge_material_sdk.generated.runtime.v1 import runtime_pb2 as runtime_pb
 from fastapi import Body, Depends, Header, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from google.protobuf.json_format import MessageToDict
 from psycopg.types.json import Jsonb
 
@@ -59,7 +59,12 @@ def to_proto_node_status(status_str: str) -> str:
     return mapping.get(status_str, "NODE_STATUS_UNSPECIFIED")
 
 
-def register(app, pool, auth, settings):
+def register(app, pool, auth, settings, storage=None):
+    if storage is None:
+        from ..infrastructure.storage import create_storage_driver
+
+        storage = getattr(app.state, "storage", None) or create_storage_driver(settings)
+
     def authenticated_node(conn, authorization: str | None, expected_node_id: str):
         """认证 Agent 会话并锁定到意图所属节点，不能只信请求体里的 node_id。"""
         token = ""
@@ -1153,14 +1158,30 @@ def register(app, pool, auth, settings):
             )
             if intent["state"] != "dispatched":
                 fail(409, "task_intent_not_active")
-        path = settings.blob_root.resolve() / upload["sha256"][7:]
-        if not path.is_file():
+        active_storage = getattr(app.state, "storage", None) or storage
+        local_path = active_storage.get_blob_path(upload["sha256"])
+        if local_path is not None and local_path.is_file():
+            return FileResponse(
+                local_path,
+                media_type=upload["content_type"],
+                filename=upload["filename"],
+                headers={"X-Content-SHA256": upload["sha256"]},
+            )
+        if not active_storage.exists(upload["sha256"]):
             fail(503, "blob_unavailable")
-        return FileResponse(
-            path,
-            media_type=upload["content_type"],
+        presigned_url = active_storage.presign_get_url(
+            key=upload["sha256"],
+            expires_in_s=settings.s3_presigned_expire_s,
             filename=upload["filename"],
-            headers={"X-Content-SHA256": upload["sha256"]},
+            content_type=upload["content_type"],
+        )
+        return RedirectResponse(
+            url=presigned_url,
+            status_code=307,
+            headers={
+                "Cache-Control": "private, no-store",
+                "X-Content-SHA256": upload["sha256"],
+            },
         )
 
     @app.post("/v1/agent/tasks/{task_id}:result")

@@ -235,4 +235,3 @@ def test_uninstall_local_project(tmp_path):
 
     vscode_json = json.loads((workspace / ".vscode/mcp.json").read_text(encoding="utf-8"))
     assert "sensoryplex" not in vscode_json.get("servers", {})
-

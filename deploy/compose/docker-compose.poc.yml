@@ -463,6 +463,52 @@ services:
     restart: unless-stopped
     healthcheck: *enrichment-health
 
+
+  # 核心底座专用 Rust 构建与测试服务（ADR-029 / 规范纯化）：
+  # 包含完整 GStreamer 开发依赖与 Cargo 缓存卷，实现底座 100% 容器内无差隔离。
+  rust:
+    build:
+      context: ../..
+      dockerfile: deploy/rust/Dockerfile
+    image: ${RUST_IMAGE:-sensoryplex-rust:0.1.0}
+    command: ["sleep", "infinity"]
+    environment:
+      CARGO_HOME: /usr/local/cargo
+      CARGO_TARGET_DIR: /target
+      MEDIA_FEATURES: ${MEDIA_FEATURES:-gstreamer}
+      RUST_LOG: ${RUST_LOG:-info}
+    working_dir: /workspace
+    volumes:
+      - type: bind
+        source: ${REPO_ROOT:-../../}
+        target: /workspace
+      - cargo-cache:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
+      - cargo-target:/target
+    restart: unless-stopped
+
+  # 通用对象存储可选本地服务（MinIO，S3 协议兼容）：
+  # 用于存储驱动抽象验证、流式切片 Range 回看及跨机媒体分发。
+  minio:
+    profiles: ["storage"]
+    image: pgsty/minio:RELEASE.2026-02-14T12-00-00Z@sha256:00c404465c4e7c4fd716d98caec2928e9e0f82c3548615662fdd3866ea9a28c0
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-sensoryplex-local}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-REPLACE_WITH_RANDOM_MINIO_SECRET}
+    volumes: ["minio-data:/data"]
+    ports: ["127.0.0.1:${MINIO_PORT:-29000}:9000", "127.0.0.1:${MINIO_CONSOLE_PORT:-29001}:9001"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
 volumes:
   postgres-data:
   nats-data:
+  cargo-cache:
+  cargo-git:
+  cargo-target:
+  minio-data:

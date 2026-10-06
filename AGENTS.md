@@ -16,7 +16,7 @@
   - 单元与集成测试：`make test-py`、`make test-integration`、`make node-check`、`make orchestration-p1-check`、`make orchestration-p2-check`、`make multimodal-pipeline-check`、`make vlm-workqueue-check`、`make event-pipeline-check`、`make plugin-deploy-check-api` 等底座编排与 API 验证。
 - **目的**：确保底座运行环境纯洁、隔离、不依赖宿主机局部 Python/Node 环境，消除“在本地能跑但在生产容器无法启动”的依赖与配置漂移。
 - **底座仅有的宿主例外**：
-  - Rust/Cargo 工具链：现有 api / gateway / console / docs / postgres / nats 镜像均不携带 `rustc` / `cargo`，宿主机 `cargo` 暂时承担 Rust 编译与测试（`cargo check`、`cargo test`、`make orchestration-check`、`make media-check` 等）；待批准专用 Rust 工具链容器后再统一收回。
+  - Rust/Cargo 工具链：已收归专用 `rust` 容器（基于 `rust:1.88-bookworm`，含完整 GStreamer 开发文件与 Cargo 缓存卷）；底座所有 Rust 构建与验证（`make orchestration-check`、`make media-check`、`make check`、`make format` 等）默认在 `rust` 容器内执行，实现底座 100% 容器化隔离（仅无 Docker 的宿主模式下回退调用本机 `cargo`）。
   - `make configure`：容器 bind mount 将仓库根以只读视图挂入容器，随机安全凭据写入宿主 `.env` 必须在宿主机执行。
   - 宿主平台适配器操作：macOS LaunchAgent 与 launchctl 命令（如 `resident-*` 管理、`tools/macos_resident.py`）只存在于宿主系统，必须在宿主执行。
 

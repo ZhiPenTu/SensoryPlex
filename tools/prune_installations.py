@@ -366,9 +366,7 @@ def prune_all(
     # 4. 可选清理 .data/releases bundle 缓存
     if include_bundles:
         bundle_dir = base_dir.parent / "releases"
-        bytes4, actions4 = prune_releases_bundle_cache(
-            bundle_dir, active_releases, dry_run=dry_run
-        )
+        bytes4, actions4 = prune_releases_bundle_cache(bundle_dir, active_releases, dry_run=dry_run)
         total_bytes += bytes4
         all_actions.extend(actions4)
 

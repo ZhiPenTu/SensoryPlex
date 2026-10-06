@@ -119,7 +119,9 @@ def _runtime_binary() -> Path:
     configured = os.environ.get("SENSORYPLEX_RUNTIME_BIN", "")
     if configured:
         binary = Path(configured)
-    elif Path("/Users/tuzhipeng/Documents/SensoryPlex/target/release/sensoryplex-runtime").is_file():
+    elif Path(
+        "/Users/tuzhipeng/Documents/SensoryPlex/target/release/sensoryplex-runtime"
+    ).is_file():
         binary = Path("/Users/tuzhipeng/Documents/SensoryPlex/target/release/sensoryplex-runtime")
     else:
         binary = ROOT / "target/release/sensoryplex-runtime"

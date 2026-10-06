@@ -179,7 +179,9 @@ class LeaseBufferReader:
                     fd = os.open(fallback, os.O_RDONLY)
                 except OSError as inner_error:
                     raise BufferReadError(
-                        common.TRANSIENT_BACKEND_FAILURE, f"segment_unavailable:{inner_error.errno}", True
+                        common.TRANSIENT_BACKEND_FAILURE,
+                        f"segment_unavailable:{inner_error.errno}",
+                        True,
                     ) from inner_error
             else:
                 raise BufferReadError(

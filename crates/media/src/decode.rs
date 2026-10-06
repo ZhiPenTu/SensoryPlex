@@ -628,7 +628,8 @@ fn build_chain(
     // 解码器给哪种内存，归一化链都能接住（GLMemory 走一次 GPU→CPU 下载，像素内容不变）。
     // 元素缺失（无 GL 插件的宿主）时退回原有链路：GLMemory 只有 GL 解码器才可能给出，
     // 那种宿主本来也不会走到这条分支。
-    let memory_download = if kind == TrackKind::Video && std::env::var("SENSORYPLEX_NO_GL").is_err() {
+    let memory_download = if kind == TrackKind::Video && std::env::var("SENSORYPLEX_NO_GL").is_err()
+    {
         gst::ElementFactory::find("gldownload").map(|_| {
             gst::ElementFactory::make("gldownload")
                 .name(format!("{}-gldownload", kind.name()))

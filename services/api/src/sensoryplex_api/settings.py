@@ -44,6 +44,15 @@ class Settings(BaseSettings):
         "http://127.0.0.1:5173,http://localhost:5173,"
         "http://127.0.0.1:8090,http://localhost:8090"
     )
+    # 通用对象存储驱动配置 (filesystem / s3 / minio)
+    storage_backend: str = "filesystem"
+    s3_endpoint: str = ""
+    s3_public_endpoint: str = ""
+    s3_bucket: str = "sensoryplex-media"
+    s3_access_key: str = ""
+    s3_secret_key: SecretStr | None = None
+    s3_region: str = "us-east-1"
+    s3_presigned_expire_s: int = Field(default=3600, ge=60, le=86400)
 
     @field_validator("api_token")
     @classmethod

@@ -16,6 +16,7 @@ from psycopg_pool import AsyncConnectionPool, ConnectionPool, PoolTimeout, TooMa
 
 from .auth import Authorization
 from .contracts import RETRYABLE_HEADER, fail, out
+from .infrastructure.storage import create_storage_driver
 from .interfaces import (
     admin,
     assets,
@@ -32,10 +33,11 @@ from .settings import Settings
 # 多一条（镜像旧了）少一条（没跑迁移）都直接 503。因此每加一条迁移都必须同步这里——
 # 本切片新增 `0003_embedding_index` 时漏掉这一跳，就是被真实集成测试抓出来的。
 # `SCHEMA` 仍是最新版本，供 `schema_version` 字段上报。
-SCHEMA = "0021_plugin_revision_retirement"
+SCHEMA = "0022_scenario_product_packages"
 SCHEMA_VERSIONS = {
     "0020_enrichment_input_identity",
     "0021_plugin_revision_retirement",
+    "0022_scenario_product_packages",
     "0019_enrichment_leases",
     "0017_plugin_task_output",
     "0018_plugin_runtime_pins",
@@ -127,6 +129,8 @@ def create_app(settings: Settings | None = None):
 
     app = FastAPI(title="SensoryPlex Platform API", version="0.1.0", lifespan=lifespan)
     app.state.pool, app.state.settings = pool, settings
+    storage = create_storage_driver(settings)
+    app.state.storage = storage
     auth = Authorization(pool, settings)
 
     def semantic_capability() -> tuple[bool, str]:
@@ -313,9 +317,9 @@ def create_app(settings: Settings | None = None):
 
     identity.register(app, pool, auth, settings)
     business.register(app, pool, auth, settings)
-    assets.register(app, pool, auth, settings, upload_pool)
+    assets.register(app, pool, auth, settings, upload_pool, storage=storage)
     admin.register(app, pool, auth, settings)
-    nodes.register(app, pool, auth, settings)
+    nodes.register(app, pool, auth, settings, storage=storage)
     plugin_deploy.register(app, pool, auth, settings)
     plugin_registry.register(app, pool, auth, settings)
     orchestration.register(app, pool, auth, settings)

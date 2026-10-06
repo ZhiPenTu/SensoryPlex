@@ -43,7 +43,9 @@ async def media_descriptor(client, state, task, lease_id):
         if os.environ.get("SENSORYPLEX_RUNTIME_BIN")
         else (
             Path("/Users/tuzhipeng/Documents/SensoryPlex/target/release/sensoryplex-runtime")
-            if Path("/Users/tuzhipeng/Documents/SensoryPlex/target/release/sensoryplex-runtime").is_file()
+            if Path(
+                "/Users/tuzhipeng/Documents/SensoryPlex/target/release/sensoryplex-runtime"
+            ).is_file()
             else native_root / "target/release/sensoryplex-runtime"
         )
     )

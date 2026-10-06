@@ -22,6 +22,7 @@ EXEC_API      = $(COMPOSE) exec -T api
 EXEC_GATEWAY  = $(COMPOSE) exec -T gateway
 EXEC_CONSOLE  = $(COMPOSE) exec -T console
 EXEC_MIGRATE  = $(COMPOSE) run --rm -T migrate
+EXEC_RUST     = $(COMPOSE) exec -T rust
 # 文档站（docs 服务）的容器入口。DOCS_BASE / DOCS_SITE_URL 是构建期站点常量，用 compose
 # exec 的 `-e` 注入容器进程环境，让同一条 shell 里的 npm 与校验脚本都读得到；两者都不设时
 # 展开为空，等价于普通 exec。`-e` 必须写在 SERVICE 之前（见上方 EXEC_TEST 的说明）。
@@ -44,6 +45,7 @@ EXEC_API      =
 EXEC_GATEWAY  =
 EXEC_CONSOLE  =
 EXEC_MIGRATE  =
+EXEC_RUST     =
 DOCS_EXEC     =
 EXEC_TEST     =
 PY_API        = uv run --frozen python
@@ -53,8 +55,11 @@ $(error EXEC_MODE 只支持 container 或 host，当前为 "$(EXEC_MODE)")
 endif
 
 CARGO         ?= cargo
-# Cargo 必须在主机上调用（没有容器带 rust 工具链）。下游 target 仍依赖此变量。
+# Cargo 必须在主机上调用（宿主模式下回退；或作为原生二进制构建使用）
 CARGO_HOST    ?= $(CARGO)
+# 容器模式下通过专用的 rust 服务容器执行（包含 GStreamer 与 Cargo 缓存卷，实现 100% 容器纯化）
+CARGO_CONTAINER = $(EXEC_RUST) cargo
+CARGO_CMD     ?= $(if $(filter container,$(EXEC_MODE)),$(CARGO_CONTAINER),$(CARGO_HOST))
 # 需要"主机专属资源"的验收也固定在主机执行，理由与 cargo 相同：HF 权重缓存、CoreML EP、
 # MLX/Metal 都只存在于 macOS 主机，compose 容器里没有（.env 只挂 MEDIA_DIR）。
 PY_HOST       ?= uv run --frozen python
@@ -97,7 +102,7 @@ plugin-platform-fault-check:
 setup: configure
 	$(EXEC_API) $(PY_API) tools/generate_proto.py
 	$(EXEC_API) $(PY_API) tools/generate_console_types.py
-	$(CARGO_HOST) build --workspace --locked
+	$(CARGO_CMD) build --workspace --locked
 
 # configure 必须在本机执行：tools/configure.py 会在仓库根写入随机凭据到 .env，
 # 容器 bind mount 把同一个仓库根映射为只读视图，无法写入新凭据。本步骤之后
@@ -136,9 +141,9 @@ test-py: test-contracts test-integration
 # check = lint-ruff + test-py + Rust fmt/clippy/test。
 # Rust 部分仍调用主机 cargo，见顶部约束说明。
 check: lint-ruff test-py
-	$(CARGO_HOST) fmt --all -- --check
-	$(CARGO_HOST) clippy --workspace --all-targets --locked -- -D warnings
-	$(CARGO_HOST) test --workspace --locked
+	$(CARGO_CMD) fmt --all -- --check
+	$(CARGO_CMD) clippy --workspace --all-targets --locked -- -D warnings
+	$(CARGO_CMD) test --workspace --locked
 # 改动 check 的步骤时必须同步 .github/workflows/ci.yml 的 check-apple-silicon：
 # macOS runner 既没有 Docker 也没有 PostgreSQL，只能跑 `make lint-ruff test-contracts`
 # 加下面三条主机 cargo，集成测试由 ubuntu 的 check job 覆盖。
@@ -150,7 +155,7 @@ integration:
 	$(MAKE) test-integration
 
 format:
-	$(CARGO_HOST) fmt --all
+	$(CARGO_CMD) fmt --all
 	$(EXEC_API) $(PY_API) -m ruff format .
 
 # ── 容器栈控制 ────────────────────────────────────────────────────────────
@@ -175,13 +180,13 @@ gateway:
 
 # runtime 没有专门的容器镜像；按顶部约束仍由主机 cargo 启动。
 runtime:
-	$(CARGO_HOST) run --locked -p sensoryplex-runtime -- serve
+	$(CARGO_CMD) run --locked -p sensoryplex-runtime -- serve
 
 pipeline-check:
-	$(CARGO_HOST) run --locked -p sensoryplex-runtime -- check config/pipelines/file-material.yaml
+	$(CARGO_CMD) run --locked -p sensoryplex-runtime -- check config/pipelines/file-material.yaml
 
 orchestration-check:
-	$(CARGO_HOST) run --locked -p sensoryplex-runtime -- orchestration-check config/pipelines/orchestrated-file-material.yaml
+	$(CARGO_CMD) run --locked -p sensoryplex-runtime -- orchestration-check config/pipelines/orchestrated-file-material.yaml
 
 orchestration-p1-check:
 	$(EXEC_API) $(PY_API) tools/verify_orchestration.py
@@ -204,11 +209,11 @@ gateway-smoke:
 MEDIA_FEATURES ?= gstreamer
 # 编译门：解码路径需要 GStreamer 开发文件，且仍需主机 cargo。
 media-check:
-	$(CARGO_HOST) clippy --locked -p sensoryplex-media -p sensoryplex-runtime --all-targets --features "$(MEDIA_FEATURES)" -- -D warnings
+	$(CARGO_CMD) clippy --locked -p sensoryplex-media -p sensoryplex-runtime --all-targets --features "$(MEDIA_FEATURES)" -- -D warnings
 
 # 解码路径的单元测试需要 GStreamer 开发文件；没有的主机可加 MEDIA_FEATURES= 显式少跑。
 media-test:
-	$(CARGO_HOST) test --locked -p sensoryplex-media --features "$(MEDIA_FEATURES)"
+	$(CARGO_CMD) test --locked -p sensoryplex-media --features "$(MEDIA_FEATURES)"
 
 media-replay:
 	@test -n "$(MEDIA)" || { echo "usage: make media-replay MEDIA=/absolute/path/to/authorized-sample.mp4"; exit 1; }

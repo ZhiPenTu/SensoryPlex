@@ -16,6 +16,7 @@ from psycopg.conninfo import make_conninfo
 from psycopg.types.json import Jsonb
 from sensoryplex_api.app import create_app
 from sensoryplex_api.auth import password_hash
+from sensoryplex_api.infrastructure.storage import S3StorageDriver
 from sensoryplex_api.settings import Settings
 
 from tools.migrate import migrate
@@ -1159,3 +1160,89 @@ def test_pipeline_detail_endpoint(console_app):
         assert data_legacy["pipeline"]["id"] == legacy_plan["id"]
         assert data_legacy["pipeline"]["execution_mode"] == "legacy_ocr_v1"
         assert cfg["id"] in data_legacy["configs"]
+
+
+def test_assets_presigned_url_endpoints(console_app):
+    with TestClient(console_app) as client:
+        login(client)
+        # 1. 待上传资产预签名链接
+        res = client.post(
+            "/v1/uploads",
+            json={
+                "filename": "presign_test.mp4",
+                "size_bytes": "64",
+                "content_type": "video/mp4",
+            },
+        )
+        assert res.status_code == 201
+        key = res.json()["id"]
+
+        put_presign = client.get(f"/v1/uploads/{key}/presigned-url?expires_in_s=600")
+        assert put_presign.status_code == 200
+        put_info = put_presign.json()
+        assert "url" in put_info
+        assert put_info["upload_id"] == key
+        assert put_info["expires_in_s"] == 600
+
+        # 2. 上传数据
+        data = b"\x00\x00\x00\x18ftypmp42" + b"presigned-token-verify-data" * 2
+        data = data[:64]
+        stored = client.put(f"/v1/uploads/{key}/content", content=data)
+        assert stored.status_code == 200
+
+        # 3. 已就绪资产的预签名回看链接
+        get_presign = client.get(f"/v1/assets/{key}/presigned-url?expires_in_s=1200")
+        assert get_presign.status_code == 200
+        get_info = get_presign.json()
+        assert "url" in get_info
+        assert get_info["sha256"] == stored.json()["sha256"]
+        assert get_info["expires_in_s"] == 1200
+
+        # 4. 解析预签名 URL 中的 token 与 expires
+        presigned_url = get_info["url"]
+        import urllib.parse
+
+        parsed = urllib.parse.urlparse(presigned_url)
+        params = urllib.parse.parse_qs(parsed.query)
+        token = params["token"][0]
+        expires = params["expires"][0]
+
+        # 5. 未携带 Cookie 或 Bearer 鉴权头，仅使用签名 Token 访问 content 接口
+        client.cookies.clear()
+        client.headers.pop("X-CSRF-Token", None)
+        anon_resp = client.get(f"/v1/assets/{key}/content?token={token}&expires={expires}")
+        assert anon_resp.status_code == 200
+        assert anon_resp.content == data
+
+        # 伪造 Token 返回 403
+        bad_resp = client.get(f"/v1/assets/{key}/content?token=fake_token&expires={expires}")
+        assert bad_resp.status_code == 403
+
+
+def test_s3_storage_driver_redirect(console_app):
+    with TestClient(console_app) as client:
+        login(client)
+        key, data = upload(client)
+
+        # 注入 S3 存储驱动，模拟 S3/MinIO 后端环境
+        original_storage = console_app.state.storage
+        try:
+            s3_driver = S3StorageDriver(
+                endpoint_url="http://minio:9000",
+                public_endpoint_url="http://127.0.0.1:29000",
+                bucket="sensoryplex-media",
+                access_key="test-ak",
+                secret_key="test-sk",
+            )
+            s3_driver.exists = lambda k: True
+            console_app.state.storage = s3_driver
+
+            # 请求内容接口，预期返回 HTTP 307 重定向至预签名 URL
+            resp = client.get(f"/v1/assets/{key}/content", follow_redirects=False)
+            assert resp.status_code == 307
+            location = resp.headers.get("location", "")
+            assert location.startswith("http://127.0.0.1:29000/sensoryplex-media/")
+            assert "X-Amz-Signature=" in location
+            assert "X-Amz-Expires=" in location
+        finally:
+            console_app.state.storage = original_storage

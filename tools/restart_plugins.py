@@ -1,7 +1,7 @@
 """终止旧的 LaunchAgent 插件进程，让 launchd 以更新后的代码重新拉起。"""
+
 import os
 import signal
-import sys
 import time
 
 for pid in [85425, 18194]:

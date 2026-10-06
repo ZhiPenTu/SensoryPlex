@@ -696,12 +696,8 @@ def main():
         "--keep", type=int, default=1, help="Number of inactive releases to keep"
     )
     prune_parser.add_argument("--dry-run", action="store_true", help="Simulate pruning")
-    prune_parser.add_argument(
-        "--include-tasks", action="store_true", help="Prune task-executions"
-    )
-    prune_parser.add_argument(
-        "--include-bundles", action="store_true", help="Prune bundle cache"
-    )
+    prune_parser.add_argument("--include-tasks", action="store_true", help="Prune task-executions")
+    prune_parser.add_argument("--include-bundles", action="store_true", help="Prune bundle cache")
     prune_parser.add_argument(
         "--all", action="store_true", help="Prune all old releases and caches"
     )

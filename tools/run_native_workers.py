@@ -1,8 +1,8 @@
 """启动隔离栈的宿主原生 Node Agent 与通用补全 Worker。"""
+
 import os
 import subprocess
-import sys
-import time
+
 
 def main():
     root = str(Path(__file__).resolve().parents[1])
@@ -18,16 +18,34 @@ def main():
     log1 = open("/tmp/agent-final.log", "w")
     log2 = open("/tmp/enrichment-worker.log", "w")
 
-    p1 = subprocess.Popen([
-        py, "-m", "tools.node_agent", "run", "--node-id", "local-host", "--state-file", state
-    ], env=env, stdout=log1, stderr=subprocess.STDOUT, start_new_session=True)
+    p1 = subprocess.Popen(
+        [py, "-m", "tools.node_agent", "run", "--node-id", "local-host", "--state-file", state],
+        env=env,
+        stdout=log1,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
 
-    p2 = subprocess.Popen([
-        py, "-m", "tools.enrichment_worker", "--state-file", state, "--nats-url", "nats://127.0.0.1:34222"
-    ], env=env, stdout=log2, stderr=subprocess.STDOUT, start_new_session=True)
+    p2 = subprocess.Popen(
+        [
+            py,
+            "-m",
+            "tools.enrichment_worker",
+            "--state-file",
+            state,
+            "--nats-url",
+            "nats://127.0.0.1:34222",
+        ],
+        env=env,
+        stdout=log2,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
 
     print(f"Started native Agent PID: {p1.pid}, Worker PID: {p2.pid}")
 
+
 if __name__ == "__main__":
     from pathlib import Path
+
     main()

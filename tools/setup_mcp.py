@@ -504,9 +504,7 @@ def uninstall_codex_skill(codex_home: Path, dry_run: bool = False) -> bool:
         return False
 
 
-def uninstall_json_mcp_file(
-    file_path: Path, root_key: str, dry_run: bool = False
-) -> bool:
+def uninstall_json_mcp_file(file_path: Path, root_key: str, dry_run: bool = False) -> bool:
     """Safely remove sensoryplex from a JSON config file."""
     print(f"      Cleaning {file_path}...")
     if not file_path.is_file():
