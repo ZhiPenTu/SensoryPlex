@@ -28,7 +28,7 @@
 - **任务执行分工明确**：
   - `tools/task_executor.py`：消费 Node Agent 领取的 `orchestrated_v2` 执行意图，受控调用运行时与 ADR-030 热部署插件，完成全帧判别与覆盖层计算；
   - `tools/vlm_task_worker.py` / `deploy/up-vlm-worker.sh`：ADR-031 单并发 VLM 延迟满足队列工作器，执行本地按需解码与内存水位门禁；
-  - `tools/task_worker.py`（`make task-worker` / `make task-worker-daemon`）：本地开发/演示环境下的宿主任务执行工作器，维持同机节点在线心跳并承接单机处理任务；
+  - `tools/task_worker.py`（`make task-worker` / `make task-worker-daemon`）：仅处理历史 `legacy_ocr_v1` 兼容任务；新 `orchestrated_v2` 任务由宿主 Node Agent 委派 `tools/task_executor.py` 执行；
 - **开发调试灵活**：插件开发者在本地开发机或局域网独立节点机（如 Mac mini、边缘设备）上进行算法调优、模型加载与推理验证（如 `make model-check`、`make asr-check`、`make ocr-check`、`make embed-check`、`make multimodal-execution-check`）时，允许直接使用宿主虚拟环境（`uv run` / 本机 Python）运行，无需强行打包进容器；
 - **协同方式**：宿主原生运行的插件通过宿主机暴露的网络端口（`127.0.0.1:8091`、`24222`、`25432` 等）与容器内的底座互通；底座调度器根据节点注册的端点通过 gRPC 派发任务。
 
@@ -47,7 +47,7 @@
 
 # SensoryPlex 核心工程约定与红线
 
-1. **规范先行**：开发前必须通读根目录需求文档、相关 ADR 设计决策及 `docs/implementation-status.md`。
+1. **规范先行**：开发前定位并阅读本次变更涉及的需求、ADR 和 `docs/implementation-status.md` 相关章节；涉及跨模块架构、契约或业务验收时，再补读依赖章节。纯文案、样式与只读审查按任务需要读取。
 2. **契约唯一源**：`proto/` 是跨进程、跨语言的唯一契约源；修改后必须运行 `make proto`，严禁手改生成代码。
 3. **架构职责边界**：plugins 严禁依赖 services 内部模块。Rust 管运行时与底层媒体解码，Python 管模型适配与控制面。
 4. **时间轴绝对基准与切片覆盖（ADR-028/031）**：时间轴固定为同一 stream 的 `[start_ms, end_ms)` 毫秒偏移。文件 Timeline 写侧依据可信 duration 建立完整 1 秒切片网格；模型尚未返回时仅有来源引用与待补充状态，严禁虚构 Observation 或合成空秒素材。
@@ -61,12 +61,26 @@
 12. **热部署蓝绿隔离（ADR-030）**：热部署是独立进程的版本化蓝绿切换，不承诺进程内热重载；新版本连续就绪才切指针，失败绝不影响旧 active。
 13. **慢路径异步解耦（ADR-031）**：慢路径模型（如 VLM 场景描述）必须通过 WorkQueue 延迟满足，快路径完成后立即标记 `ready_for_review`，严禁阻塞 L1 基础事实（OCR/ASR）入库与原片回看。
 
+## 任务范围与完成条件
+
+- 实现任务须完成用户要求范围内的修改、运行或部署及适用验证，并修复发现的问题；验收范围按受影响的契约、行为和业务链路确定，不因缩小无关检查而省略必要业务验收。
+- 所要求范围已经实现、适用检查通过且无未解决问题时停止；只有新改动、失败或尚未解决的风险才追加或重复验证。
+- 外部依赖、权限或环境阻塞导致验证无法完成时，报告具体阻塞、已验证范围及未验收环节；未执行或跳过不能当作通过，也不能把受阻任务宣称为全部完成。
+- 只读审查与建议任务按用户要求的交付物完成后停止，不额外启动服务、修改业务数据或运行无关媒体链路。
+
+## Console 前端与相关 Skills 的适用边界
+
+- 沿用用户选定的参考或现有设计系统；完成标准是所要求页面、交互与视口的实际渲染符合约定，受影响检查通过且无已知可修复偏差。采用概念图作为规格时对照概念图与当前截图验收；沿用现有界面的定向修改按现有界面验收。主观的“10/10”或假想设计机构签字不作为停止条件。
+- 浏览器验证优先使用可用的 Browser / IAB；调用失败后，用户未明确限定必须使用该浏览器时，可在同一已授权目标上改用其它可用浏览器或 Playwright，并说明原因。切换工具不扩展业务操作、凭据、依赖安装或网络权限；应用构建、开发服务器及项目 Python/Node 验证仍遵循容器边界。
+
 ---
 
 # 本地容器栈（deploy/）
 
 容器编排文件：`deploy/compose/docker-compose.poc.yml`。
 本机起停统一通过 `deploy/*.sh` 脚本；不直接 `docker compose up`，避免漏填 `--env-file .env` 或传错 `-f` 路径。所有脚本都从仓库根目录执行，并以仓库根作为 `docker compose` 的工作目录。
+
+需要容器验证时，先确认容器栈对应当前工作树，并用 `./deploy/status.sh` 检查所需服务。运行中的代码、镜像与配置匹配待验版本且所需服务健康时，直接复用；只有服务缺失、不健康或本次变更要求刷新时，才通过上述脚本启动、重建或重启受影响服务。常驻事件服务还须检查 Compose 健康状态与其状态文件时效；复用健康栈不替代业务验收。
 
 ## 服务清单与本机端口
 
@@ -126,14 +140,14 @@
 | 分类 | 目标 (Target) | 执行位置 | 核心说明 |
 | :--- | :--- | :--- | :--- |
 | **基础与环境** | `make configure` | **host** | 生成随机凭据并写入宿主 `.env`（容器只读挂载不可写） |
-| | `make setup` | host + api 容器 | 依序执行 configure、容器内 proto 生成与主机 cargo build |
+| | `make setup` | host + api / rust 容器 | 宿主 configure、api 容器 proto 生成、rust 容器 cargo build |
 | | `make proto` | api 容器 | 重新生成 Python/TypeScript protobuf 与契约代码 |
 | | `make lint-ruff` | api 容器 | 执行 Python ruff 语法检查与格式校验 |
-| | `make format` | host + api 容器 | 宿主 cargo fmt 格式化 Rust；容器内 ruff 格式化 Python |
+| | `make format` | rust + api 容器 | rust 容器 cargo fmt；api 容器 ruff format |
 | | `make test-contracts`| api 容器 | 运行轻量契约单元测试（pytest tests/contracts） |
 | | `make test-integration`| api 容器 | 依赖真实 PostgreSQL 与 NATS 的集成测试（pytest tests/integration） |
 | | `make test-py` / `test`| api 容器 | 运行所有 Python 测试（契约 + 集成） |
-| | `make check` | host + api 容器 | 全面准入检查：ruff + pytest + cargo fmt/clippy/test |
+| | `make check` | api + rust 容器 | 全面准入检查：ruff + pytest + cargo fmt/clippy/test |
 | **容器基础设施** | `make up` / `down` / `infra` | host shell | 启动、停止或仅拉起底层基础设施（postgres, nats） |
 | | `make migrate` | migrate 容器 | 执行不可变追加式数据库迁移（`tools/migrate.py`） |
 | | `make events-up` / `down` / `logs` | host shell | 管理常驻事件与慢路径栈（relay, index, vlm-publisher, vlm-result-fuser） |
@@ -146,7 +160,7 @@
 | | `make docs-check` | docs 容器 | 静态检查：验证多语言路由对等性与所有站内死链 |
 | | `make docs-dev` / `serve` | docs 容器 | 启动文档开发热更新服务或产物预览（5175 端口） |
 | **执行编排核心 (ADR-029)**| `make node-check` | api 容器 | 验证局域网节点注册、心跳、5项预检与拓扑隔离（ADR-026） |
-| | `make orchestration-check` | **host** | Rust 运行时编排 DAG 校验与静态检查 |
+| | `make orchestration-check` | rust 容器 | Rust 运行时编排 DAG 校验与静态检查 |
 | | `make orchestration-p1-check` | api 容器 | ADR-029 P1：单机真实编排闭环（DAG状态机、幂等、级联解锁、取消阻断、有界重试、崩溃恢复） |
 | | `make orchestration-p2-check` | api 容器 | ADR-029 P2：受控多节点集群编排与可审计故障转移（Failover）验收 |
 | | `make multimodal-pipeline-check` | api 容器 | ADR-028/029/030：多模态方案 v2 控制面契约与 DAG 发布准入校验 |
@@ -162,7 +176,7 @@
 | | `make event-pipeline-check` | api 容器 | ADR-027：验证容器常驻 relay/index 与 API 语义检索端到端闭环 |
 | | `make index-check` | **host** | ADR-020：真实 BGE 向量落库与 Milvus Lite 跨进程读写确认 |
 | | `make semantic-check` | **host** | ADR-023：常驻检索面（serve）与网关语义检索（`mode=semantic`）接口验收 |
-| **媒体与模型底层 (M8~M10)**| `make media-check` / `media-test` | **host** | GStreamer 媒体解码核心与单元测试 |
+| **媒体与模型底层 (M8~M10)**| `make media-check` / `media-test` | rust 容器 | GStreamer 媒体解码核心与单元测试 |
 | | `make media-replay` | host + api 容器 | 真实授权视频解码、自适应抽帧与 LeaseBuffer 写入验证 |
 | | `make handoff-check` | host + api 容器 | 验证跨进程数据面交接与内存租约释放 |
 | | `make live-check` | host + api 容器 | SRT 实时流接入、断流重连与交接验证（需 MediaMTX） |
@@ -175,12 +189,13 @@
 | | `make model-check` | host + api 容器 | ADR-012：Moondream VLM 插件推理与 observation 输出验证 |
 | | `make timeline-check` | **host** | ADR-028：Runtime → Timeline → 事务入库 → JetStream 端到端 |
 | | `make timeline-resident-check` | **host** | ADR-028：真实媒体 Timeline 素材经常驻 relay/index 语义检索 |
-| **业务闭环与宿主 Worker** | `make task-worker` | **host** | 前台运行宿主任务工作器（处理控制台任务 + 节点心跳） |
-| | `make task-worker-daemon` | **host** | 后台常驻守护运行宿主任务工作器（double-fork，抗 SIGHUP） |
-| | `make task-worker-status` / `stop` | **host** | 查看状态或安全停止后台任务工作器 |
+| **业务闭环与宿主 Worker** | `tools/node_agent.py run` | **host** | 复用已登记节点状态，执行 `orchestrated_v2` 意图并委派 TaskExecutor |
+| | `make task-worker` | **host** | 前台运行历史 `legacy_ocr_v1` 工作器 |
+| | `make task-worker-daemon` | **host** | 后台运行历史 `legacy_ocr_v1` 工作器（double-fork，抗 SIGHUP） |
+| | `make task-worker-status` / `stop` | **host** | 查看状态或安全停止历史 `legacy_ocr_v1` 工作器 |
 | | `make prune-plugins` | **host** | 物理清理各节点历史淘汰插件版本、非活跃 runtimes 与孤立 units |
 | | `make prune-mcp` | **host** | 一键安全清理当前项目或全局的 SensoryPlex MCP 与 AI 技能配置 |
-| | `make golden-path-check` | host + api 容器 | **GP-01 全链路业务回归验收**：视频准入 -> 任务执行 -> 融合入库 -> 向量索引 -> 语义检索 -> Range 回看 |
+| | `make golden-path-check` | host + api 容器 | 历史 OCR 路径回归；当前脚本直接调用 legacy Task Runner 并更新任务状态，不能单独作为 `orchestrated_v2` 完整 GP-01 证据 |
 
 ---
 
@@ -246,37 +261,41 @@
 
 ```mermaid
 flowchart TD
-    A["1. 基础容器栈启动<br/>./deploy/up.sh"] --> B["2. 常驻事件与检索栈启动<br/>./deploy/up-events.sh"]
-    B --> C["3. 宿主任务执行器常驻<br/>make task-worker-daemon"]
-    C --> D["4. 可选：宿主 VLM 延迟满足工作器<br/>./deploy/up-vlm-worker.sh ..."]
+    A["1. 检查并复用基础容器栈<br/>按需 ./deploy/up.sh"] --> B["2. 检查并复用事件与检索栈<br/>按需 ./deploy/up-events.sh"]
+    B --> C["3. 宿主 Node Agent 常驻<br/>orchestrated_v2 → TaskExecutor"]
+    C --> D["4. 按 Revision 启动异步补全 Worker<br/>通用补全或兼容 VLM Consumer"]
     D --> E["5. Web 控制台业务操作<br/>上传视频 -> 提交任务 -> 查看素材"]
-    E --> F["6. 自动化回归回归验证<br/>make golden-path-check"]
+    E --> F["6. 完整 v2 真实验收<br/>回执、事实、索引、语义命中与 Range 回看"]
 ```
 
-### 第一步：启动容器底座与常驻事件检索栈
+### 第一步：检查并按需启动容器底座与常驻事件检索栈
+
+按前述复用规则检查当前工作树的栈；已有服务健康且匹配待验版本时，不重复构建。事件与检索服务还须核对 Compose 健康状态和对应状态文件。
+
 ```bash
-# 启动核心容器：console(5173), api(8091), postgres(25432), nats(24222)
-./deploy/up.sh
-
-# 启动 ADR-027 / 031 常驻服务：relay, index(50077), vlm-publisher, vlm-result-fuser
-./deploy/up-events.sh
-
-# 检查各端点健康状态
+# 先检查各端点与容器状态
 ./deploy/status.sh
+# 仅在需要启动或刷新时选择相应命令：
+# ./deploy/up.sh [受影响服务名...]
+# ./deploy/up-events.sh
 ```
 
-### 第二步：启动宿主机任务执行工作器（常驻守护）
+### 第二步：检查宿主 Node Agent（orchestrated_v2）
+
+先复用已有 Agent，核对控制台节点就绪及方案所需的 active 插件；进程存在本身不证明业务可执行。已登记节点未运行时，使用已有状态文件启动，避免重新登记覆盖身份。首次登记使用 `./tools/install_agent.sh --local --daemon`。
+
 ```bash
-# 启动后台守护进程（维持 local-host 节点在线心跳，调度 GStreamer + OCR + Timeline 融合）
-make task-worker-daemon
-
-# 查看工作器运行日志与在线状态
-make task-worker-status
-# 停止命令：make task-worker-stop
+./tools/install_agent.sh --status --node-id local-host
+# 已登记但未运行时，在独立终端复用已有状态：
+# uv run --frozen python tools/node_agent.py run --node-id local-host --state-file .data/agent/local-host.json
 ```
 
-### 第三步：可选启动宿主 VLM 延迟满足队列工作器（ADR-031）
-若任务方案包含 VLM 场景描述补全，启动单并发队列工作器：
+`make task-worker-daemon` 与 `make task-worker-status` 仅用于历史 `legacy_ocr_v1` 任务，不能替代新任务的 Node Agent / TaskExecutor。
+
+### 第三步：按 Revision 启动异步补全 Worker
+
+若方案包含 ADR-032 通用异步补全，按 `docs/runbooks/plugin-platform-v2.md` 配置 `tools/enrichment_worker.py`，复用对应 Agent 的状态文件及当前栈 NATS 地址。若执行历史 ADR-031 VLM 兼容任务，才使用下述单并发 Consumer；release 与配置必须匹配该任务锁定的版本和摘要，先检查已有 Consumer，缺失或需要刷新时再启动：
+
 ```bash
 ./deploy/up-vlm-worker.sh .data/releases/vlm-moondream/0.1.3/darwin-arm64 config/plugins/vlm-local-decode.json
 # 查看日志：tail -f .data/vlm-worker/worker.log
@@ -286,15 +305,22 @@ make task-worker-status
 1. **登录控制台**：打开浏览器访问 `http://127.0.0.1:5173`，点击登录框底部的「填入演示账号」（若首次使用先执行 `make demo-seed`）；
 2. **导入视频**：进入【视频库】（`/assets`），点击「导入视频」上传本地 `.mp4` 或 `.webm` 视频，上传完毕后完成媒体准入；
 3. **分发任务**：进入【处理任务】（`/jobs`），新建任务并关联已上传视频与多模态处理方案（如内置 OCR+Timeline 方案），点击「开始处理」；
-4. **即时查看素材（快路径）**：宿主工作器处理完毕后，状态流转为 `ready_for_review`，点击「查看素材」进入【素材检索】（`/materials`）：
+4. **即时查看素材（快路径）**：Node Agent / TaskExecutor 完成 L1 事实入库后，状态流转为 `ready_for_review`，点击「查看素材」进入【素材检索】（`/materials`）：
    - 按秒级网格连续切片浏览多模态观测事实；
    - 查看高亮提取的文字块并进行帧像素定位；
    - 原片 Range 流式切片回放与锚点定位；
 5. **语义检索（向量索引面）**：在搜索栏输入文本内容，选择「语义检索」模式，底座通过常驻 `index` 服务完成 Milvus 向量相似度检索并即时命中素材。
 
-### 第五步：全链路自动化回归验收
-在开发改动后，执行全链路端到端自动化验收脚本：
+### 第五步：完整 v2 真实验收与历史回归范围
+
+本节适用于影响媒体业务闭环的改动或用户要求的完整 E2E；其它改动执行受影响范围的适用检查。
+
+完整 `orchestrated_v2` GP-01 必须用真实授权样本，经真实 dispatch、Node Agent / TaskExecutor 执行和不可变回执，对账当前 execution 的 Observation / Material、向量索引、语义命中及原片 Range 回看。方案包含异步补全时，还须验证对应 Worker 的真实执行、追加事实和最终成功或部分补全状态；`ready_for_review` 仅证明快路径可回看，不能代替完整多模态验收。不得直接修改任务状态替代执行证据。
+
+`make golden-path-check` 当前仍直接调用 legacy Task Runner 并通过 SQL 更新任务状态，只能在隔离验证环境中作为历史 OCR 路径回归入口：
+
 ```bash
 make golden-path-check
 ```
-该命令在真实环境下串联验证：鉴权认证、节点心跳、视频上传准入、方案发布、任务分发、端侧算力推理、Timeline 融合入库、Milvus 向量索引、语义检索与原片 Range 流式回放全部 9 大业务场景。
+
+该命令退出成功或打印 `GP-01 CLOSED`，均不能单独证明当前 v2 受控执行链路或整体 V1 Golden Path 完成。只有所要求范围的真实证据齐全、适用检查通过且无未解释失败时停止；缺少环节时报告未验收范围。整体 V1 验收仍须满足根需求文档及相关 ADR 的平台、时延和业务标准。

@@ -1,9 +1,8 @@
 # SensoryPlex 开发验证 Makefile
 # ─────────────────────────────────────────────────────────────────────────────
 # 约束：所有开发验证（lint / test / integration / proto / plugin artifact 等）默认
-# 在容器内执行；本机不需要 uv / python / node 工具链。Rust 验证 (cargo) 受限于
-# 现有 api/gateway/console/postgres/nats 镜像均不携带 rustc/cargo，仍由本机 cargo
-# 执行直到批准专门容器为止；该边界见 README 与 AGENTS.md。
+# 在容器内执行；底座 Python/Node 不依赖宿主工具链，Rust 底座构建与验证使用专用 rust 容器。
+# 无 Docker 的宿主模式与依赖宿主硬件的原生执行器边界见 README 与 AGENTS.md。
 # ─────────────────────────────────────────────────────────────────────────────
 
 # 执行位置（EXEC_MODE）：
@@ -55,12 +54,12 @@ $(error EXEC_MODE 只支持 container 或 host，当前为 "$(EXEC_MODE)")
 endif
 
 CARGO         ?= cargo
-# Cargo 必须在主机上调用（宿主模式下回退；或作为原生二进制构建使用）
+# 宿主模式及宿主原生执行器所需二进制使用 CARGO_HOST。
 CARGO_HOST    ?= $(CARGO)
 # 容器模式下通过专用的 rust 服务容器执行（包含 GStreamer 与 Cargo 缓存卷，实现 100% 容器纯化）
 CARGO_CONTAINER = $(EXEC_RUST) cargo
 CARGO_CMD     ?= $(if $(filter container,$(EXEC_MODE)),$(CARGO_CONTAINER),$(CARGO_HOST))
-# 需要"主机专属资源"的验收也固定在主机执行，理由与 cargo 相同：HF 权重缓存、CoreML EP、
+# 需要"主机专属资源"的验收固定在主机执行：HF 权重缓存、CoreML EP、
 # MLX/Metal 都只存在于 macOS 主机，compose 容器里没有（.env 只挂 MEDIA_DIR）。
 PY_HOST       ?= uv run --frozen python
 # outbox-check / outbox-run 要连的 NATS：容器内是服务名 nats:4222，宿主是回环端口。
@@ -98,7 +97,7 @@ plugin-platform-fault-check:
 # ── 项目引导 ────────────────────────────────────────────────────────────────
 
 # setup 步骤的特殊性：configure 需要把生成的 .env 写回主机以便 compose 读取；
-# proto 需要在容器中看到最新生成代码；cargo build 仍跑在主机。
+# proto 在 api 容器执行；cargo build 通过 CARGO_CMD 默认在 rust 容器执行。
 setup: configure
 	$(EXEC_API) $(PY_API) tools/generate_proto.py
 	$(EXEC_API) $(PY_API) tools/generate_console_types.py
@@ -139,7 +138,7 @@ test-integration:
 test-py: test-contracts test-integration
 
 # check = lint-ruff + test-py + Rust fmt/clippy/test。
-# Rust 部分仍调用主机 cargo，见顶部约束说明。
+# Rust 部分通过 CARGO_CMD 默认在 rust 容器执行，见顶部约束说明。
 check: lint-ruff test-py
 	$(CARGO_CMD) fmt --all -- --check
 	$(CARGO_CMD) clippy --workspace --all-targets --locked -- -D warnings
@@ -178,7 +177,7 @@ migrate:
 gateway:
 	$(COMPOSE) up -d --wait gateway
 
-# runtime 没有专门的容器镜像；按顶部约束仍由主机 cargo 启动。
+# 普通 runtime 入口使用 CARGO_CMD；依赖宿主硬件的原生验收另用 CARGO_HOST。
 runtime:
 	$(CARGO_CMD) run --locked -p sensoryplex-runtime -- serve
 
@@ -207,10 +206,10 @@ gateway-smoke:
 	$(EXEC_GATEWAY) $(PY_GATEWAY) tools/smoke_gateway.py
 
 # ── 媒体 E2E（Rust + 容器的组合） ──────────────────────────────────────────
-# Rust 部分 cargo / gstreamer 走主机；脚本调用放容器内。
+# Rust 静态检查与单元测试默认在 rust 容器；原生媒体验收按各目标的宿主边界执行。
 
 MEDIA_FEATURES ?= gstreamer
-# 编译门：解码路径需要 GStreamer 开发文件，且仍需主机 cargo。
+# 编译门：解码路径需要 GStreamer 开发文件，专用 rust 容器已包含。
 media-check:
 	$(CARGO_CMD) clippy --locked -p sensoryplex-media -p sensoryplex-runtime --all-targets --features "$(MEDIA_FEATURES)" -- -D warnings
 
@@ -563,7 +562,7 @@ index-check:
 # 最后由真实 API 走 HTTP 做语义检索并水合事实。验的是：同源守卫（错 release / 混装）、
 # 非 owner 丢弃计数、状态码分野（503 网关侧 / 502 上游拒绝）、令牌与不可达、目录锁、
 # 契约漂移必须在启动时拒绝、以及线上不外泄。Milvus Lite 是进程独占的本地文件，
-# 与 HF 权重一样只存在于主机，所以固定在主机执行（理由同 cargo 与 index-check）。
+# 与 HF 权重一样只存在于主机，所以固定在主机执行（理由同 index-check）。
 semantic-check:
 	$(PY_HOST) tools/verify_semantic_search.py $(if $(DATABASE_URL),--database-url "$(DATABASE_URL)",) $(if $(MODEL_DIR),--model-dir "$(MODEL_DIR)",) $(if $(PROVIDER),--provider "$(PROVIDER)",)
 

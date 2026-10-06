@@ -55,7 +55,8 @@ arena 和解码数量。无真实解码的程序会拒绝验收，不能用其 f
 ## 回归与交付
 
 容器内跑 `tests/contracts` 与 `tests/integration`，MCP 单独跑 `services/mcp-server/tests`，
-前端与文档使用 `make console-build docs-build docs-check`；Cargo 使用既定宿主例外。
+前端与文档使用 `make console-build docs-build docs-check`；Rust 底座检查默认在 `rust` 容器执行，
+宿主原生执行器所需构建按 `AGENTS.md` 的既定边界执行。
 旧 OCR/ASR/VLM 使用同原片、已安装首方 release 和锁定配置回归，旧 VLM Consumer 使用制品
 原 payload 的模块身份，不改历史消息。实际日志与身份见 [专项验收报告](../verification-plugin-platform-v2.md)。
 

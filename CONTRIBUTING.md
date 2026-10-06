@@ -53,7 +53,7 @@ flowchart LR
 
 SensoryPlex 是一个高性能、底层级的生产就绪基础设施。为了保障系统的确定性、可溯源性与长期演进质量，**以下 13 条核心工程红线不可妥协，所有 PR 在合并前均会以此进行严格审查**：
 
-1. **规范与设计先行**：开发任何功能或重构前，必须通读根目录需求文档、相关 ADR 及 `docs/implementation-status.md`。改动如涉及核心逻辑变更，必须附带 ADR 修订或 RFC 提案。
+1. **规范与设计先行**：阅读本次变更涉及的需求、ADR 及 `docs/implementation-status.md` 相关章节；涉及跨模块架构、契约或业务验收时补读依赖章节。纯文案、样式与只读审查按任务需要读取。改动如涉及核心逻辑变更，必须附带 ADR 修订或 RFC 提案。
 2. **契约唯一源（Proto/gRPC）**：`proto/` 是跨进程、跨语言交互的唯一权威契约源。修改契约必须运行 `make proto` 并提交重新生成的代码；**严禁手工修改任何生成代码**。字段号分配永久有效，废弃字段显式标记 `reserved`。
 3. **架构职责与分层隔离**：`plugins` 严禁依赖 `services` 内部模块；Rust 负责高吞吐底层媒体解码与共享内存控制，Python 负责端侧模型适配、控制面调度与业务编排。
 4. **时间轴绝对基准与切片覆盖（ADR-028/031）**：所有时间轴锚点严格对齐为同一媒体流的 `[start_ms, end_ms)` 毫秒偏移。写侧依据真实媒体时长建立不可变 1 秒切片网格；模型未返回或无内容时只记录来源引用与待补充/无文字状态，**严禁虚构 Observation 或合成空秒素材**。
@@ -77,7 +77,8 @@ SensoryPlex 是一个高性能、底层级的生产就绪基础设施。为了�
 | :--- | :--- | :--- | :--- |
 | **核心底座 / 控制面** | `api`, `gateway`, `console`, `postgres`, `nats`, `relay`, `index`, `vlm-*` | **强制在容器内执行**<br/>`docker compose exec -T ...` | 确保运行环境隔离纯洁；宿主机无需配置也严禁直接调用底座相关的 uv/python/node/npm 工具链。 |
 | **子节点插件 / Workers** | 各类端侧模型插件（`ocr-rapidocr`, `asr-whisper-mlx`, `vlm-moondream`）、`tools/task_worker.py` | **允许宿主原生运行**<br/>(Host Native) | 强依赖宿主机专属物理硬件加速（Apple Silicon Metal/MLX、CoreML、CUDA、NPU），轻量 Linux 容器无法透传编译原生驱动。 |
-| **宿主系统例外** | Rust 编译与测试 (`cargo`)、随机凭据生成 (`make configure`)、macOS LaunchAgent (`tools/macos_resident.py`) | **宿主原生运行** | 现有容器暂未内置 Rust 编译套件；macOS 守护调度与宿主环境变量必须直接作用于宿主。 |
+| **Rust 底座构建与验证** | `cargo` 构建、fmt、clippy、单元测试 | **默认在 rust 容器执行** | `CARGO_CMD` 按 `EXEC_MODE` 选择执行环境；无 Docker 的既定宿主模式及宿主原生执行器所需构建按 `AGENTS.md` 的边界执行。 |
+| **宿主系统例外** | 随机凭据生成 (`make configure`)、macOS LaunchAgent (`tools/macos_resident.py`) | **宿主原生运行** | macOS 守护调度与宿主环境变量必须直接作用于宿主。 |
 
 ### 常用本地开发验证命令
 
@@ -87,10 +88,10 @@ make configure          # 生成安全随机凭据至 .env（宿主执行）
 ./deploy/up.sh          # 构建并拉起核心容器栈（console, api, postgres, nats 等）
 ./deploy/up-events.sh   # 拉起常驻事件中继与向量检索栈 (relay, index, vlm-publisher)
 
-# 2. 静态检查与常规门禁（日常提交前必跑）
+# 2. 按变更范围选择检查；合并与发布门禁仍须满足既定要求
 make lint-ruff          # Python 语法与格式检查（容器内执行）
-make format             # 格式化 Rust (宿主) 与 Python (容器内)
-make proto              # 重新编译 Proto 契约并生成对应代码（容器内）
+make format             # 格式化 Rust (rust 容器) 与 Python (api 容器)
+make proto              # Proto 契约变更后生成对应代码（api 容器，必须提交生成产物）
 make test-contracts     # 单元契约测试（容器内）
 make test-integration   # 真实数据库与消息队列集成测试（容器内）
 make check              # 全面准入检查 (lint + pytest + cargo test)
