@@ -32,7 +32,7 @@ DOCS_EXEC      = $(COMPOSE) exec -T $(DOCS_ENV_FLAGS) docs
 # `SENSORYPLEX_TEST_NATS_URL` 给了容器内可达的默认值（`TEST_NATS_URL`），让真 JetStream 的
 # 集成用例默认**真跑**而不是被 skip（跳过不算证据）；主机模式由调用者自己提供这两个变量
 # （见下方 test-integration 注释）。
-EXEC_TEST     = $(COMPOSE) exec -T -e PYTHONPATH=/workspace/services/api/src:/workspace/services/index-worker/src:/workspace/services/outbox-relay/src:/workspace/plugins/python/common/src:/workspace -e SENSORYPLEX_TEST_DATABASE_URL -e SENSORYPLEX_TEST_NATS_URL=$(TEST_NATS_URL) api
+EXEC_TEST     = $(COMPOSE) exec -T -e PYTHONPATH=/workspace/services/api/src:/workspace/services/gateway/src:/workspace/services/index-worker/src:/workspace/services/outbox-relay/src:/workspace/plugins/python/common/src:/workspace -e SENSORYPLEX_TEST_DATABASE_URL -e SENSORYPLEX_TEST_NATS_URL=$(TEST_NATS_URL) api
 # api / gateway / console 容器里的可执行入口：
 PY_API        = /app/.venv/bin/python
 PY_GATEWAY    = /app/.venv/bin/python

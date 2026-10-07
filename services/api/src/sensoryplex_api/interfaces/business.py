@@ -123,6 +123,17 @@ def register(app, pool, auth, settings):
             fail(404, "material_not_found")
         return out(result)
 
+    @app.get("/v1/materials/{key}/lineage")
+    def lineage(
+        key: str,
+        p: Annotated[object, Depends(auth.require("materials:read"))] = None,
+    ):
+        with pool.connection() as conn:
+            history = materials.get_material_lineage(conn, p.name, key)
+        if not history:
+            fail(404, "material_not_found")
+        return {"material_unit_id": key, "lineage": history}
+
     @app.get("/v1/materials/{key}/index-status")
     def indexing(
         key: str,

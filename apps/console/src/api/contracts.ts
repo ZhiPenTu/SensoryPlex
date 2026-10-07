@@ -130,6 +130,7 @@ export interface MaterialUnit {
   pending_enrichments: string[];
   created_at_unix_ms: string;
   superseded: boolean;
+  prev_revision?: number;
 }
 export type ProcessOutcome = "PROCESS_OUTCOME_UNSPECIFIED" | "PROCESS_OUTCOME_OBSERVED" | "PROCESS_OUTCOME_NO_OBSERVATIONS";
 export type CapabilityState = "CAPABILITY_STATE_UNSPECIFIED" | "CAPABILITY_STATE_AVAILABLE" | "CAPABILITY_STATE_UNAVAILABLE";

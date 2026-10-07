@@ -32,7 +32,7 @@ from sensoryplex_gateway.settings import Settings  # noqa: E402
 
 from tools.task_worker import start_nats_wake_listener  # noqa: E402
 
-EXPECTED_SCHEMA = "0023_outbox_partitioning_and_archival"
+EXPECTED_SCHEMA = "0024_material_revision_lineage"
 
 
 class ScenarioPackageP3Verifier:

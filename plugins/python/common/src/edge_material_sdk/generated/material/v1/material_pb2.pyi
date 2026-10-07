@@ -96,7 +96,7 @@ class SourceReference(_message.Message):
     def __init__(self, asset_id: _Optional[str] = ..., time_range: _Optional[_Union[_common_pb2.TimeRange, _Mapping]] = ..., content_hash: _Optional[str] = ...) -> None: ...
 
 class MaterialUnit(_message.Message):
-    __slots__ = ("material_unit_id", "stream_id", "time_range", "status", "revision", "observations", "tags", "source_refs", "pipeline_version", "pending_enrichments", "created_at_unix_ms", "superseded")
+    __slots__ = ("material_unit_id", "stream_id", "time_range", "status", "revision", "observations", "tags", "source_refs", "pipeline_version", "pending_enrichments", "created_at_unix_ms", "superseded", "prev_revision")
     MATERIAL_UNIT_ID_FIELD_NUMBER: _ClassVar[int]
     STREAM_ID_FIELD_NUMBER: _ClassVar[int]
     TIME_RANGE_FIELD_NUMBER: _ClassVar[int]
@@ -109,6 +109,7 @@ class MaterialUnit(_message.Message):
     PENDING_ENRICHMENTS_FIELD_NUMBER: _ClassVar[int]
     CREATED_AT_UNIX_MS_FIELD_NUMBER: _ClassVar[int]
     SUPERSEDED_FIELD_NUMBER: _ClassVar[int]
+    PREV_REVISION_FIELD_NUMBER: _ClassVar[int]
     material_unit_id: str
     stream_id: str
     time_range: _common_pb2.TimeRange
@@ -121,4 +122,5 @@ class MaterialUnit(_message.Message):
     pending_enrichments: _containers.RepeatedScalarFieldContainer[str]
     created_at_unix_ms: int
     superseded: bool
-    def __init__(self, material_unit_id: _Optional[str] = ..., stream_id: _Optional[str] = ..., time_range: _Optional[_Union[_common_pb2.TimeRange, _Mapping]] = ..., status: _Optional[str] = ..., revision: _Optional[int] = ..., observations: _Optional[_Iterable[_Union[Observation, _Mapping]]] = ..., tags: _Optional[_Iterable[str]] = ..., source_refs: _Optional[_Iterable[_Union[SourceReference, _Mapping]]] = ..., pipeline_version: _Optional[str] = ..., pending_enrichments: _Optional[_Iterable[str]] = ..., created_at_unix_ms: _Optional[int] = ..., superseded: bool = ...) -> None: ...
+    prev_revision: int
+    def __init__(self, material_unit_id: _Optional[str] = ..., stream_id: _Optional[str] = ..., time_range: _Optional[_Union[_common_pb2.TimeRange, _Mapping]] = ..., status: _Optional[str] = ..., revision: _Optional[int] = ..., observations: _Optional[_Iterable[_Union[Observation, _Mapping]]] = ..., tags: _Optional[_Iterable[str]] = ..., source_refs: _Optional[_Iterable[_Union[SourceReference, _Mapping]]] = ..., pipeline_version: _Optional[str] = ..., pending_enrichments: _Optional[_Iterable[str]] = ..., created_at_unix_ms: _Optional[int] = ..., superseded: bool = ..., prev_revision: _Optional[int] = ...) -> None: ...

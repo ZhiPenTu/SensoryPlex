@@ -34,8 +34,9 @@ from .settings import Settings
 # 多一条（镜像旧了）少一条（没跑迁移）都直接 503。因此每加一条迁移都必须同步这里——
 # 本切片新增 `0003_embedding_index` 时漏掉这一跳，就是被真实集成测试抓出来的。
 # `SCHEMA` 仍是最新版本，供 `schema_version` 字段上报。
-SCHEMA = "0023_outbox_partitioning_and_archival"
+SCHEMA = "0024_material_revision_lineage"
 SCHEMA_VERSIONS = {
+    "0023_outbox_partitioning_and_archival",
     "0020_enrichment_input_identity",
     "0021_plugin_revision_retirement",
     "0022_scenario_product_packages",

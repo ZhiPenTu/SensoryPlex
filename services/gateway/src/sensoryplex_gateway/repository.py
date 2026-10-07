@@ -10,5 +10,8 @@ from sensoryplex_api.infrastructure.materials import (
     get_material as get_material,
 )
 from sensoryplex_api.infrastructure.materials import (
+    get_material_lineage as get_material_lineage,
+)
+from sensoryplex_api.infrastructure.materials import (
     search_materials as search_materials,
 )

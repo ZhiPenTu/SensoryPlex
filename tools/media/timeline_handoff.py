@@ -319,10 +319,11 @@ def handoff(
                     unit.revision = prev[0]
                 else:
                     unit.revision = prev[0] + 1
+                    unit.prev_revision = prev[0]
 
             # 写侧是唯一判官：True=新增，False=完全一致的 replay。这里不做任何"补一次"。
             appended = api_materials.append_material(
-                conn, unit, trace_id=trace_id, execution_id=execution_id
+                conn, unit, trace_id=trace_id, execution_id=execution_id, auto_forward=True
             )
             counters["appended"] += int(appended)
             counters["replayed"] += int(not appended)
@@ -332,6 +333,7 @@ def handoff(
                 {
                     "material_unit_id": unit.material_unit_id,
                     "revision": unit.revision,
+                    "prev_revision": unit.prev_revision if unit.HasField("prev_revision") else None,
                     "status": unit.status,
                     "start_ms": unit.time_range.start_ms,
                     "end_ms": unit.time_range.end_ms,
