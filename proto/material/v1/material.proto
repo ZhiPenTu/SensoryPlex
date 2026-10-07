@@ -67,4 +67,5 @@ message MaterialUnit {
   repeated string pending_enrichments = 10;
   int64 created_at_unix_ms = 11;
   bool superseded = 12;
+  optional uint32 prev_revision = 13;
 }

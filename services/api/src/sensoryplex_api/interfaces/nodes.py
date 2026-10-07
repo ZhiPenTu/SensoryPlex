@@ -1413,29 +1413,12 @@ def register(app, pool, auth, settings, storage=None):
                 )
                 appended, replayed = 0, 0
                 for unit in units:
-                    previous = one(
-                        conn,
-                        """
-                        SELECT revision,content_hash FROM material_unit
-                        WHERE material_unit_id=%s ORDER BY revision DESC LIMIT 1
-                        """,
-                        (unit.material_unit_id,),
-                    )
-                    if previous:
-                        digest = (
-                            "sha256:"
-                            + hashlib.sha256(unit.SerializeToString(deterministic=True)).hexdigest()
-                        )
-                        unit.revision = (
-                            previous["revision"]
-                            if digest == previous["content_hash"]
-                            else previous["revision"] + 1
-                        )
                     inserted = materials.append_material(
                         conn,
                         unit,
                         trace_id=f"execution:{execution['execution_id']}",
                         execution_id=execution["execution_id"],
+                        auto_forward=True,
                     )
                     appended += int(inserted)
                     replayed += int(not inserted)

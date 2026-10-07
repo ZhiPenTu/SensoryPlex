@@ -48,7 +48,7 @@ services:
       SENSORYPLEX_DATABASE_URL: postgresql://sensoryplex:${POSTGRES_PASSWORD}@postgres:5432/sensoryplex
       SENSORYPLEX_API_TOKEN: ${SENSORYPLEX_API_TOKEN:?Run make configure}
       SENSORYPLEX_PRINCIPAL: ${SENSORYPLEX_PRINCIPAL:-local-developer}
-      PYTHONPATH: /workspace/services/api/src:/workspace/services/index-worker/src:/workspace/services/outbox-relay/src:/workspace/plugins/python/common/src:/workspace
+      PYTHONPATH: /workspace/services/api/src:/workspace/services/gateway/src:/workspace/services/index-worker/src:/workspace/services/outbox-relay/src:/workspace/plugins/python/common/src:/workspace
       # 检索面必须**在这里声明**，不能靠"容器恰好把仓库 `.env` 挂了进来"：`Settings` 的
       # `env_file=".env"` 是按 cwd 找的，gateway 的 working_dir 就是 /workspace，于是它会
       # 顺手读到 bind mount 进来的宿主 `.env`——那样 `semantic_search` 的能力就成了"这个
@@ -87,7 +87,7 @@ services:
       SENSORYPLEX_DATABASE_URL: postgresql://sensoryplex:${POSTGRES_PASSWORD}@postgres:5432/sensoryplex
       SENSORYPLEX_API_TOKEN: ${SENSORYPLEX_API_TOKEN:?Run make configure}
       SENSORYPLEX_PRINCIPAL: ${SENSORYPLEX_PRINCIPAL:-local-developer}
-      PYTHONPATH: /workspace/services/api/src:/workspace/services/index-worker/src:/workspace/services/outbox-relay/src:/workspace/plugins/python/common/src:/workspace
+      PYTHONPATH: /workspace/services/api/src:/workspace/services/gateway/src:/workspace/services/index-worker/src:/workspace/services/outbox-relay/src:/workspace/plugins/python/common/src:/workspace
       # 语义检索的检索面（ADR-023 / ADR-027）：容器内必须用 compose 服务名（`index:50077`），
       # 不能用 `.env` 里给主机工具用的回环地址——容器里的 127.0.0.1 是它自己。
       # 两个变量都取自 `.env`（`.env.example` 里已给 `index:50077` + 随机令牌）：**都不给**时
@@ -278,7 +278,7 @@ services:
     environment:
       SENSORYPLEX_DATABASE_URL: postgresql://sensoryplex:${POSTGRES_PASSWORD}@postgres:5432/sensoryplex
       SENSORYPLEX_NATS_URL: nats://nats:4222
-      PYTHONPATH: /workspace/services/api/src:/workspace/services/index-worker/src:/workspace/services/outbox-relay/src:/workspace/plugins/python/common/src:/workspace
+      PYTHONPATH: /workspace/services/api/src:/workspace/services/gateway/src:/workspace/services/index-worker/src:/workspace/services/outbox-relay/src:/workspace/plugins/python/common/src:/workspace
     working_dir: /workspace
     volumes:
       - type: bind
@@ -319,7 +319,7 @@ services:
     environment:
       SENSORYPLEX_DATABASE_URL: postgresql://sensoryplex:${POSTGRES_PASSWORD}@postgres:5432/sensoryplex
       SENSORYPLEX_NATS_URL: nats://nats:4222
-      PYTHONPATH: /workspace/services/api/src:/workspace/services/index-worker/src:/workspace/services/outbox-relay/src:/workspace/plugins/python/common/src:/workspace
+      PYTHONPATH: /workspace/services/api/src:/workspace/services/gateway/src:/workspace/services/index-worker/src:/workspace/services/outbox-relay/src:/workspace/plugins/python/common/src:/workspace
     working_dir: /workspace
     volumes:
       - type: bind

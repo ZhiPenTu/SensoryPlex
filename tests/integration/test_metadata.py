@@ -7,7 +7,12 @@ from fastapi.testclient import TestClient
 from psycopg import sql
 from psycopg.conninfo import make_conninfo
 from sensoryplex_gateway.app import create_app
-from sensoryplex_gateway.repository import RevisionConflict, append_material, get_material
+from sensoryplex_gateway.repository import (
+    RevisionConflict,
+    append_material,
+    get_material,
+    get_material_lineage,
+)
 from sensoryplex_gateway.settings import Settings
 
 from tools.migrate import migrate
@@ -166,3 +171,95 @@ def test_invalid_lineage_rolls_back(database, material):
             append_material(conn, material, trace_id="contract-trace")
         assert conn.execute("SELECT count(*) FROM material_unit").fetchone()[0] == 0
         assert conn.execute("SELECT count(*) FROM event_outbox").fetchone()[0] == 0
+
+
+def test_material_revision_forwarding_and_lineage(database, material, bare_settings):
+    with psycopg.connect(database) as conn:
+        seed_references(conn, material)
+
+        # 1. 初始版本 revision=1
+        material.revision = 1
+        assert append_material(conn, material, trace_id="trace-rev1")
+        assert not append_material(conn, material, trace_id="trace-rev1")
+
+        m1 = get_material(conn, "owner", material.material_unit_id)
+        assert m1.revision == 1
+        assert not m1.HasField("prev_revision")
+        assert not m1.superseded
+
+        # 2. 默认模式 (auto_forward=False): 同一 revision 修改内容直接显式报错
+        material.tags.append("version2_tag")
+        with pytest.raises(RevisionConflict, match="immutable_revision_conflict"):
+            append_material(conn, material, trace_id="trace-fail", auto_forward=False)
+
+        # 3. 启用 auto_forward=True: 自动自增至 revision=2，并设置 prev_revision=1
+        appended = append_material(conn, material, trace_id="trace-rev2", auto_forward=True)
+        assert appended
+        assert material.revision == 2
+        assert material.prev_revision == 1
+
+        # 验证最新激活版本
+        m2 = get_material(conn, "owner", material.material_unit_id)
+        assert m2.revision == 2
+        assert m2.prev_revision == 1
+        assert not m2.superseded
+        assert "version2_tag" in m2.tags
+
+        # 验证历史快照不可变
+        m1_hist = get_material(conn, "owner", material.material_unit_id, revision=1)
+        assert m1_hist.revision == 1
+        assert not m1_hist.HasField("prev_revision")
+        assert m1_hist.superseded
+        assert "version2_tag" not in m1_hist.tags
+
+        # 4. 幂等重放 (Idempotent Replay): 内容相同时 auto_forward=True 返回 False，不推进版本
+        replayed = append_material(conn, material, trace_id="trace-replay", auto_forward=True)
+        assert not replayed
+        assert material.revision == 2
+
+        # 5. 二次修改内容并 auto_forward: 自动自增至 revision=3，prev_revision=2
+        material.tags.append("version3_tag")
+        appended_3 = append_material(conn, material, trace_id="trace-rev3", auto_forward=True)
+        assert appended_3
+        assert material.revision == 3
+        assert material.prev_revision == 2
+
+        # 6. 查询完整版本血缘链
+        lineage = get_material_lineage(conn, "owner", material.material_unit_id)
+        assert len(lineage) == 3
+        assert [item["revision"] for item in lineage] == [1, 2, 3]
+        assert [item["prev_revision"] for item in lineage] == [None, 1, 2]
+        assert [item["superseded"] for item in lineage] == [True, True, False]
+        assert "version3_tag" in lineage[2]["tags"]
+        assert "version2_tag" in lineage[1]["tags"]
+        assert "version2_tag" not in lineage[0]["tags"]
+
+    # 7. 通过 REST API 验证 GET /v1/materials/{key}/lineage 业务端点
+    settings = bare_settings(database_url=database, api_token=TOKEN, principal="owner")
+    with TestClient(create_app(settings)) as client:
+        headers = {"Authorization": f"Bearer {TOKEN}"}
+        resp = client.get(f"/v1/materials/{material.material_unit_id}/lineage", headers=headers)
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["material_unit_id"] == material.material_unit_id
+        assert len(data["lineage"]) == 3
+        assert data["lineage"][0]["revision"] == 1
+        assert data["lineage"][0]["prev_revision"] is None
+        assert data["lineage"][0]["superseded"] is True
+        assert data["lineage"][1]["revision"] == 2
+        assert data["lineage"][1]["prev_revision"] == 1
+        assert data["lineage"][1]["superseded"] is True
+        assert data["lineage"][2]["revision"] == 3
+        assert data["lineage"][2]["prev_revision"] == 2
+        assert data["lineage"][2]["superseded"] is False
+
+        # 不存在的素材返回 404
+        not_found = client.get("/v1/materials/non_existent_key/lineage", headers=headers)
+        assert not_found.status_code == 404
+
+    # 非授权 principal 无法访问返回 404
+    intruder_settings = Settings(database_url=database, api_token=TOKEN, principal="intruder")
+    with TestClient(create_app(intruder_settings)) as client:
+        headers = {"Authorization": f"Bearer {TOKEN}"}
+        url = f"/v1/materials/{material.material_unit_id}/lineage"
+        assert client.get(url, headers=headers).status_code == 404

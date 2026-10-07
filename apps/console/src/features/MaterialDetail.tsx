@@ -48,6 +48,23 @@ import './materials.css';
 
 const { Text } = Typography;
 
+interface MaterialLineageItem {
+    revision: number;
+    prev_revision?: number | null;
+    status: string;
+    content_hash: string;
+    created_at_unix_ms?: number | null;
+    superseded: boolean;
+    tags: string[];
+    pipeline_version: string;
+    observations_count?: number;
+}
+
+interface MaterialLineageResponse {
+    material_unit_id: string;
+    lineage: MaterialLineageItem[];
+}
+
 export default function MaterialDetail() {
     const { id = '' } = useParams();
     const [params, setParams] = useSearchParams();
@@ -73,6 +90,15 @@ export default function MaterialDetail() {
 
     const result = revision === null ? latest : historical;
     const item = valid ? result.data : undefined;
+    const lineage = useQuery({
+        queryKey: ['material-lineage', id],
+        queryFn: ({ signal }) =>
+            api<MaterialLineageResponse>(`/v1/materials/${encodeURIComponent(id)}/lineage`, {
+                signal,
+            }),
+        enabled: !!id,
+        retry: false,
+    });
     const indexing = useQuery({
         queryKey: ['material-index', id, item?.revision],
         queryFn: ({ signal }) =>
@@ -181,7 +207,7 @@ export default function MaterialDetail() {
                             gap: 12,
                         }}
                     >
-                        <Space size={10}>
+                        <Space size={10} wrap>
                             <HistoryOutlined style={{ color: '#1668dc', fontSize: 16 }} />
                             <Text strong style={{ fontSize: 13 }}>
                                 版本导航:
@@ -189,6 +215,11 @@ export default function MaterialDetail() {
                             <Tag color="purple" style={{ margin: 0, fontWeight: 600 }}>
                                 v{item.revision}
                             </Tag>
+                            {item.prev_revision ? (
+                                <Tag color="cyan" style={{ margin: 0, fontWeight: 500 }}>
+                                    前序版本: v{item.prev_revision}
+                                </Tag>
+                            ) : null}
                             <Tag
                                 color={item.superseded ? 'default' : 'success'}
                                 style={{ margin: 0 }}
@@ -197,12 +228,23 @@ export default function MaterialDetail() {
                             </Tag>
                         </Space>
 
-                        <Space size={8}>
+                        <Space size={8} wrap>
                             <Button
                                 size="small"
                                 icon={<LeftOutlined />}
-                                disabled={!item || item.revision <= 1}
-                                onClick={() => selectRevision(String(item.revision - 1))}
+                                disabled={
+                                    !item ||
+                                    (item.prev_revision != null
+                                        ? item.prev_revision <= 0
+                                        : item.revision <= 1)
+                                }
+                                onClick={() => {
+                                    const targetRev =
+                                        item.prev_revision != null && item.prev_revision > 0
+                                            ? item.prev_revision
+                                            : item.revision - 1;
+                                    selectRevision(String(targetRev));
+                                }}
                             >
                                 上一版本
                             </Button>
@@ -284,6 +326,19 @@ export default function MaterialDetail() {
                             <Descriptions.Item label="观测记录数">
                                 <Text strong>{item.observations.length} 条多模态切片</Text>
                             </Descriptions.Item>
+                            <Descriptions.Item label="版本血缘链">
+                                {item.prev_revision ? (
+                                    <Space size={6}>
+                                        <BranchesOutlined style={{ color: '#8b5cf6' }} />
+                                        <span className="mono">v{item.prev_revision} → v{item.revision}</span>
+                                        <Tag color="cyan" style={{ fontSize: 11, padding: '0 4px', margin: 0 }}>
+                                            受控升版
+                                        </Tag>
+                                    </Space>
+                                ) : (
+                                    <span className="mono">v{item.revision} (初始版本)</span>
+                                )}
+                            </Descriptions.Item>
                         </Descriptions>
 
                         {item.tags.length ? (
@@ -301,6 +356,113 @@ export default function MaterialDetail() {
                             </div>
                         ) : null}
                     </Card>
+
+                    {lineage.data?.lineage && lineage.data.lineage.length > 1 ? (
+                        <Card
+                            size="small"
+                            title={
+                                <Space size={8}>
+                                    <BranchesOutlined style={{ color: '#1668dc' }} />
+                                    <span style={{ fontWeight: 650, fontSize: 14 }}>
+                                        素材版本演进与血缘链 (Revision Lineage)
+                                    </span>
+                                    <Tag color="purple">{lineage.data.lineage.length} 个版本</Tag>
+                                </Space>
+                            }
+                            style={{ marginBottom: 10 }}
+                            bodyStyle={{ padding: 0 }}
+                        >
+                            <Table
+                                dataSource={lineage.data.lineage}
+                                rowKey="revision"
+                                pagination={false}
+                                size="small"
+                                columns={[
+                                    {
+                                        title: '版本号',
+                                        key: 'revision',
+                                        render: (_: unknown, row: MaterialLineageItem) => (
+                                            <Space size={6}>
+                                                <Tag
+                                                    color={row.revision === item.revision ? 'purple' : 'default'}
+                                                    style={{ fontWeight: row.revision === item.revision ? 700 : 400 }}
+                                                >
+                                                    v{row.revision}
+                                                </Tag>
+                                                {row.revision === item.revision ? (
+                                                    <Tag color="blue" style={{ fontSize: 11, margin: 0 }}>
+                                                        当前查看
+                                                    </Tag>
+                                                ) : null}
+                                            </Space>
+                                        ),
+                                    },
+                                    {
+                                        title: '前序版本 (prev_revision)',
+                                        key: 'prev_revision',
+                                        render: (_: unknown, row: MaterialLineageItem) =>
+                                            row.prev_revision ? (
+                                                <span className="mono" style={{ color: '#8b5cf6' }}>
+                                                    v{row.prev_revision}
+                                                </span>
+                                            ) : (
+                                                <span style={{ color: '#94a3b8' }}>— (基准)</span>
+                                            ),
+                                    },
+                                    {
+                                        title: '状态',
+                                        dataIndex: 'status',
+                                        key: 'status',
+                                        render: (status: string) => (
+                                            <Tag color={statusTagColor[status] || 'default'}>
+                                                {statusNames[status] || status}
+                                            </Tag>
+                                        ),
+                                    },
+                                    {
+                                        title: '多模态观测',
+                                        key: 'observations',
+                                        render: (_: unknown, row: MaterialLineageItem) => (
+                                            <span>{row.observations_count ?? 0} 条切片</span>
+                                        ),
+                                    },
+                                    {
+                                        title: '不可变内容哈希',
+                                        dataIndex: 'content_hash',
+                                        key: 'content_hash',
+                                        render: (hash: string) => (
+                                            <span className="mono" style={{ color: '#64748b' }}>
+                                                {hash ? `${hash.slice(0, 19)}...` : '未知'}
+                                            </span>
+                                        ),
+                                    },
+                                    {
+                                        title: '快照性质',
+                                        key: 'superseded',
+                                        render: (_: unknown, row: MaterialLineageItem) => (
+                                            <Tag color={row.superseded ? 'default' : 'success'}>
+                                                {row.superseded ? '历史只读快照' : '当前激活最新'}
+                                            </Tag>
+                                        ),
+                                    },
+                                    {
+                                        title: '操作',
+                                        key: 'action',
+                                        render: (_: unknown, row: MaterialLineageItem) => (
+                                            <Button
+                                                size="small"
+                                                type={row.revision === item.revision ? 'dashed' : 'link'}
+                                                disabled={row.revision === item.revision}
+                                                onClick={() => selectRevision(String(row.revision))}
+                                            >
+                                                {row.revision === item.revision ? '当前已选' : '回溯查看'}
+                                            </Button>
+                                        ),
+                                    },
+                                ]}
+                            />
+                        </Card>
+                    ) : null}
 
                     {/* 核心双栏：左侧播放器与来源，右侧观测记录与证据 */}
                     <Row gutter={[10, 10]} style={{ marginBottom: 10 }}>
