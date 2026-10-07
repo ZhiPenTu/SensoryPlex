@@ -641,6 +641,16 @@ async def consume_loop(
                     last_error_code, last_error_detail = error.code, error.detail
                     # 契约/事实缺陷：重投不会自愈，但也**不静默丢掉**——重投到上限后显式停止。
                     if delivered_count(message) >= options.max_deliver:
+                        from edge_material_sdk import get_registry
+
+                        ex = get_registry().get_metric("sensoryplex_retry_exhausted_total")
+                        if ex:
+                            ex.inc(
+                                labels={
+                                    "component": "index-consumer",
+                                    "reason": "event_retry_exhausted",
+                                }
+                            )
                         return ConsumeExit(
                             code=FATAL_EXIT_CODE,
                             fatal_code="event_retry_exhausted",
@@ -653,6 +663,16 @@ async def consume_loop(
                     cycle_failed += 1
                     last_error_code, last_error_detail = error.code, error.detail
                     if delivered_count(message) >= options.max_deliver:
+                        from edge_material_sdk import get_registry
+
+                        ex = get_registry().get_metric("sensoryplex_retry_exhausted_total")
+                        if ex:
+                            ex.inc(
+                                labels={
+                                    "component": "index-consumer",
+                                    "reason": "event_retry_exhausted",
+                                }
+                            )
                         return ConsumeExit(
                             code=FATAL_EXIT_CODE,
                             fatal_code="event_retry_exhausted",
@@ -718,11 +738,42 @@ async def consume_loop(
 
 def consume_message(conn, index, encoder, message, options: ConsumerOptions) -> SinkReport:
     """把一次投递变成一次 sink 尝试；抛错表示"这一次没成功"（由循环决定 ack/nak）。"""
+    from edge_material_sdk import TraceContext, get_tracer, set_trace_context
+
     event_id = message_event_id(message)
     envelope = envelope_of(message.data, expected_event_id=event_id)
-    return consume_event(
-        conn, index, encoder, event_id=envelope.event_id, envelope=envelope, options=options
+
+    raw_traceparent = None
+    if getattr(message, "headers", None) and "traceparent" in message.headers:
+        raw_traceparent = message.headers["traceparent"]
+    elif envelope.traceparent:
+        raw_traceparent = envelope.traceparent
+
+    trace_ctx = (
+        TraceContext.from_traceparent(raw_traceparent, generate_child_span=True)
+        if raw_traceparent
+        else None
     )
+    if trace_ctx:
+        set_trace_context(trace_ctx)
+
+    tracer = get_tracer("sensoryplex-index-worker")
+    span = tracer.start_span(
+        name="index.consume_event",
+        parent=trace_ctx,
+        attributes={"event.id": envelope.event_id, "event.type": envelope.event_type},
+    )
+    try:
+        report = consume_event(
+            conn, index, encoder, event_id=envelope.event_id, envelope=envelope, options=options
+        )
+        span.set_status("OK")
+        return report
+    except Exception as exc:
+        span.set_status("ERROR", str(exc))
+        raise
+    finally:
+        span.end()
 
 
 async def _nak(message, options: ConsumerOptions) -> None:

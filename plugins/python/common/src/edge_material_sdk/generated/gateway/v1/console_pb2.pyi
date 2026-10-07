@@ -40,16 +40,18 @@ class Identity(_message.Message):
     def __init__(self, principal: _Optional[str] = ..., display_name: _Optional[str] = ..., roles: _Optional[_Iterable[str]] = ..., permissions: _Optional[_Iterable[str]] = ..., csrf_token: _Optional[str] = ...) -> None: ...
 
 class ApiError(_message.Message):
-    __slots__ = ("detail", "reason_code", "trace_id", "retryable")
+    __slots__ = ("detail", "reason_code", "trace_id", "retryable", "traceparent")
     DETAIL_FIELD_NUMBER: _ClassVar[int]
     REASON_CODE_FIELD_NUMBER: _ClassVar[int]
     TRACE_ID_FIELD_NUMBER: _ClassVar[int]
     RETRYABLE_FIELD_NUMBER: _ClassVar[int]
+    TRACEPARENT_FIELD_NUMBER: _ClassVar[int]
     detail: str
     reason_code: str
     trace_id: str
     retryable: bool
-    def __init__(self, detail: _Optional[str] = ..., reason_code: _Optional[str] = ..., trace_id: _Optional[str] = ..., retryable: bool = ...) -> None: ...
+    traceparent: str
+    def __init__(self, detail: _Optional[str] = ..., reason_code: _Optional[str] = ..., trace_id: _Optional[str] = ..., retryable: bool = ..., traceparent: _Optional[str] = ...) -> None: ...
 
 class Capability(_message.Message):
     __slots__ = ("name", "available", "reason")

@@ -337,6 +337,15 @@ def run_serve(arguments) -> int:
             return 1
 
     # 可选在 serve 进程启动后台巡检对账线程
+    metrics_server = None
+    if getattr(arguments, "metrics_port", 0) > 0:
+        from edge_material_sdk import start_metrics_server
+
+        metrics_server = start_metrics_server(
+            port=arguments.metrics_port,
+            service_name="index",
+        )
+
     reconcile_runner = None
     if getattr(arguments, "reconcile", False):
         reconcile_runner = ReconciliationRunner(
@@ -381,6 +390,8 @@ def run_serve(arguments) -> int:
             runner.stop()
         if reconcile_runner is not None:
             reconcile_runner.stop()
+        if metrics_server is not None:
+            metrics_server.stop(0)
 
     signal.signal(signal.SIGTERM, stop_everything)
     signal.signal(signal.SIGINT, stop_everything)
@@ -389,6 +400,8 @@ def run_serve(arguments) -> int:
         runner.stop()
     if reconcile_runner is not None:
         reconcile_runner.stop()
+    if metrics_server is not None:
+        metrics_server.stop(0)
     pool.close()
     index.close()
     return runner.exit.code if runner is not None else 0
@@ -584,6 +597,12 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--reconcile-interval-s", type=float, default=300.0)
     serve.add_argument("--reconcile-batch", type=int, default=100)
     serve.add_argument("--reconcile-status-out", type=pathlib.Path, default=None)
+    serve.add_argument(
+        "--metrics-port",
+        type=int,
+        default=int(os.getenv("INDEX_METRICS_PORT", "0")),
+        help="Prometheus 指标端点端口 (0 为关闭)",
+    )
     serve.set_defaults(handler=run_serve)
 
     consume = subparsers.add_parser(

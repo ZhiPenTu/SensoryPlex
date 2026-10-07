@@ -15,7 +15,7 @@ message Identity {
   repeated string permissions = 4;
   string csrf_token = 5;
 }
-message ApiError { string detail = 1; string reason_code = 2; string trace_id = 3; bool retryable = 4; }
+message ApiError { string detail = 1; string reason_code = 2; string trace_id = 3; bool retryable = 4; string traceparent = 5; }
 message Capability { string name = 1; bool available = 2; string reason = 3; }
 message ConsoleStatus { repeated Capability capabilities = 1; string schema_version = 2; }
 message CreateUpload { string filename = 1; uint64 size_bytes = 2; string content_type = 3; }

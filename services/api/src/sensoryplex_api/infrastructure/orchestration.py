@@ -26,25 +26,49 @@ VALID_JOINS = {"same_item", "same_stream_window", "window_contains"}
 TERMINAL_TASK_STATES = {"succeeded", "failed", "cancelled", "blocked"}
 
 
-def _emit_tasks_ready_event(conn, run_id: str, task_ids: list[str]) -> str | None:
+def _emit_tasks_ready_event(
+    conn, run_id: str, task_ids: list[str], traceparent: str = ""
+) -> str | None:
     """向事务性 event_outbox 追加 tasks.ready 广播事件，由 relay 发布至 JetStream 唤醒 Worker。"""
     if not task_ids:
         return None
+    if not traceparent:
+        from edge_material_sdk import get_trace_context
+
+        ctx = get_trace_context()
+        if ctx:
+            traceparent = ctx.traceparent
+
     from edge_material_sdk.generated.common.v1.common_pb2 import EventEnvelope
 
     event_id = identifier("evt")
+    trace_id = ""
+    if traceparent:
+        parts = traceparent.split("-")
+        if len(parts) >= 2:
+            trace_id = parts[1]
+
     envelope = EventEnvelope(
         event_id=event_id,
         event_type="tasks.ready",
         stream_id=run_id,
-        trace_id="",
+        trace_id=trace_id,
         payload_ref=f"{run_id}:{','.join(task_ids)}",
         created_at_unix_ms=int(time.time() * 1000),
         schema_version=1,
+        traceparent=traceparent,
     )
     conn.execute(
-        "INSERT INTO event_outbox(event_id,event_type,contract_bytes) VALUES (%s,%s,%s)",
-        (event_id, "tasks.ready", envelope.SerializeToString(deterministic=True)),
+        """
+        INSERT INTO event_outbox(event_id,event_type,contract_bytes,traceparent)
+        VALUES (%s,%s,%s,%s)
+        """,
+        (
+            event_id,
+            "tasks.ready",
+            envelope.SerializeToString(deterministic=True),
+            traceparent or None,
+        ),
     )
     return event_id
 
@@ -371,6 +395,7 @@ def submit_pipeline_run(
     input_ref: str,
     idempotency_key: str,
     deadline_unix_ms: int = 0,
+    traceparent: str = "",
 ) -> tuple[dict[str, Any], list[dict[str, Any]], bool]:
     """提交 Pipeline Run。通过条件唯一索引与行锁确保严格幂等性，初次提交原子实例化所有 Task。"""
     if not idempotency_key:
@@ -419,13 +444,20 @@ def submit_pipeline_run(
     if deadline_unix_ms <= 0:
         deadline_unix_ms = int(time.time() * 1000) + 3600_000  # 默认 1 小时超时
 
+    if not traceparent:
+        from edge_material_sdk import get_trace_context
+
+        ctx = get_trace_context()
+        if ctx:
+            traceparent = ctx.traceparent
+
     # 插入 Run
     conn.execute(
         """
         INSERT INTO pipeline_run (
             run_id, pipeline_id, revision, input_ref, idempotency_key,
-            deadline_unix_ms, state, owner
-        ) VALUES (%s, %s, %s, %s, %s, %s, 'running', %s)
+            deadline_unix_ms, state, owner, traceparent
+        ) VALUES (%s, %s, %s, %s, %s, %s, 'running', %s, %s)
         """,
         (
             run_id,
@@ -435,6 +467,7 @@ def submit_pipeline_run(
             idempotency_key,
             deadline_unix_ms,
             owner,
+            traceparent or None,
         ),
     )
 
@@ -460,8 +493,8 @@ def submit_pipeline_run(
             """
             INSERT INTO pipeline_task (
                 task_id, run_id, node_id, attempt, max_attempts,
-                idempotency_key, state, required
-            ) VALUES (%s, %s, %s, 0, %s, %s, %s, %s)
+                idempotency_key, state, required, traceparent
+            ) VALUES (%s, %s, %s, 0, %s, %s, %s, %s, %s)
             """,
             (
                 task_id,
@@ -471,6 +504,7 @@ def submit_pipeline_run(
                 task_idemp,
                 initial_state,
                 n.get("required", True),
+                traceparent or None,
             ),
         )
         created_tasks.append(
@@ -505,7 +539,7 @@ def submit_pipeline_run(
 
     ready_task_ids = [t["task_id"] for t in created_tasks if t["state"] == "ready"]
     if ready_task_ids:
-        _emit_tasks_ready_event(conn, run_id, ready_task_ids)
+        _emit_tasks_ready_event(conn, run_id, ready_task_ids, traceparent=traceparent)
 
     audit(conn, owner, "pipeline.run.submit", run_id)
 
@@ -680,13 +714,14 @@ def schedule_ready_tasks(
                 c_co_located = True if is_co_located is None else bool(is_co_located)
                 c_status = "ready"
 
+            task_tp = task.get("traceparent") or None
             if c_status not in ("ready", "candidate"):
                 conn.execute(
                     """
                     INSERT INTO scheduler_assignment (
                         assignment_id, task_id, run_id, attempt, requested_node_id,
-                        actual_node_id, data_plane_node_id, decision, reason_code
-                    ) VALUES (%s, %s, %s, %s, %s, NULL, 'local-data-plane', 'rejected', %s)
+                        actual_node_id, data_plane_node_id, decision, reason_code, traceparent
+                    ) VALUES (%s, %s, %s, %s, %s, NULL, 'local-data-plane', 'rejected', %s, %s)
                     """,
                     (
                         identifier("asgn_rej"),
@@ -695,6 +730,7 @@ def schedule_ready_tasks(
                         task["attempt"] + 1,
                         candidate_node_id,
                         f"node_not_ready:{c_status}",
+                        task_tp,
                     ),
                 )
                 continue
@@ -707,10 +743,10 @@ def schedule_ready_tasks(
                     """
                     INSERT INTO scheduler_assignment (
                         assignment_id, task_id, run_id, attempt, requested_node_id,
-                        actual_node_id, data_plane_node_id, decision, reason_code
+                        actual_node_id, data_plane_node_id, decision, reason_code, traceparent
                     ) VALUES (
                         %s, %s, %s, %s, %s, NULL,
-                        'local-data-plane', 'rejected', 'data_locality_violation'
+                        'local-data-plane', 'rejected', 'data_locality_violation', %s
                     )
                     """,
                     (
@@ -719,6 +755,7 @@ def schedule_ready_tasks(
                         task["run_id"],
                         task["attempt"] + 1,
                         candidate_node_id,
+                        task_tp,
                     ),
                 )
                 continue
@@ -752,8 +789,8 @@ def schedule_ready_tasks(
                     """
                     INSERT INTO scheduler_assignment (
                         assignment_id, task_id, run_id, attempt, requested_node_id,
-                        actual_node_id, data_plane_node_id, decision, reason_code
-                    ) VALUES (%s, %s, %s, %s, NULL, NULL, 'cluster', 'rejected', %s)
+                        actual_node_id, data_plane_node_id, decision, reason_code, traceparent
+                    ) VALUES (%s, %s, %s, %s, NULL, NULL, 'cluster', 'rejected', %s, %s)
                     """,
                     (
                         identifier("asgn_rej"),
@@ -761,6 +798,7 @@ def schedule_ready_tasks(
                         task["run_id"],
                         task["attempt"] + 1,
                         rej_reason,
+                        task_tp,
                     ),
                 )
                 if placement == "data_plane_local" and not any(
@@ -795,8 +833,9 @@ def schedule_ready_tasks(
             """
             INSERT INTO scheduler_assignment (
                 assignment_id, task_id, run_id, attempt, requested_node_id,
-                actual_node_id, data_plane_node_id, decision, reason_code, lease_expires_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'assigned', '', %s)
+                actual_node_id, data_plane_node_id, decision, reason_code,
+                lease_expires_at, traceparent
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'assigned', '', %s, %s)
             """,
             (
                 asgn_id,
@@ -807,6 +846,7 @@ def schedule_ready_tasks(
                 chosen_node_id,
                 "local-data-plane" if chosen_is_co_located else "remote",
                 lease_expires_at,
+                task.get("traceparent") or None,
             ),
         )
 
@@ -946,13 +986,14 @@ def _record_task_execution_receipt(conn, task: dict[str, Any], receipt: dict[str
             fail(409, "task_receipt_conflict")
         return
 
+    receipt_tp = receipt.get("traceparent") or task.get("traceparent") or None
     conn.execute(
         """
         INSERT INTO task_execution_receipt(
             task_id,attempt,assignment_id,run_id,plugin_id,artifact_digest,config_hash,
             input_count,output_count,result_manifest_ref,reason_code,receipt_digest,
-            started_at,completed_at
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            started_at,completed_at,traceparent
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """,
         (
             task["task_id"],
@@ -969,6 +1010,7 @@ def _record_task_execution_receipt(conn, task: dict[str, Any], receipt: dict[str
             computed,
             receipt["started_at"],
             receipt["completed_at"],
+            receipt_tp,
         ),
     )
 
@@ -1201,7 +1243,13 @@ def report_task_result(
                     unlocked_task_ids.append(unlocked["task_id"])
 
         if unlocked_task_ids:
-            _emit_tasks_ready_event(conn, run_id, unlocked_task_ids)
+            run_rec = one(conn, "SELECT traceparent FROM pipeline_run WHERE run_id=%s", (run_id,))
+            _emit_tasks_ready_event(
+                conn,
+                run_id,
+                unlocked_task_ids,
+                traceparent=run_rec.get("traceparent") or "" if run_rec else "",
+            )
 
         execution_state = _sync_console_execution(conn, run_id)
         remaining = conn.execute(

@@ -403,3 +403,74 @@ def test_bounded_retry_and_crash_recovery(client, orch_database):
     assert tasks_map["r1"]["state"] == "PIPELINE_TASK_STATE_FAILED"
     assert tasks_map["r2"]["state"] == "PIPELINE_TASK_STATE_BLOCKED"
     assert run_state["run"]["state"] == "PIPELINE_RUN_STATE_FAILED"
+
+
+def test_distributed_tracing_and_metrics_endpoints(client, orch_database):
+    trace_id = "4bf92f3577b34da6a3ce929d0e0e4736"
+    span_id = "00f067aa0ba902b7"
+    raw_traceparent = f"00-{trace_id}-{span_id}-01"
+
+    client.post(
+        "/v1/orchestration/pipelines",
+        json={
+            "pipeline_id": "trace-pipeline",
+            "revision": 1,
+            "nodes": [
+                {
+                    "id": "t1",
+                    "plugin_id": "p.test",
+                    "consumes": [],
+                    "produces": ["out"],
+                    "required": True,
+                    "deadline_ms": 5000,
+                }
+            ],
+            "edges": [],
+        },
+    )
+
+    res = client.post(
+        "/v1/orchestration/runs",
+        headers={"traceparent": raw_traceparent},
+        json={
+            "pipeline_id": "trace-pipeline",
+            "revision": 1,
+            "input_ref": "video://trace-test",
+            "idempotency_key": "k-trace-1",
+        },
+    )
+    assert res.status_code == 201
+    assert "traceparent" in res.headers
+    assert res.headers["x-trace-id"] == trace_id
+    body = res.json()
+    run_id = body["run"]["run_id"]
+
+    with psycopg.connect(orch_database) as conn:
+        run_row = conn.execute(
+            "SELECT traceparent FROM pipeline_run WHERE run_id=%s", (run_id,)
+        ).fetchone()
+        assert run_row is not None
+        assert run_row[0].startswith(f"00-{trace_id}-")
+
+        task_row = conn.execute(
+            "SELECT traceparent FROM pipeline_task WHERE run_id=%s", (run_id,)
+        ).fetchone()
+        assert task_row is not None
+        assert task_row[0].startswith(f"00-{trace_id}-")
+
+    waterfall_res = client.get(f"/v1/traces/{trace_id}")
+    assert waterfall_res.status_code == 200
+    waterfall = waterfall_res.json()
+    assert waterfall["trace_id"] == trace_id
+    assert "spans" in waterfall
+    assert len(waterfall["spans"]) >= 1
+
+    otel_res = client.get(f"/admin/v1/traces/{trace_id}/otel")
+    assert otel_res.status_code == 200
+    otel = otel_res.json()
+    assert "resourceSpans" in otel
+
+    metrics_res = client.get("/metrics")
+    assert metrics_res.status_code == 200
+    assert "text/plain" in metrics_res.headers["content-type"]
+    assert "sensoryplex_http_request_duration_seconds" in metrics_res.text

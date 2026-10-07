@@ -1,16 +1,25 @@
 """单进程装配业务、管理与认证模块；执行能力由 Runtime 提供。"""
 
+import re
 import time
 from contextlib import asynccontextmanager
 from typing import Annotated
 from uuid import uuid4
 
 import psycopg
-from edge_material_sdk import get_logger, set_trace_id
+from edge_material_sdk import (
+    TraceContext,
+    get_logger,
+    get_registry,
+    get_trace_recorder,
+    get_tracer,
+    set_trace_context,
+    update_process_memory_metrics,
+)
 from edge_material_sdk.generated.gateway.v1 import console_pb2 as pb
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from psycopg_pool import AsyncConnectionPool, ConnectionPool, PoolTimeout, TooManyRequests
 
@@ -34,8 +43,10 @@ from .settings import Settings
 # 多一条（镜像旧了）少一条（没跑迁移）都直接 503。因此每加一条迁移都必须同步这里——
 # 本切片新增 `0003_embedding_index` 时漏掉这一跳，就是被真实集成测试抓出来的。
 # `SCHEMA` 仍是最新版本，供 `schema_version` 字段上报。
-SCHEMA = "0024_material_revision_lineage"
+SCHEMA = "0025_w3c_trace_context"
 SCHEMA_VERSIONS = {
+    "0025_w3c_trace_context",
+    "0024_material_revision_lineage",
     "0023_outbox_partitioning_and_archival",
     "0020_enrichment_input_identity",
     "0021_plugin_revision_retirement",
@@ -148,15 +159,50 @@ def create_app(settings: Settings | None = None):
                 reason_code=reason,
                 trace_id=getattr(request.state, "trace_id", ""),
                 retryable=status in {429, 503} if retryable is None else retryable,
+                traceparent=getattr(request.state, "traceparent", ""),
             )
         )
         return JSONResponse(status_code=status, content=body)
 
     @app.middleware("http")
     async def boundaries(request: Request, call_next):
-        trace_id = uuid4().hex
-        request.state.trace_id = trace_id
-        set_trace_id(trace_id)
+        # W3C TraceContext 与分布式链路追踪透传接入
+        raw_traceparent = request.headers.get("traceparent")
+        raw_tracestate = request.headers.get("tracestate", "")
+        raw_trace_id = request.headers.get("x-trace-id")
+
+        trace_ctx = TraceContext.from_traceparent(
+            raw_traceparent, raw_tracestate, generate_child_span=True
+        )
+        if trace_ctx is None:
+            if raw_trace_id and re.fullmatch(r"[0-9a-f]{32}", raw_trace_id.lower()):
+                trace_ctx = TraceContext(
+                    trace_id=raw_trace_id.lower(),
+                    span_id=uuid4().hex[:16],
+                    parent_span_id=None,
+                    trace_flags="01",
+                    tracestate=raw_tracestate,
+                )
+            else:
+                trace_ctx = TraceContext.new_root(sampled=True, tracestate=raw_tracestate)
+
+        request.state.trace_context = trace_ctx
+        request.state.traceparent = trace_ctx.traceparent
+        request.state.trace_id = trace_ctx.trace_id
+        set_trace_context(trace_ctx)
+
+        # 启动 API 接入层服务端 Span
+        tracer = get_tracer("sensoryplex-api")
+        span = tracer.start_span(
+            name=f"http.{request.method.lower()} {request.url.path}",
+            parent=trace_ctx,
+            attributes={
+                "http.method": request.method,
+                "http.target": request.url.path,
+                "http.client_ip": request.client.host if request.client else "-",
+            },
+        )
+        request.state.span = span
         start_time = time.perf_counter()
 
         is_upload = (
@@ -191,9 +237,30 @@ def create_app(settings: Settings | None = None):
             request._body = bytes(body)
 
         response = await call_next(request)
-        duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
+        duration_s = time.perf_counter() - start_time
+        duration_ms = round(duration_s * 1000, 2)
 
-        response.headers["X-Trace-Id"] = request.state.trace_id
+        # 结束接入层 Span 并记录耗时与状态
+        span.set_attribute("http.status_code", response.status_code)
+        span.set_status("OK" if response.status_code < 500 else "ERROR")
+        span.end()
+
+        # 采集标准 Prometheus HTTP 请求耗时指标
+        reg = get_registry()
+        http_metric = reg.get_metric("sensoryplex_http_request_duration_seconds")
+        if http_metric:
+            http_metric.observe(
+                duration_s,
+                labels={
+                    "service": "api",
+                    "method": request.method,
+                    "path": request.url.path,
+                    "status": str(response.status_code),
+                },
+            )
+
+        response.headers["traceparent"] = trace_ctx.traceparent
+        response.headers["X-Trace-Id"] = trace_ctx.trace_id
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "same-origin"
         response.headers["X-Frame-Options"] = "DENY"
@@ -283,6 +350,38 @@ def create_app(settings: Settings | None = None):
         if versions != SCHEMA_VERSIONS:
             fail(503, "schema_version_mismatch")
         return SCHEMA
+
+    @app.get("/metrics", response_class=PlainTextResponse)
+    def prometheus_metrics():
+        """统一暴露 Prometheus 标准指标端点 (Metrics Endpoint)。"""
+        update_process_memory_metrics("api")
+        return PlainTextResponse(
+            get_registry().format_prometheus(),
+            media_type="text/plain; version=0.0.4; charset=utf-8",
+        )
+
+    @app.get("/admin/v1/traces/{trace_id}")
+    @app.get("/v1/traces/{trace_id}")
+    def get_trace_waterfall(
+        trace_id: str,
+        p: Annotated[object, Depends(auth.require("materials:read"))] = None,
+    ):
+        """端到端链路追踪耗时瀑布图与瓶颈定位分析。"""
+        waterfall = get_trace_recorder().get_waterfall(trace_id)
+        if waterfall is None:
+            fail(404, "trace_not_found")
+        return waterfall
+
+    @app.get("/admin/v1/traces/{trace_id}/otel")
+    def get_trace_otel_export(
+        trace_id: str,
+        p: Annotated[object, Depends(auth.require("materials:read"))] = None,
+    ):
+        """导出 OpenTelemetry ResourceSpans 标准规范 JSON。"""
+        otel = get_trace_recorder().export_otel_json(trace_id)
+        if otel is None:
+            fail(404, "trace_not_found")
+        return otel
 
     @app.get("/livez")
     def live():

@@ -19,6 +19,7 @@ export interface RequestContext {
   attempt: number;
   idempotency_key: string;
   privacy_policy?: PrivacyPolicy;
+  traceparent: string;
 }
 export interface PrivacyPolicy {
   data_egress: string;
@@ -76,6 +77,7 @@ export interface EventEnvelope {
   payload_ref: string;
   created_at_unix_ms: string;
   schema_version: number;
+  traceparent: string;
 }
 export type ModelApplicability = "MODEL_APPLICABILITY_UNSPECIFIED" | "MODEL_APPLICABILITY_MODEL_BASED" | "MODEL_APPLICABILITY_NOT_APPLICABLE";
 export interface Provenance {
@@ -263,6 +265,7 @@ export interface ApiError {
   reason_code: string;
   trace_id: string;
   retryable: boolean;
+  traceparent: string;
 }
 export interface Capability {
   name: string;

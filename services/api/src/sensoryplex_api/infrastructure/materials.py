@@ -17,10 +17,17 @@ class RevisionConflict(ValueError):
     pass
 
 
-def append_derived_material(conn, material, *, trace_id, execution_id):
+def append_derived_material(
+    conn, material, *, trace_id: str, execution_id: str = "", traceparent: str = ""
+):
     """从本执行事实派生新版本；全局串行取号，自动推进版本链与历史血缘。"""
     return append_material(
-        conn, material, trace_id=trace_id, execution_id=execution_id, auto_forward=True
+        conn,
+        material,
+        trace_id=trace_id,
+        execution_id=execution_id,
+        auto_forward=True,
+        traceparent=traceparent,
     )
 
 
@@ -32,6 +39,7 @@ def append_material(
     execution_id: str = "",
     auto_forward: bool = False,
     forward_revision: bool | None = None,
+    traceparent: str = "",
 ) -> bool:
     """原子性事实 + lineage + outbox；True=新增，False=完全一致的 replay。
 
@@ -305,6 +313,13 @@ def append_material(
                 (material.material_unit_id, material.revision, execution_id),
             )
         event_id = f"material:{material.material_unit_id}:{material.revision}"
+        if not traceparent:
+            from edge_material_sdk import get_trace_context
+
+            ctx = get_trace_context()
+            if ctx:
+                traceparent = ctx.traceparent
+
         event = EventEnvelope(
             event_id=event_id,
             event_type="material.upserted",
@@ -313,18 +328,30 @@ def append_material(
             payload_ref=event_id,
             created_at_unix_ms=material.created_at_unix_ms,
             schema_version=1,
+            traceparent=traceparent,
         )
         updated = conn.execute(
             (
-                "UPDATE event_outbox SET contract_bytes=%s, event_type=%s "
+                "UPDATE event_outbox SET contract_bytes=%s, event_type=%s, traceparent=%s "
                 "WHERE event_id=%s RETURNING event_id"
             ),
-            (event.SerializeToString(deterministic=True), event.event_type, event_id),
+            (
+                event.SerializeToString(deterministic=True),
+                event.event_type,
+                traceparent or None,
+                event_id,
+            ),
         ).fetchone()
         if not updated:
             conn.execute(
-                "INSERT INTO event_outbox(event_id,event_type,contract_bytes) VALUES (%s,%s,%s)",
-                (event_id, event.event_type, event.SerializeToString(deterministic=True)),
+                "INSERT INTO event_outbox(event_id,event_type,contract_bytes,traceparent) "
+                "VALUES (%s,%s,%s,%s)",
+                (
+                    event_id,
+                    event.event_type,
+                    event.SerializeToString(deterministic=True),
+                    traceparent or None,
+                ),
             )
         return True
 

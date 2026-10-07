@@ -26,6 +26,7 @@ def _format_run(run: dict[str, Any]) -> dict[str, Any]:
         "deadline_unix_ms": int(run["deadline_unix_ms"]),
         "state": f"PIPELINE_RUN_STATE_{run['state'].upper()}",
         "owner": run.get("owner", ""),
+        "traceparent": run.get("traceparent") or "",
         "error_code": run.get("error_code") or "",
         "error_detail": run.get("error_detail") or "",
         "created_at_unix_ms": int(run["created_at"].timestamp() * 1000)
@@ -54,6 +55,7 @@ def _format_task(task: dict[str, Any]) -> dict[str, Any]:
         "error_detail": task.get("error_detail") or "",
         "output_ref": task.get("output_ref") or "",
         "required": bool(task.get("required", True)),
+        "traceparent": task.get("traceparent") or "",
         "created_at_unix_ms": int(task["created_at"].timestamp() * 1000)
         if task.get("created_at")
         else 0,
@@ -74,6 +76,7 @@ def _format_assignment(asgn: dict[str, Any]) -> dict[str, Any]:
         "data_plane_node_id": asgn.get("data_plane_node_id") or "",
         "decision": asgn["decision"],
         "reason_code": asgn.get("reason_code") or "",
+        "traceparent": asgn.get("traceparent") or "",
         "lease_expires_at_unix_ms": int(asgn["lease_expires_at"].timestamp() * 1000)
         if asgn.get("lease_expires_at")
         else 0,
@@ -194,6 +197,13 @@ def register(app, pool, auth, settings):
         input_ref = body.get("input_ref", "")
         idempotency_key = body.get("idempotency_key", "")
         deadline_unix_ms = int(body.get("deadline_unix_ms", 0))
+        traceparent = body.get("traceparent", "")
+        if not traceparent:
+            from edge_material_sdk import get_trace_context
+
+            ctx = get_trace_context()
+            if ctx:
+                traceparent = ctx.traceparent
 
         with pool.connection() as conn:
             run_rec, task_recs, is_duplicate = orch.submit_pipeline_run(
@@ -204,6 +214,7 @@ def register(app, pool, auth, settings):
                 input_ref=input_ref,
                 idempotency_key=idempotency_key,
                 deadline_unix_ms=deadline_unix_ms,
+                traceparent=traceparent,
             )
         return {
             "run": _format_run(run_rec),
