@@ -71,7 +71,7 @@ class TimeRange(_message.Message):
     def __init__(self, start_ms: _Optional[int] = ..., end_ms: _Optional[int] = ...) -> None: ...
 
 class RequestContext(_message.Message):
-    __slots__ = ("request_id", "trace_id", "pipeline_run_id", "stream_id", "source_id", "deadline_unix_ms", "attempt", "idempotency_key", "privacy_policy")
+    __slots__ = ("request_id", "trace_id", "pipeline_run_id", "stream_id", "source_id", "deadline_unix_ms", "attempt", "idempotency_key", "privacy_policy", "traceparent")
     REQUEST_ID_FIELD_NUMBER: _ClassVar[int]
     TRACE_ID_FIELD_NUMBER: _ClassVar[int]
     PIPELINE_RUN_ID_FIELD_NUMBER: _ClassVar[int]
@@ -81,6 +81,7 @@ class RequestContext(_message.Message):
     ATTEMPT_FIELD_NUMBER: _ClassVar[int]
     IDEMPOTENCY_KEY_FIELD_NUMBER: _ClassVar[int]
     PRIVACY_POLICY_FIELD_NUMBER: _ClassVar[int]
+    TRACEPARENT_FIELD_NUMBER: _ClassVar[int]
     request_id: str
     trace_id: str
     pipeline_run_id: str
@@ -90,7 +91,8 @@ class RequestContext(_message.Message):
     attempt: int
     idempotency_key: str
     privacy_policy: PrivacyPolicy
-    def __init__(self, request_id: _Optional[str] = ..., trace_id: _Optional[str] = ..., pipeline_run_id: _Optional[str] = ..., stream_id: _Optional[str] = ..., source_id: _Optional[str] = ..., deadline_unix_ms: _Optional[int] = ..., attempt: _Optional[int] = ..., idempotency_key: _Optional[str] = ..., privacy_policy: _Optional[_Union[PrivacyPolicy, _Mapping]] = ...) -> None: ...
+    traceparent: str
+    def __init__(self, request_id: _Optional[str] = ..., trace_id: _Optional[str] = ..., pipeline_run_id: _Optional[str] = ..., stream_id: _Optional[str] = ..., source_id: _Optional[str] = ..., deadline_unix_ms: _Optional[int] = ..., attempt: _Optional[int] = ..., idempotency_key: _Optional[str] = ..., privacy_policy: _Optional[_Union[PrivacyPolicy, _Mapping]] = ..., traceparent: _Optional[str] = ...) -> None: ...
 
 class PrivacyPolicy(_message.Message):
     __slots__ = ("data_egress", "retain_derived_payload")
@@ -189,7 +191,7 @@ class BufferLease(_message.Message):
     def __init__(self, lease_id: _Optional[str] = ..., expires_at_unix_ms: _Optional[int] = ..., read_only: bool = ...) -> None: ...
 
 class EventEnvelope(_message.Message):
-    __slots__ = ("event_id", "event_type", "stream_id", "trace_id", "payload_ref", "created_at_unix_ms", "schema_version")
+    __slots__ = ("event_id", "event_type", "stream_id", "trace_id", "payload_ref", "created_at_unix_ms", "schema_version", "traceparent")
     EVENT_ID_FIELD_NUMBER: _ClassVar[int]
     EVENT_TYPE_FIELD_NUMBER: _ClassVar[int]
     STREAM_ID_FIELD_NUMBER: _ClassVar[int]
@@ -197,6 +199,7 @@ class EventEnvelope(_message.Message):
     PAYLOAD_REF_FIELD_NUMBER: _ClassVar[int]
     CREATED_AT_UNIX_MS_FIELD_NUMBER: _ClassVar[int]
     SCHEMA_VERSION_FIELD_NUMBER: _ClassVar[int]
+    TRACEPARENT_FIELD_NUMBER: _ClassVar[int]
     event_id: str
     event_type: str
     stream_id: str
@@ -204,4 +207,5 @@ class EventEnvelope(_message.Message):
     payload_ref: str
     created_at_unix_ms: int
     schema_version: int
-    def __init__(self, event_id: _Optional[str] = ..., event_type: _Optional[str] = ..., stream_id: _Optional[str] = ..., trace_id: _Optional[str] = ..., payload_ref: _Optional[str] = ..., created_at_unix_ms: _Optional[int] = ..., schema_version: _Optional[int] = ...) -> None: ...
+    traceparent: str
+    def __init__(self, event_id: _Optional[str] = ..., event_type: _Optional[str] = ..., stream_id: _Optional[str] = ..., trace_id: _Optional[str] = ..., payload_ref: _Optional[str] = ..., created_at_unix_ms: _Optional[int] = ..., schema_version: _Optional[int] = ..., traceparent: _Optional[str] = ...) -> None: ...

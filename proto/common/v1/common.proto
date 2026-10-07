@@ -17,6 +17,7 @@ message RequestContext {
   uint32 attempt = 7;
   string idempotency_key = 8;
   PrivacyPolicy privacy_policy = 9;
+  string traceparent = 10;
 }
 
 message PrivacyPolicy {
@@ -130,4 +131,5 @@ message EventEnvelope {
   string payload_ref = 5;
   int64 created_at_unix_ms = 6;
   uint32 schema_version = 7;
+  string traceparent = 8;
 }

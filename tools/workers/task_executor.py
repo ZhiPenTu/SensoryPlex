@@ -262,6 +262,9 @@ def _receipt(
         "completed_at": data["completed_at"].isoformat(),
     }
     data["receipt_digest"] = _sha256_json(digest_fields)
+    data["traceparent"] = (
+        task.get("traceparent") or manifest.get("run", {}).get("traceparent") or ""
+    )
     return {
         **{key: value for key, value in data.items() if key not in {"started_at", "completed_at"}},
         "started_at_unix_ms": started_ms,
@@ -869,6 +872,7 @@ class TaskExecutor:
             raise TaskExecutionError("task_execution_input_budget_exceeded")
         observations, frames = [], []
         task = manifest["task"]
+        tp = task.get("traceparent") or manifest.get("run", {}).get("traceparent") or ""
         with grpc.insecure_channel(endpoint.endpoint) as channel:
             stub = runtime_pb2_grpc.ProcessorPluginServiceStub(channel)
             for source in upstream.observations:
@@ -890,11 +894,17 @@ class TaskExecutor:
                             {"task": task["task_id"], "source": source.observation_id}
                         ),
                         privacy_policy=common.PrivacyPolicy(data_egress="local_only"),
+                        traceparent=tp,
                     ),
                     inputs=[runtime_pb2.PluginInput(observation=source)],
                     processor_release_id=manifest["plugin"]["release_id"],
                 )
-                response = stub.Process(request, timeout=manifest["plugin"]["deadline_ms"] / 1000)
+                metadata = [("traceparent", tp)] if tp else None
+                response = stub.Process(
+                    request,
+                    timeout=manifest["plugin"]["deadline_ms"] / 1000,
+                    metadata=metadata,
+                )
                 if response.HasField("error"):
                     raise TaskExecutionError(
                         response.error.reason_code, retryable=response.error.retryable
@@ -1573,6 +1583,7 @@ class TaskExecutor:
                     "|".join([task["task_id"], group.label, entry.content_hash]).encode()
                 ).hexdigest()
             )
+            frame_tp = task.get("traceparent") or manifest.get("run", {}).get("traceparent") or ""
             return runtime_pb2.ProcessRequest(
                 context=common.RequestContext(
                     request_id=f"req-{task['task_id']}-{group.label}-{entry.buffer_id}",
@@ -1587,6 +1598,7 @@ class TaskExecutor:
                     attempt=int(task["attempt"]),
                     idempotency_key=digest,
                     privacy_policy=common.PrivacyPolicy(data_egress="local_only"),
+                    traceparent=frame_tp,
                 ),
                 inputs=[runtime_pb2.PluginInput(buffer=self._descriptor(entry, handoff_endpoint))],
                 processor_release_id=manifest["plugin"].get("release_id")
@@ -1599,9 +1611,13 @@ class TaskExecutor:
             # 收尾清空保留表时必须由调度方归还，不能被当成"插件负责"。
             used.add(entry.buffer_id)
             try:
+                frame_req = request_for(entry)
+                frame_tp = frame_req.context.traceparent
+                metadata = [("traceparent", frame_tp)] if frame_tp else None
                 response = plugin.Process(
-                    request_for(entry),
+                    frame_req,
                     timeout=max(1, manifest["plugin"]["deadline_ms"] / 1000),
+                    metadata=metadata,
                 )
             except grpc.RpcError as error:
                 failure = f"plugin_rpc_failed:{error.code().name}"

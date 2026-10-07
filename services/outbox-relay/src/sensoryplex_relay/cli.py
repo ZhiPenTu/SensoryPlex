@@ -72,6 +72,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--safety-window-days", type=int, default=7, help="归档安全窗口天数 (默认 7 天)"
     )
+    parser.add_argument(
+        "--metrics-port",
+        type=int,
+        default=int(os.getenv("RELAY_METRICS_PORT", "0")),
+        help="Prometheus 指标服务端口 (0 为关闭)",
+    )
     return parser
 
 
@@ -153,6 +159,15 @@ def main(argv: list[str] | None = None) -> int:
         subject_prefix=options.subject_prefix,
         batch=options.batch,
     )
+    metrics_server = None
+    if arguments.metrics_port > 0:
+        from edge_material_sdk import start_metrics_server
+
+        metrics_server = start_metrics_server(
+            port=arguments.metrics_port,
+            service_name="relay",
+        )
+
     emit = StatusWriter(arguments.status_out)
     try:
         return asyncio.run(
@@ -181,6 +196,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     except KeyboardInterrupt:  # pragma: no cover - 信号处理器已覆盖
         return 0
+    finally:
+        if metrics_server is not None:
+            metrics_server.stop(0)
 
 
 if __name__ == "__main__":

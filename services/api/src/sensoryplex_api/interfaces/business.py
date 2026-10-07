@@ -287,6 +287,11 @@ def register(app, pool, auth, settings):
         _assert_v2_plugin_instances(conn, node_id=target_node_id, revision=revision)
 
         input_ref = f"console_upload:{upload['id']}:{upload['sha256']}"
+        from edge_material_sdk import get_trace_context
+
+        ctx = get_trace_context()
+        traceparent = ctx.traceparent if ctx else ""
+
         idempotency_key = f"console_job:{draft['id']}:{pipeline['graph_digest']}"
         run, _, duplicate = orchestration.submit_pipeline_run(
             conn,
@@ -295,6 +300,7 @@ def register(app, pool, auth, settings):
             revision=int(pipeline["orchestration_revision"]),
             input_ref=input_ref,
             idempotency_key=idempotency_key,
+            traceparent=traceparent,
         )
         execution = one(
             conn,
@@ -310,8 +316,8 @@ def register(app, pool, auth, settings):
             """
             INSERT INTO console_job_execution(
                 execution_id,job_id,run_id,pipeline_id,pipeline_revision,graph_digest,
-                target_node_id,input_ref,state
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'running')
+                target_node_id,input_ref,state,traceparent
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'running',%s)
             RETURNING *
             """,
             (
@@ -323,6 +329,7 @@ def register(app, pool, auth, settings):
                 pipeline["graph_digest"],
                 target_node_id,
                 input_ref,
+                traceparent or None,
             ),
         )
         assignments = orchestration.schedule_ready_tasks(

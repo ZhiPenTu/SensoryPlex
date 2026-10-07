@@ -287,6 +287,14 @@ def enqueue_vlm_tasks(
         if start_ms // 1000 in existing_seconds:
             continue
         task_id = _task_id()
+        traceparent = execution.get("traceparent") or ""
+        if not traceparent:
+            from edge_material_sdk import get_trace_context
+
+            ctx = get_trace_context()
+            if ctx:
+                traceparent = ctx.traceparent
+
         task = orchestration_pb2.TaskInputManifest(
             run_id=str(execution["run_id"]),
             task_id=task_id,
@@ -312,6 +320,7 @@ def enqueue_vlm_tasks(
                 artifact_digest=node["artifact_digest"],
                 config_hash=node["config_hash"],
             ),
+            traceparent=traceparent,
         )
         validate_task_manifest(task)
         event_id = f"vlm-task:{task_id}"
@@ -346,8 +355,16 @@ def enqueue_vlm_tasks(
         if not inserted:
             continue
         conn.execute(
-            "INSERT INTO vlm_task_outbox(event_id,task_id,contract_bytes) VALUES (%s,%s,%s)",
-            (event_id, task_id, task.SerializeToString(deterministic=True)),
+            """
+            INSERT INTO vlm_task_outbox(event_id,task_id,contract_bytes,traceparent)
+            VALUES (%s,%s,%s,%s)
+            """,
+            (
+                event_id,
+                task_id,
+                task.SerializeToString(deterministic=True),
+                traceparent or None,
+            ),
         )
         _advance_coverage(
             conn,
@@ -368,13 +385,21 @@ def claim_task_outbox(conn, batch: int) -> list[dict[str, Any]]:
         raise VlmDelayedError("vlm_task_publish_batch_invalid")
     rows = conn.execute(
         """
-        SELECT event_id,task_id,contract_bytes FROM vlm_task_outbox
+        SELECT event_id,task_id,contract_bytes,traceparent FROM vlm_task_outbox
         WHERE published_at IS NULL ORDER BY created_at,event_id LIMIT %s FOR UPDATE SKIP LOCKED
         """,
         (batch,),
     ).fetchall()
     conn.commit()
-    return [{"event_id": row[0], "task_id": row[1], "contract_bytes": row[2]} for row in rows]
+    return [
+        {
+            "event_id": row[0],
+            "task_id": row[1],
+            "contract_bytes": row[2],
+            "traceparent": row[3] if len(row) > 3 else None,
+        }
+        for row in rows
+    ]
 
 
 def mark_task_outbox_published(conn, event_ids: list[str]) -> int:
@@ -418,10 +443,14 @@ async def publish_task_outbox_cycle(conn, js, *, batch: int = 64) -> dict[str, i
         try:
             task = orchestration_pb2.TaskInputManifest.FromString(item["contract_bytes"])
             validate_task_manifest(task)
+            headers = {"Nats-Msg-Id": item["event_id"]}
+            tp = item.get("traceparent") or task.traceparent
+            if tp:
+                headers["traceparent"] = tp
             await js.publish(
                 TASK_SUBJECT,
                 item["contract_bytes"],
-                headers={"Nats-Msg-Id": item["event_id"]},
+                headers=headers,
                 timeout=5,
             )
             published.append(item["event_id"])
@@ -543,7 +572,9 @@ def _upsert_model_release(conn, observation: material_pb2.Observation) -> None:
     )
 
 
-def _merge_material(conn, task: dict[str, Any], observation: material_pb2.Observation) -> None:
+def _merge_material(
+    conn, task: dict[str, Any], observation: material_pb2.Observation, *, traceparent: str = ""
+) -> None:
     row = conn.execute(
         """
         SELECT m.contract_bytes FROM material_unit m JOIN material_execution e ON
@@ -581,11 +612,13 @@ def _merge_material(conn, task: dict[str, Any], observation: material_pb2.Observ
             pipeline_version="delayed-vlm-v1",
             created_at_unix_ms=int(time.time() * 1000),
         )
+    tp = traceparent or task.get("traceparent") or ""
     materials.append_derived_material(
         conn,
         unit,
         trace_id=f"vlm-task:{task['task_id']}",
         execution_id=task["execution_id"],
+        traceparent=tp,
     )
 
 
@@ -696,7 +729,13 @@ def apply_vlm_result(conn, result: orchestration_pb2.VlmTaskResult) -> dict[str,
             raise VlmDelayedError("vlm_result_terminal_without_receipt")
         if result.success:
             _upsert_model_release(conn, result.observation)
-            _merge_material(conn, task, result.observation)
+            tp = (
+                getattr(result, "traceparent", "")
+                or getattr(result.task, "traceparent", "")
+                or task.get("traceparent")
+                or ""
+            )
+            _merge_material(conn, task, result.observation, traceparent=tp)
             conn.execute(
                 """
                 INSERT INTO vlm_enrichment_result(

@@ -16,11 +16,17 @@
 from __future__ import annotations
 
 import hmac
+import time
 from concurrent import futures
 
 import grpc
 import psycopg
-from edge_material_sdk import get_logger
+from edge_material_sdk import (
+    TraceContext,
+    get_logger,
+    get_registry,
+    set_trace_context,
+)
 from edge_material_sdk.generated.index.v1 import index_pb2, index_pb2_grpc
 from psycopg_pool import ConnectionPool
 
@@ -139,19 +145,52 @@ class IndexSearchServicer(index_pb2_grpc.IndexSearchServiceServicer):
 
     # ── 检索 ───────────────────────────────────────────────────────────────
 
+    def _record_search_metric(self, reg, start_time: float, status: str, hits: int) -> None:
+
+        duration = time.perf_counter() - start_time
+        hist = reg.get_metric("sensoryplex_search_duration_seconds")
+        if hist:
+            hist.observe(duration, labels={"mode": "semantic", "status": status})
+
+        q_counter = reg.get_metric("sensoryplex_search_queries_total")
+        if q_counter:
+            q_counter.inc(labels={"mode": "semantic", "has_hits": str(hits > 0).lower()})
+
+        if hits > 0:
+            h_counter = reg.get_metric("sensoryplex_search_hits_total")
+            if h_counter:
+                h_counter.inc(hits, labels={"mode": "semantic"})
+
     def SearchSemantic(self, request, context):
+
+        meta_dict = dict(context.invocation_metadata()) if context.invocation_metadata() else {}
+        raw_traceparent = meta_dict.get("traceparent")
+        trace_ctx = (
+            TraceContext.from_traceparent(raw_traceparent, generate_child_span=True)
+            if raw_traceparent
+            else None
+        )
+        if trace_ctx:
+            set_trace_context(trace_ctx)
+
+        start_time = time.perf_counter()
+        reg = get_registry()
+
         self._authorize(context)
         rejected = self._admit(request)
         if rejected is not None:
+            self._record_search_metric(reg, start_time, status="400", hits=0)
             return failure(*rejected)
         limit = request.limit or DEFAULT_LIMIT
         with self._pool.connection() as conn:
             guarded = self._same_origin(conn)
             if guarded is not None:
+                self._record_search_metric(reg, start_time, status="409", hits=0)
                 return failure(*guarded)
             try:
                 vector = self._encoder.encode(request.query)
             except QueryEncoderError as error:
+                self._record_search_metric(reg, start_time, status="500", hits=0)
                 return failure(error.code, error.detail)
             try:
                 outcome = search_embeddings(
@@ -162,7 +201,9 @@ class IndexSearchServicer(index_pb2_grpc.IndexSearchServiceServicer):
                     principal=request.principal,
                 )
             except (VectorStoreError, IndexContractError) as error:
+                self._record_search_metric(reg, start_time, status="500", hits=0)
                 return failure(error.code, error.detail)
+        self._record_search_metric(reg, start_time, status="200", hits=len(outcome.results))
         return _response(
             hits=[
                 index_pb2.SemanticHit(

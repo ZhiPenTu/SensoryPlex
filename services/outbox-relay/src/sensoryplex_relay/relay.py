@@ -120,14 +120,20 @@ def claim_candidates(conn, batch: int) -> list[dict]:
     `mark_published` 的 `published_at IS NULL` 与 JetStream 的 `Nats-Msg-Id` 去重上。
     """
     rows = conn.execute(
-        "SELECT event_id, event_type, contract_bytes, attempt FROM event_outbox "
+        "SELECT event_id, event_type, contract_bytes, attempt, traceparent FROM event_outbox "
         "WHERE published_at IS NULL ORDER BY created_at, event_id LIMIT %s "
         "FOR UPDATE SKIP LOCKED",
         (batch,),
     ).fetchall()
     conn.commit()
     return [
-        {"event_id": row[0], "event_type": row[1], "contract_bytes": row[2], "attempt": row[3]}
+        {
+            "event_id": row[0],
+            "event_type": row[1],
+            "contract_bytes": row[2],
+            "attempt": row[3],
+            "traceparent": row[4] if len(row) > 4 else None,
+        }
         for row in rows
     ]
 
@@ -206,11 +212,20 @@ def status_document(
     }
 
 
-async def publish_event(js, *, subject: str, event_id: str, contract_bytes: bytes, timeout: float):
+async def publish_event(
+    js,
+    *,
+    subject: str,
+    event_id: str,
+    contract_bytes: bytes,
+    timeout: float,
+    traceparent: str | None = None,
+):
     """发布单条事件：`Nats-Msg-Id` 就是 outbox 的 `event_id`，重复发布由 JetStream 吸收。"""
-    return await js.publish(
-        subject, contract_bytes, headers={"Nats-Msg-Id": event_id}, timeout=timeout
-    )
+    headers = {"Nats-Msg-Id": event_id}
+    if traceparent:
+        headers["traceparent"] = traceparent
+    return await js.publish(subject, contract_bytes, headers=headers, timeout=timeout)
 
 
 async def relay_cycle(conn, js, options: RelayOptions, totals: dict) -> dict:
@@ -220,16 +235,28 @@ async def relay_cycle(conn, js, options: RelayOptions, totals: dict) -> dict:
     failed_ids: list[str] = []
     error_code = ""
     error_detail = ""
+    from edge_material_sdk import get_registry
+
+    reg = get_registry()
+    inflight_gauge = reg.get_metric("sensoryplex_relay_inflight")
+    if inflight_gauge:
+        inflight_gauge.set(
+            len(candidates),
+            labels={"stream": options.stream, "subject": options.subject_prefix},
+        )
+
     for entry in candidates:
         try:
             subject = subject_for(entry["event_type"], options.subject_prefix)
-            envelope_of(entry["contract_bytes"], expected_event_id=entry["event_id"])
+            env = envelope_of(entry["contract_bytes"], expected_event_id=entry["event_id"])
+            tp = entry.get("traceparent") or (env.traceparent if env.traceparent else None)
             await publish_event(
                 js,
                 subject=subject,
                 event_id=entry["event_id"],
                 contract_bytes=entry["contract_bytes"],
                 timeout=options.publish_timeout_s,
+                traceparent=tp,
             )
         except RelayError as error:
             # 契约问题：发出去也会被下游当成脏数据，宁可留在未发布状态并计数。
@@ -245,6 +272,24 @@ async def relay_cycle(conn, js, options: RelayOptions, totals: dict) -> dict:
     record_failure(conn, failed_ids)
     totals["published"] += published
     totals["failed"] += len(failed_ids)
+
+    pub_counter = reg.get_metric("sensoryplex_relay_events_published_total")
+    if pub_counter and published > 0:
+        pub_counter.inc(
+            published,
+            labels={"stream": options.stream, "subject": options.subject_prefix},
+        )
+
+    fail_counter = reg.get_metric("sensoryplex_relay_events_failed_total")
+    if fail_counter and len(failed_ids) > 0:
+        fail_counter.inc(
+            len(failed_ids),
+            labels={
+                "stream": options.stream,
+                "subject": options.subject_prefix,
+                "reason": error_code or "unknown",
+            },
+        )
     return {
         "claimed": len(candidates),
         "published": published,

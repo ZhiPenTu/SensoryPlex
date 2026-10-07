@@ -105,6 +105,7 @@ message PipelineRun {
   int64 created_at_unix_ms = 11;
   int64 updated_at_unix_ms = 12;
   int64 completed_at_unix_ms = 13;
+  string traceparent = 14;
 }
 
 message PipelineTask {
@@ -122,6 +123,7 @@ message PipelineTask {
   int64 created_at_unix_ms = 12;
   int64 updated_at_unix_ms = 13;
   bool required = 14;
+  string traceparent = 15;
 }
 
 message SchedulerAssignment {
@@ -162,6 +164,7 @@ message TaskInputManifest {
   string source_item_id = 18;
   string material_unit_id = 19;
   PluginReference plugin = 20;
+  string traceparent = 21;
 }
 
 // VLM 慢路径的结果回传。JetStream 只负责至少一次投递；底座以 task_id 和
@@ -174,6 +177,7 @@ message VlmTaskResult {
   edge.material.material.v1.Observation observation = 5;
   string result_digest = 6;
   int64 completed_at_unix_ms = 7;
+  string traceparent = 8;
 }
 
 // Generic enrichment messages contain controlled references and pinned identities.
@@ -199,6 +203,7 @@ message EnrichmentTask {
   string input_modality = 19;
   // Per-attempt processing deadline pinned by the published graph; zero is legacy.
   uint32 process_timeout_ms = 20;
+  string traceparent = 21;
 }
 // This message is staged over an authenticated API before notification is published.
 message EnrichmentResult {
@@ -236,6 +241,7 @@ message TaskExecutionReceipt {
   string result_manifest_ref = 10;
   string reason_code = 11;
   string receipt_digest = 12;
+  string traceparent = 13;
 }
 
 message ValidatePipelineRevisionRequest {

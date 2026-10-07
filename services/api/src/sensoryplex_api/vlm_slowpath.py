@@ -132,7 +132,13 @@ async def run_publisher(
         await client.close()
 
 
-async def run_fuser(*, database_url: str, nats_url: str, status_out: pathlib.Path | None) -> int:
+async def run_fuser(
+    *,
+    database_url: str,
+    nats_url: str,
+    status_out: pathlib.Path | None,
+    metrics_port: int = 0,
+) -> int:
     options = vlm_delayed.VlmQueueOptions()
     options.validate()
     client = await vlm_delayed.connect_bounded(nats_url, name="sensoryplex-vlm-result-fuser")
@@ -153,6 +159,12 @@ async def run_fuser(*, database_url: str, nats_url: str, status_out: pathlib.Pat
             subject=options.result_subject,
             durable=RESULT_DURABLE,
         )
+        metrics_server = None
+        if metrics_port > 0:
+            from edge_material_sdk import start_metrics_server
+
+            metrics_server = start_metrics_server(port=metrics_port, service_name="fuser")
+
         with psycopg.connect(database_url) as conn:
             while True:
                 try:
@@ -162,10 +174,42 @@ async def run_fuser(*, database_url: str, nats_url: str, status_out: pathlib.Pat
                     continue
                 for message in messages:
                     try:
+                        raw_traceparent = (
+                            message.headers.get("traceparent") if message.headers else None
+                        )
+                        if raw_traceparent:
+                            from edge_material_sdk import TraceContext, set_trace_context
+
+                            trace_ctx = TraceContext.from_traceparent(
+                                raw_traceparent, generate_child_span=True
+                            )
+                            if trace_ctx:
+                                set_trace_context(trace_ctx)
+
                         result = orchestration_pb2.VlmTaskResult.FromString(message.data)
                         outcome = vlm_delayed.apply_vlm_result(conn, result)
+                        from edge_material_sdk import get_registry
+
+                        fuser_res = get_registry().get_metric("sensoryplex_fuser_results_total")
+                        if fuser_res:
+                            fuser_res.inc(
+                                labels={
+                                    "modality": "vision.scene_description",
+                                    "status": "success" if result.success else "failed",
+                                }
+                            )
                     except Exception as error:  # noqa: BLE001 - 不 ACK，让 WorkQueue 重投
                         conn.rollback()
+                        from edge_material_sdk import get_registry
+
+                        fuser_retries = get_registry().get_metric("sensoryplex_fuser_retries_total")
+                        if fuser_retries:
+                            fuser_retries.inc(
+                                labels={
+                                    "modality": "vision.scene_description",
+                                    "reason": getattr(error, "code", type(error).__name__),
+                                }
+                            )
                         _report(
                             status_out,
                             "vlm.fuser.retry",
@@ -176,6 +220,8 @@ async def run_fuser(*, database_url: str, nats_url: str, status_out: pathlib.Pat
                     await message.ack()
                     _report(status_out, "vlm.fuser.status", **outcome)
     finally:
+        if metrics_server is not None:
+            metrics_server.stop(0)
         await client.close()
 
 
@@ -195,6 +241,12 @@ def build_parser() -> argparse.ArgumentParser:
     publisher.add_argument("--status-out", type=pathlib.Path)
     fuser = commands.add_parser("fuser")
     fuser.add_argument("--status-out", type=pathlib.Path)
+    fuser.add_argument(
+        "--metrics-port",
+        type=int,
+        default=int(os.getenv("FUSER_METRICS_PORT", "0")),
+        help="Prometheus 指标端点端口 (0 为关闭)",
+    )
     return parser
 
 
@@ -214,7 +266,12 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
     return asyncio.run(
-        run_fuser(database_url=database_url, nats_url=nats_url, status_out=args.status_out)
+        run_fuser(
+            database_url=database_url,
+            nats_url=nats_url,
+            status_out=args.status_out,
+            metrics_port=getattr(args, "metrics_port", 0),
+        )
     )
 
 
